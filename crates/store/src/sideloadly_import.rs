@@ -80,7 +80,9 @@ pub fn parse_sessions(text: &str) -> Vec<AnisetteServer> {
         if provider.kind.as_deref() != Some("RemoteAnisette") {
             continue;
         }
-        let Some(mut url) = provider.url else { continue };
+        let Some(mut url) = provider.url else {
+            continue;
+        };
         url = url.trim().trim_end_matches('/').to_string();
         if url.is_empty() {
             continue;
@@ -94,7 +96,11 @@ pub fn parse_sessions(text: &str) -> Vec<AnisetteServer> {
             continue;
         }
         // Label with the account the session belongs to, when the key carries it.
-        let label = key.split(':').next().filter(|s| !s.is_empty()).unwrap_or("Sideloadly");
+        let label = key
+            .split(':')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Sideloadly");
         servers.push(AnisetteServer::new(format!("Sideloadly ({label})"), url));
     }
     servers.sort_by(|a, b| a.name.cmp(&b.name));
@@ -107,7 +113,11 @@ pub fn load_sideloadly_servers() -> Vec<AnisetteServer> {
         if let Ok(text) = std::fs::read_to_string(&path) {
             let servers = parse_sessions(&text);
             if !servers.is_empty() {
-                log::info!("Loaded {} Sideloadly anisette server(s) from {}", servers.len(), path.display());
+                log::info!(
+                    "Loaded {} Sideloadly anisette server(s) from {}",
+                    servers.len(),
+                    path.display()
+                );
                 return servers;
             }
         }

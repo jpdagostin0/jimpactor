@@ -331,13 +331,16 @@ pub(crate) async fn run_installation(
 
             send("Ensuring account is valid...".to_string(), 20);
 
-            let session = DeveloperSession::new(
-                account.adsid().clone(),
-                account.xcode_gs_token().clone(),
-                plume_store::AnisetteSettings::load_configuration(&crate::defaults::get_data_path()),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            let session =
+                DeveloperSession::new(
+                    account.adsid().clone(),
+                    account.xcode_gs_token().clone(),
+                    plume_store::AnisetteSettings::load_configuration(
+                        &crate::defaults::get_data_path(),
+                    ),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
 
             let teams_response = session.qh_list_teams().await.map_err(|e| e.to_string())?;
 
@@ -721,14 +724,31 @@ pub(crate) async fn run_source_install(
     let downloads = get_data_path().join("downloads");
     let file_name: String = format!("{}-{}.ipa", app.name, version.version)
         .chars()
-        .map(|c| if c.is_alphanumeric() || "+-._".contains(c) { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || "+-._".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let ipa_path = downloads.join(file_name);
 
-    log::info!("Downloading {} {} from {}", app.name, version.version, version.download_url);
-    let _ = tx.send((format!("Downloading {} {}...", app.name, version.version), 0));
+    log::info!(
+        "Downloading {} {} from {}",
+        app.name,
+        version.version,
+        version.download_url
+    );
+    let _ = tx.send((
+        format!("Downloading {} {}...", app.name, version.version),
+        0,
+    ));
     crate::sources::download(&version.download_url, &ipa_path, |percent| {
-        let _ = tx.send((format!("Downloading {} ({percent}%)...", app.name), percent / 10));
+        let _ = tx.send((
+            format!("Downloading {} ({percent}%)...", app.name),
+            percent / 10,
+        ));
     })
     .await?;
 

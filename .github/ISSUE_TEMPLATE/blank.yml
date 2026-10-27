@@ -1,5 +1,5 @@
 name: Create Blank Issue
-description: Blank issue report for Impactor. Use this for anything other than a bug or feature request.
+description: Ask about Jimpactor or report anything other than a bug or feature request.
 title: '[Help] '
 labels:
    - "help wanted"

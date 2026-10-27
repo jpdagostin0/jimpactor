@@ -1,5 +1,5 @@
 name: Create Bug Report
-description: Report a bug or crash in Impactor.
+description: Report a bug or crash in Jimpactor.
 title: '[Bug] '
 labels:
   - bug

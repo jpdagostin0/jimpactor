@@ -36,7 +36,7 @@ impl PlumeTheme {
     pub(crate) fn to_iced_theme(self) -> Theme {
         match self {
             Self::Dark => Theme::custom(
-                "Impactor Dark".to_string(),
+                "Jimpactor Dark".to_string(),
                 iced::theme::Palette {
                     background: color!(0x1e1f22),
                     text: color!(0xe4e4e7),
@@ -47,7 +47,7 @@ impl PlumeTheme {
                 },
             ),
             Self::Light => Theme::custom(
-                "Impactor Light".to_string(),
+                "Jimpactor Light".to_string(),
                 iced::theme::Palette {
                     background: color!(0xf5f5f7),
                     text: color!(0x1c1c1e),

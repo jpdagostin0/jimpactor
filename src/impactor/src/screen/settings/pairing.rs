@@ -200,9 +200,8 @@ impl PairingTab {
             );
 
         if self.cached.is_empty() {
-            content = content.push(
-                text(t!("pairing_cached_none")).size(appearance::THEME_FONT_SIZE - 1.0),
-            );
+            content = content
+                .push(text(t!("pairing_cached_none")).size(appearance::THEME_FONT_SIZE - 1.0));
         }
 
         for cached in &self.cached {

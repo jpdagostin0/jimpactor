@@ -830,7 +830,7 @@ impl Impactor {
                                                     e
                                                 );
                                                 notify_rust::Notification::new()
-                                                    .summary("Impactor")
+                                                    .summary(crate::APP_NAME)
                                                     .body(&format!(
                                                         "Failed to refresh {} for {}: {}",
                                                         app.name.as_deref().unwrap_or("???"),

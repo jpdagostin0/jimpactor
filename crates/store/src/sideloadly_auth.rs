@@ -30,8 +30,8 @@ use plume_core::Error;
 use plume_core::remote_anisette_v1::{DEFAULT_SIDELOADLY_HOST, sideloadly_anisette_url};
 use plume_core::remote_servers::AnisetteServer;
 
-/// Impactor's registered Sideloadly OAuth client. Used unless the user supplies
-/// their own (e.g. for a self-hosted instance).
+/// Default Sideloadly OAuth client used for protocol compatibility. Users can
+/// supply their own client ID for a self-hosted instance.
 pub const DEFAULT_CLIENT_ID: &str =
     "fqo0L0ZdFYoKxshyuTdcQhZeQ8_E1XIjuI8i-CqIKIXM9wtuLAmhyNFlNhtt9XBN";
 
@@ -164,7 +164,7 @@ impl SideloadlyAuth {
 
     /// Builds config from optional user input, falling back to the defaults for any
     /// blank field. A blank host targets the public instance; a blank client id uses
-    /// Impactor's.
+    /// the default client ID.
     pub fn new(host: &str, client_id: &str) -> Self {
         let pick = |value: &str, default: &str| {
             let value = value.trim();
@@ -370,7 +370,7 @@ fn handle_callback(stream: std::net::TcpStream) -> Result<String, Error> {
 
     let body = match &token {
         Some(_) => {
-            "<html><body><h2>Signed in.</h2><p>You can close this tab and return to Plume Impactor.</p></body></html>"
+            "<html><body><h2>Signed in.</h2><p>You can close this tab and return to Jimpactor.</p></body></html>"
         }
         None => {
             "<html><body><h2>Login failed.</h2><p>No token was returned. You can close this tab.</p></body></html>"

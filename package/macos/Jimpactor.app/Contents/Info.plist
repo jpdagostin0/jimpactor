@@ -7,15 +7,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleDisplayName</key>
-	<string>Impactor</string>
+	<string>Jimpactor</string>
 	<key>CFBundleExecutable</key>
-	<string>Impactor</string>
+	<string>jimpactor</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.khcrysalis.PlumeImpactor</string>
+	<string>io.github.jpdagostin0.jimpactor</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Impactor</string>
+	<string>Jimpactor</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -31,7 +31,7 @@
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 CLARATION</string>
+	<string>Copyright © 2026 JP D'Agostino</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 </dict>

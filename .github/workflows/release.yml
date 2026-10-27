@@ -81,21 +81,20 @@ jobs:
       - name: Codesign
         run: |
           mkdir -p dist/dmg
-          mv dist/Impactor.app dist/dmg/
+          mv dist/Jimpactor.app dist/dmg/
           codesign --deep --force --options runtime \
-            --sign "${{ secrets.DEV_ID_IDENTITY_NAME }}" dist/dmg/Impactor.app
+            --sign "${{ secrets.DEV_ID_IDENTITY_NAME }}" dist/dmg/Jimpactor.app
 
       - name: Create DMG
         run: |
           brew install create-dmg
           create-dmg \
-            --volname Impactor \
-            --background "package/macos/background.png" \
+            --volname Jimpactor \
             --window-pos 200 120 \
             --window-size 510 350 \
             --icon-size 100 \
-            --icon Impactor.app 160 155 \
-            --hide-extension Impactor.app \
+            --icon Jimpactor.app 160 155 \
+            --hide-extension Jimpactor.app \
             --app-drop-link 350 155 \
             dist/jimpactor-macos-universal.dmg dist/dmg
 
@@ -111,6 +110,8 @@ jobs:
             dist/jimpactor-macos-universal.dmg
             dist/jimpactor-macos-universal
             dist/jimpactor-cli-macos-universal
+            dist/LICENSE
+            dist/Attributions.md
 
   release:
     runs-on: ubuntu-24.04

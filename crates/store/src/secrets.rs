@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-const SERVICE: &str = "PlumeImpactor";
+const SERVICE: &str = "Jimpactor";
 
 fn entry(email: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(SERVICE, email)
@@ -55,4 +55,3 @@ pub(crate) fn delete_token(email: &str) {
         }
     }
 }
-

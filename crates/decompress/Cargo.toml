@@ -3,7 +3,7 @@ name = "decompress"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true
-license.workspace = true
+license = "Apache-2.0"
 repository.workspace = true
 
 [features]

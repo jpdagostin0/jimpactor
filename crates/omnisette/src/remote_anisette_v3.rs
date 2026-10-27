@@ -535,6 +535,7 @@ mod tests {
     use log::info;
 
     #[tokio::test]
+    #[ignore = "network"]
     async fn fetch_anisette_remote_v3() -> Result<(), AnisetteError> {
         crate::tests::init_logger();
 

@@ -191,7 +191,9 @@ impl AnisetteHeaders {
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
         match configuration.provider {
-            AnisetteProvider::Local => AnisetteHeaders::get_ssc_anisette_headers_provider(configuration),
+            AnisetteProvider::Local => {
+                AnisetteHeaders::get_ssc_anisette_headers_provider(configuration)
+            }
             AnisetteProvider::Fake => {
                 AnisetteHeaders::get_fake_anisette_headers_provider(configuration)
             }
@@ -293,10 +295,7 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
             Err(v1_err) => {
                 #[cfg(feature = "remote-anisette-v3")]
                 {
-                    log::debug!(
-                        "Remote server {} is not v1 ({v1_err}); trying v3",
-                        self.url
-                    );
+                    log::debug!("Remote server {} is not v1 ({v1_err}); trying v3", self.url);
                     let mut v3 = remote_anisette_v3::RemoteAnisetteProviderV3::new(
                         self.url.clone(),
                         self.configuration_path.clone(),
@@ -337,6 +336,7 @@ mod tests {
 
     #[cfg(not(feature = "async"))]
     #[test]
+    #[ignore = "network"]
     fn fetch_anisette_auto() -> Result<()> {
         use crate::{AnisetteConfiguration, AnisetteHeaders};
         use log::info;

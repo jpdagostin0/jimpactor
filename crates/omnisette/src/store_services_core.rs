@@ -428,6 +428,7 @@ mod tests {
 
     #[cfg(not(feature = "async"))]
     #[test]
+    #[ignore = "network"]
     fn fetch_anisette_ssc() -> Result<(), AnisetteError> {
         crate::tests::init_logger();
 
@@ -444,6 +445,7 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
+    #[ignore = "network"]
     async fn fetch_anisette_ssc_async() -> Result<(), AnisetteError> {
         crate::tests::init_logger();
 

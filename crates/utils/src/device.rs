@@ -194,7 +194,11 @@ impl Device {
 
     /// Returns the pairing file to hand to apps. With `remote`, the lockdown pair record is
     /// merged with a remote pairing (RPPairing) record, so apps can pick whichever they need.
-    pub async fn pairing_file(&self, remote: bool, path_to_store: PathBuf) -> Result<Vec<u8>, Error> {
+    pub async fn pairing_file(
+        &self,
+        remote: bool,
+        path_to_store: PathBuf,
+    ) -> Result<Vec<u8>, Error> {
         let lockdown = self.lockdown_pairing_file().await?;
         if !remote {
             return Ok(lockdown);

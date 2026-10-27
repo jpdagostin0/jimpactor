@@ -1,80 +1,61 @@
-# Contributing
+# Contributing to Jimpactor
 
-Impactor is a sideloading app meant to be used on stock versions, to keep compatibility we have to utililize stock features to keep it working. As such, we have specific contribution rules in place to maintain this and Impactors integrity.
+Jimpactor is an independent fork of PlumeImpactor / Impactor. It is not affiliated with or supported by the original project's maintainers. Open issues and pull requests in [jpdagostin0/jimpactor](https://github.com/jpdagostin0/jimpactor).
 
-## Rules
+## Workspace
 
-> [!WARNING]
-> **Warning for AI Usage**
->
-> Using AI to generate your pull request will result in your pull request automatically closed, and "vibecoded" contributions will lead to same results. Pull requests are also reviewed by an actual human and not an AI, so avoid wasting peoples time by actually following this rule.
+| Path | Purpose |
+| --- | --- |
+| `src/impactor` | Iced GUI |
+| `src/cli` | Command-line signing and device tools |
+| `crates/core` | Apple authentication, developer services, and signing support |
+| `crates/gestalt` | Apple Silicon device identification |
+| `crates/store` | Accounts, credentials, anisette settings, and refresh state |
+| `crates/utils` | Signing, app modification, and device helpers |
+| `crates/decompress` | Vendored archive extraction |
+| `crates/omnisette` | Vendored local and remote anisette support |
+| `crates/apple-codesign` | Vendored signing library with local changes |
+| `tools/genicons` | Platform icons generated from `package/icon.svg` |
+| `tools/xtask` | Release builds and packaging |
 
-- **No usage of any exploits of any kind**.
-- **No contributions related to retrieving any signing certificates owned by companies**.
-- **Modifying any hardcoded links should be discussed before changing**.
-- **If you're planning on making a large contribution, please [make an issue](https://github.com/khcrysalis/Impactor/issues) beforehand**.
-- **Your contributions should be licensed appropriately**. 
-- **Typo contributions are okay**, just make sure they are appropriate.
-- **Code cleaning contributions are okay**.
+See [Attributions.md](../Attributions.md) for upstream sources and licenses. Preserve applicable notices when changing vendored code.
 
-## Contributing to Impactor
+## Building
 
-The project is seperated in multiple modules, all serve single or multiple uses depending on their importance.
-
-| Module                  | Description                                                                                                                    |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `src/impactor`          | GUI interface for the crates shown below, backend using Iced.                                                                  |
-| `src/cli`               | Simple CLI interface for signing, using `clap`.                                                                                |
-| `crates/core`           | Handles all api request used for communicating with Apple developer services, along with providing auth for Apple's grandslam. |
-| `crates/gestalt`        | Wrapper for `libMobileGestalt.dylib`, used for obtaining your Mac's UDID for Apple Silicon sideloading.                        |
-| `crates/store`          | Shared code between GUI and CLI, contains keychain functionality and shared datapaths.                                         |
-| `crates/utils`          | Shared code between GUI and CLI, contains signing and modification logic, and helpers.                                         |
-| `crates/decompress`     | Handles compression logic, copied and modified from https://github.com/rusty-ferris-club/decompress.                           |
-| `crates/omnisette`      | Anisette data provider, vendored and modified. See [Attributions](../Attributions.md).                                         |
-| `crates/apple-codesign` | Vendored `apple-codesign` 0.29.0 with local modifications. See [Attributions](../Attributions.md).                             |
-| `tools/genicons`        | Renders every platform icon from `package/icon.svg`. Used by the app's `build.rs` and by `cargo xtask`.                      |
-| `tools/xtask`           | Release builds and packaging: `cargo xtask dist [--target <triple>]`.                                                          |
-
-### Building
-
-The only icon source is `package/icon.svg`. Every icon file is generated from it during the build, and none are checked in.
-
-You need [Rust](https://rustup.rs/) and [CMake](https://cmake.org/download/) (and a C++ compiler).
+Install [Rust](https://rustup.rs/), [CMake](https://cmake.org/download/), and a C/C++ compiler.
 
 ```sh
-# Building / testing GUI
-cargo run --bin jimpactor
-# Building / testing CLI
-cargo run --bin jimpactor-cli -- <args>
+cargo run --locked --bin jimpactor
+cargo run --locked --bin jimpactor-cli -- --help
+cargo check --workspace --all-targets --locked
+cargo test --workspace --locked
+```
 
-# Release binaries and packages for this machine (or --target <triple>), written to dist/
+### Linux
+
+Install `usbmuxd` for device communication. On Ubuntu/Debian, install build dependencies with:
+
+```sh
+sudo apt-get install libclang-dev pkg-config libglib2.0-dev libsecret-1-dev libgtk-3-dev libpng-dev libjpeg-dev libgl1-mesa-dev libglu1-mesa-dev libxkbcommon-dev libexpat1-dev libtiff-dev libxdo-dev libappindicator3-dev
+```
+
+### macOS
+
+Install Xcode or its Command Line Tools.
+
+### Windows
+
+Install Visual Studio Build Tools with the C++ workload and the Windows SDK. Install Apple's device drivers through iTunes for device communication.
+
+## Packaging
+
+```sh
 cargo xtask dist
+cargo xtask dist --target <triple>
 ```
 
-`cargo xtask dist` also builds the platform's package. On Linux it builds an AppImage (linuxdeploy is downloaded for you). On Windows it builds the NSIS installer (`makensis` must be on `PATH`). On macOS it builds a universal `Impactor.app`, which needs both `aarch64-apple-darwin` and `x86_64-apple-darwin` installed through rustup. [`release.yml`](./workflows/release.yml) shows the full setup for each platform.
+Artifacts are written to `dist/`. Linux packaging downloads linuxdeploy to create an AppImage. Windows packaging requires NSIS (`makensis`) on `PATH`. macOS packaging creates a universal `Jimpactor.app` and requires both `aarch64-apple-darwin` and `x86_64-apple-darwin` Rust targets. See [release.yml](workflows/release.yml) for the platform build setup.
 
-Extra requirements are shown below for building if you don't have these already, and trust me, it is convoluted.
+## Changes
 
-#### Linux Requirements
-
-```sh
-# Ubuntu/Debian
-sudo apt-get install libclang-dev pkg-config libgtk-3-dev libpng-dev libjpeg-dev libgl1-mesa-dev libglu1-mesa-dev libxkbcommon-dev libexpat1-dev libtiff-dev
-
-# Fedora/RHEL
-sudo dnf install clang-devel pkg-config gtk3-devel libpng-devel libjpeg-devel mesa-libGL-devel mesa-libGLU-devel libxkbcommon-devel expat-devel libtiff-devel
-```
-
-#### macOS Requirements
-
-- [Xcode](https://developer.apple.com/xcode/) or [Command Line Tools](https://developer.apple.com/download/all/).
-
-#### Windows Requirements
-
-- [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
-- Windows 10/11 SDK.
-
-### Contributing
-
-- Make sure your contributions stay isolated in their own branch, and not `main`.
-- When contributing don't be afraid of any reviewers requesting changes or judging how you wrote something, it's all to keep the project clean and tidy.
+Use a separate branch, keep changes focused, and explain how they were checked. Commit messages must contain a single subject line, with no body or trailers. Do not commit build outputs, credentials, pairing records, or local application state.

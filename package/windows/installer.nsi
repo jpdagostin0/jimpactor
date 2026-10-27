@@ -2,9 +2,9 @@
 ; Modern NSIS Installer for a Single EXE (64-bit)
 ;===========================================================
 
-!define APPNAME "PlumeImpactor"
+!define APPNAME "Jimpactor"
 !define APPEXE  "jimpactor.exe"
-!define COMPANY "Samara"
+!define COMPANY "JP D'Agostino"
 
 !ifndef APPVERSION
     !error "APPVERSION must be defined when building the installer"
@@ -53,6 +53,8 @@ Section "Install"
 
     SetOutPath "$INSTDIR"
     File "${APPEXE}"
+    File "LICENSE"
+    File "Attributions.md"
 
     ; Start Menu entries
     CreateDirectory "$SMPROGRAMS\${APPNAME}"
@@ -83,6 +85,8 @@ Section "Uninstall"
     RMDir  "$SMPROGRAMS\${APPNAME}"
 
     Delete "$INSTDIR\${APPEXE}"
+    Delete "$INSTDIR\LICENSE"
+    Delete "$INSTDIR\Attributions.md"
     Delete "$INSTDIR\Uninstall.exe"
 
     RMDir "$INSTDIR"

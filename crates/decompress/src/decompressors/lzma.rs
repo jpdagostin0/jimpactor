@@ -38,11 +38,13 @@ impl Decompressor for Lzma {
     fn list(&self, archive: &Path) -> Result<Listing, DecompressError> {
         Ok(Listing {
             id: "lzma",
-            entries: vec![archive
-                .file_stem()
-                .ok_or_else(|| DecompressError::Error("cannot compose a file name".into()))?
-                .to_string_lossy()
-                .to_string()],
+            entries: vec![
+                archive
+                    .file_stem()
+                    .ok_or_else(|| DecompressError::Error("cannot compose a file name".into()))?
+                    .to_string_lossy()
+                    .to_string(),
+            ],
         })
     }
 
@@ -61,11 +63,11 @@ impl Decompressor for Lzma {
                 .ok_or_else(|| DecompressError::Error("cannot compose a file name".to_string()))?,
         );
         let mut outfile = fs::File::create(&target)?;
-        
+
         let mut fd = BufReader::new(File::open(archive)?);
         lzma_rs::lzma_decompress(&mut fd, &mut outfile)
             .map_err(|e| DecompressError::Error(format!("LZMA decompression error: {}", e)))?;
-        
+
         Ok(Decompression {
             id: "lzma",
             files: vec![target.to_string_lossy().to_string()],

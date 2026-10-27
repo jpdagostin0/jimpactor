@@ -20,8 +20,8 @@ mod startup;
 mod subscriptions;
 mod tray;
 
-pub const APP_NAME: &str = "Impactor";
-pub const APP_NAME_VERSIONED: &str = concat!("Impactor", " - Version ", env!("CARGO_PKG_VERSION"));
+pub const APP_NAME: &str = "Jimpactor";
+pub const APP_NAME_VERSIONED: &str = concat!("Jimpactor", " - Version ", env!("CARGO_PKG_VERSION"));
 
 fn main() -> iced::Result {
     logging::init();
@@ -62,8 +62,8 @@ fn main() -> iced::Result {
     // For notifications on macOS.
     #[cfg(target_os = "macos")]
     {
-        notify_rust::get_bundle_identifier_or_default("Impactor");
-        notify_rust::set_application("dev.khcrysalis.PlumeImpactor").ok();
+        notify_rust::get_bundle_identifier_or_default("Jimpactor");
+        notify_rust::set_application("io.github.jpdagostin0.jimpactor").ok();
     }
 
     let (_daemon_handle, connected_devices) = spawn_refresh_daemon();

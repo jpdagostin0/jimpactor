@@ -28,12 +28,10 @@ pub fn get_data_path() -> PathBuf {
     let base = if cfg!(windows) {
         env::var("APPDATA").unwrap()
     } else {
-        env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
-            env::var("HOME").unwrap() + "/.config"
-        })
+        env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| env::var("HOME").unwrap() + "/.config")
     };
 
-    let dir = Path::new(&base).join("PlumeImpactor");
+    let dir = Path::new(&base).join("Jimpactor");
 
     fs::create_dir_all(&dir).ok();
 

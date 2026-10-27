@@ -341,4 +341,3 @@ impl AccountStore {
         self.save_sync()
     }
 }
-

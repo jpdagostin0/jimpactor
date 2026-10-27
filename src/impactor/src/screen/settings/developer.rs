@@ -197,9 +197,7 @@ impl DeveloperTab {
             row![
                 text(header).width(Fill),
                 button(text(refresh_label))
-                    .on_press_maybe(
-                        (account.is_some() && !self.loading).then_some(Message::Load)
-                    )
+                    .on_press_maybe((account.is_some() && !self.loading).then_some(Message::Load))
                     .style(appearance::s_button),
             ]
             .spacing(appearance::THEME_PADDING)

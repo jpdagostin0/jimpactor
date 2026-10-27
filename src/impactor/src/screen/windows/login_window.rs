@@ -1,8 +1,8 @@
 use iced::futures::SinkExt;
 use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Fill, Task, window};
-use plume_core::auth::{TwoFactorAction, TwoFactorMethod, TwoFactorRequest};
 use plume_core::auth::Account;
+use plume_core::auth::{TwoFactorAction, TwoFactorMethod, TwoFactorRequest};
 use plume_store::{AccountStore, GsaAccount};
 use rust_i18n::t;
 use std::sync::mpsc as std_mpsc;
@@ -199,7 +199,7 @@ impl LoginWindow {
     }
 
     fn view_login(&self) -> Element<'_, Message> {
-        let email_input = text_input("claration@riseup.net", &self.email)
+        let email_input = text_input("you@example.com", &self.email)
             .on_input(Message::EmailChanged)
             .padding(8)
             .width(Fill);

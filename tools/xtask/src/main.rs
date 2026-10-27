@@ -5,7 +5,7 @@
 //! - every target: `jimpactor-<os>-<arch>` and `jimpactor-cli-<os>-<arch>`
 //! - Linux: `jimpactor-linux-<arch>.AppImage` (downloads linuxdeploy)
 //! - Windows: `jimpactor-windows-<arch>-setup.exe` (needs `makensis` on `PATH`)
-//! - macOS: always universal (needs both Apple targets installed), plus `Impactor.app`
+//! - macOS: always universal (needs both Apple targets installed), plus `Jimpactor.app`
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,9 +14,10 @@ use std::{env, fs};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const LINUX_ID: &str = "dev.khcrysalis.PlumeImpactor";
+const LINUX_ID: &str = "io.github.jpdagostin0.jimpactor";
 const BINS: &[&str] = &["jimpactor", "jimpactor-cli"];
 const MAC_TARGETS: &[&str] = &["aarch64-apple-darwin", "x86_64-apple-darwin"];
+const NOTICE_FILES: &[&str] = &["LICENSE", "Attributions.md"];
 
 /// Loaded at runtime by the tray icon, so linuxdeploy can't find them on its own.
 const APPIMAGE_LIBS: &[&str] = &[
@@ -50,6 +51,7 @@ fn main() -> Result {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     env::set_current_dir(&root)?;
     fs::create_dir_all("dist")?;
+    copy_notices(Path::new("dist"))?;
     let icon = genicons::Icon::from_svg(&fs::read_to_string(genicons::SVG_PATH)?);
 
     if target.contains("-apple-") {
@@ -75,6 +77,7 @@ fn linux(icon: &genicons::Icon, target: &str) -> Result {
     let usr = appdir.join("usr");
     fs::create_dir_all(usr.join("bin"))?;
     fs::copy(built.join("jimpactor"), usr.join("bin/jimpactor"))?;
+    copy_notices(&usr.join("share/doc/jimpactor"))?;
     for &size in genicons::LINUX_SIZES {
         let dir = usr.join(format!("share/icons/hicolor/{size}x{size}/apps"));
         fs::create_dir_all(&dir)?;
@@ -136,6 +139,7 @@ fn windows(icon: &genicons::Icon, target: &str) -> Result {
     fs::create_dir_all(&nsis)?;
     fs::copy("package/windows/installer.nsi", nsis.join("installer.nsi"))?;
     fs::copy(built.join("jimpactor.exe"), nsis.join("jimpactor.exe"))?;
+    copy_notices(&nsis)?;
     fs::write(nsis.join("icon.ico"), icon.ico())?;
     run(Command::new("makensis")
         .arg(format!("-DAPPVERSION={VERSION}"))
@@ -162,11 +166,12 @@ fn macos(icon: &genicons::Icon) -> Result {
         run(&mut lipo)?;
     }
 
-    let app = PathBuf::from("dist/Impactor.app");
+    let app = PathBuf::from("dist/Jimpactor.app");
     let _ = fs::remove_dir_all(&app);
-    copy_dir(Path::new("package/macos/Impactor.app"), &app)?;
+    copy_dir(Path::new("package/macos/Jimpactor.app"), &app)?;
+    copy_notices(&app.join("Contents/Resources"))?;
     fs::write(app.join("Contents/Resources/AppIcon.icns"), icon.icns())?;
-    let exe = app.join("Contents/MacOS/Impactor");
+    let exe = app.join("Contents/MacOS/jimpactor");
     let _ = fs::remove_file(app.join("Contents/MacOS/.keep"));
     // Mark the binary as built against the macOS 26 SDK so it gets the current system UI.
     run(Command::new("vtool")
@@ -181,6 +186,14 @@ fn macos(icon: &genicons::Icon) -> Result {
         plist = set_plist_string(&plist, key, VERSION)?;
     }
     fs::write(plist_path, plist)?;
+    Ok(())
+}
+
+fn copy_notices(destination: &Path) -> Result {
+    fs::create_dir_all(destination)?;
+    for name in NOTICE_FILES {
+        fs::copy(name, destination.join(name))?;
+    }
     Ok(())
 }
 

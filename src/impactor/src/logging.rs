@@ -76,12 +76,7 @@ impl Log for AppLogger {
 
         if let Ok(mut file) = self.file.lock() {
             if let Some(file) = file.as_mut() {
-                let _ = writeln!(
-                    file,
-                    "{} {}",
-                    entry.time.format("%Y-%m-%d"),
-                    entry
-                );
+                let _ = writeln!(file, "{} {}", entry.time.format("%Y-%m-%d"), entry);
             }
         }
 
@@ -119,7 +114,7 @@ fn open_log_file() -> Option<File> {
         }
     }
 
-    let name = format!("impactor-{}.log", chrono::Local::now().format("%Y-%m-%d"));
+    let name = format!("jimpactor-{}.log", chrono::Local::now().format("%Y-%m-%d"));
     OpenOptions::new()
         .create(true)
         .append(true)

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 const SOURCES_FILE: &str = "sources.json";
-const USER_AGENT: &str = concat!("PlumeImpactor/", env!("CARGO_PKG_VERSION"));
+const USER_AGENT: &str = concat!("Jimpactor/", env!("CARGO_PKG_VERSION"));
 pub(crate) const DEFAULT_SOURCE_URL: &str = "https://github.com/SideStore/SideStore";
 /// Name of the app the one-click install preselects.
 pub(crate) const SIDESTORE: &str = "SideStore";
@@ -257,8 +257,8 @@ struct GitHubAsset {
 }
 
 async fn fetch_github_apps(source: &Source) -> Result<Vec<SourceApp>, String> {
-    let (owner, repo) = github_repo(&source.url)
-        .ok_or_else(|| format!("Invalid GitHub source {}", source.url))?;
+    let (owner, repo) =
+        github_repo(&source.url).ok_or_else(|| format!("Invalid GitHub source {}", source.url))?;
     let response = client()?
         .get(format!(
             "https://api.github.com/repos/{owner}/{repo}/releases?per_page=30"
@@ -377,11 +377,7 @@ impl AltStoreApp {
 }
 
 async fn fetch_altstore_feed(url: &str) -> Result<AltStoreFeed, String> {
-    let response = client()?
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let response = client()?.get(url).send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("server returned {}", response.status()));
     }
@@ -435,27 +431,47 @@ mod tests {
     #[test]
     fn identifies_github_repos() {
         let expected = Some(("SideStore".to_string(), "SideStore".to_string()));
-        assert_eq!(github_repo("https://github.com/SideStore/SideStore"), expected);
-        assert_eq!(github_repo("https://github.com/SideStore/SideStore/"), expected);
-        assert_eq!(github_repo("https://github.com/SideStore/SideStore.git"), expected);
-        assert_eq!(github_repo("https://github.com/SideStore/SideStore/releases"), expected);
+        assert_eq!(
+            github_repo("https://github.com/SideStore/SideStore"),
+            expected
+        );
+        assert_eq!(
+            github_repo("https://github.com/SideStore/SideStore/"),
+            expected
+        );
+        assert_eq!(
+            github_repo("https://github.com/SideStore/SideStore.git"),
+            expected
+        );
+        assert_eq!(
+            github_repo("https://github.com/SideStore/SideStore/releases"),
+            expected
+        );
         assert_eq!(github_repo("SideStore/SideStore"), expected);
     }
 
     #[test]
     fn strips_versions_from_asset_names() {
         use super::strip_version_suffix;
-        assert_eq!(strip_version_suffix("com.kdt.livecontainer_3.3.1"), "com.kdt.livecontainer");
+        assert_eq!(
+            strip_version_suffix("com.kdt.livecontainer_3.3.1"),
+            "com.kdt.livecontainer"
+        );
         assert_eq!(strip_version_suffix("SideStore-v0.6.2"), "SideStore");
-        assert_eq!(strip_version_suffix("LiveContainer+SideStore"), "LiveContainer+SideStore");
+        assert_eq!(
+            strip_version_suffix("LiveContainer+SideStore"),
+            "LiveContainer+SideStore"
+        );
         assert_eq!(strip_version_suffix("Some-App"), "Some-App");
     }
 
     #[test]
     fn rejects_non_repo_urls() {
-        assert_eq!(github_repo("https://github.com/SideStore/apps/raw/main/apps.json"), None);
+        assert_eq!(
+            github_repo("https://github.com/SideStore/apps/raw/main/apps.json"),
+            None
+        );
         assert_eq!(github_repo("https://apps.sidestore.io/"), None);
         assert_eq!(github_repo("https://github.com/SideStore"), None);
     }
 }
-

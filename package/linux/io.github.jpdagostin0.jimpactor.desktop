@@ -2,11 +2,11 @@
 Version=1.0
 Type=Application
 
-Name=Plume Impactor
+Name=Jimpactor
 Comment=Feature rich iOS sideloading application
 Categories=Utility;
 
-Icon=dev.khcrysalis.PlumeImpactor
+Icon=io.github.jpdagostin0.jimpactor
 Exec=jimpactor
 Terminal=false
-StartupWMClass=dev.khcrysalis.PlumeImpactor
+StartupWMClass=io.github.jpdagostin0.jimpactor

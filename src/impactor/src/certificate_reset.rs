@@ -1,6 +1,6 @@
 use std::sync::{Mutex, OnceLock, mpsc};
 
-pub(crate) const WARNING: &str = "Impactor needs to reset your certificate. This breaks existing SideStore and AltStore installs.";
+pub(crate) const WARNING: &str = "Jimpactor needs to reset your certificate. This breaks existing SideStore and AltStore installs.";
 
 #[derive(Debug, Clone)]
 pub struct ConfirmationRequest {

@@ -58,7 +58,7 @@ impl RefreshDaemon {
                 if let Err(e) = rt.block_on(self.check_and_refresh()) {
                     log::error!("Refresh daemon error: {}", e);
                     notify_rust::Notification::new()
-                        .summary("Impactor")
+                        .summary(crate::APP_NAME)
                         .body(&format!("Failed to refresh: {}", e))
                         .show()
                         .ok();
@@ -156,7 +156,7 @@ impl RefreshDaemon {
         log::info!("Starting refresh for app at {:?}", app.path);
 
         notify_rust::Notification::new()
-            .summary("Impactor")
+            .summary(crate::APP_NAME)
             .body(&format!(
                 "Started refreshing {} for {}",
                 app.name.as_deref().unwrap_or("???"),
@@ -240,7 +240,7 @@ impl RefreshDaemon {
         log::info!("Successfully refreshed app at {:?}", app.path);
 
         notify_rust::Notification::new()
-            .summary("Impactor")
+            .summary(crate::APP_NAME)
             .body(&format!(
                 "Successfully refreshed {} for {}",
                 app.name.as_deref().unwrap_or("???"),

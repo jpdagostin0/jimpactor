@@ -177,7 +177,10 @@ impl dyn ADIProxy {
             "X-Apple-I-SRL-NO",
             HeaderValue::from_str(self.get_serial_number().as_str())?,
         );
-        headers.insert("X-Mme-Client-Info", HeaderValue::from_static(LOOKUP_CLIENT_INFO));
+        headers.insert(
+            "X-Mme-Client-Info",
+            HeaderValue::from_static(LOOKUP_CLIENT_INFO),
+        );
         headers.insert(
             "X-Apple-I-Client-Time",
             HeaderValue::from_str(&chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())?,

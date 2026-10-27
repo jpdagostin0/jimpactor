@@ -76,8 +76,11 @@ pub async fn rank_servers() -> Vec<(AnisetteServer, Duration)> {
             .ok()
             .map(|rtt| (server, rtt))
     });
-    let mut ranked: Vec<(AnisetteServer, Duration)> =
-        futures_util::future::join_all(checks).await.into_iter().flatten().collect();
+    let mut ranked: Vec<(AnisetteServer, Duration)> = futures_util::future::join_all(checks)
+        .await
+        .into_iter()
+        .flatten()
+        .collect();
     ranked.sort_by_key(|(_, rtt)| *rtt);
     ranked
 }

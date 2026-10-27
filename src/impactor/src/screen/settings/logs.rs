@@ -86,18 +86,22 @@ impl LogsTab {
         let lines = if entries.is_empty() {
             column![text(t!("logs_empty")).size(small)]
         } else {
-            entries.iter().rev().take(MAX_SHOWN).fold(column![].spacing(2), |col, entry| {
-                let color = match entry.level {
-                    log::Level::Error => Some(iced::Color::from_rgb(0.9, 0.35, 0.35)),
-                    log::Level::Warn => Some(iced::Color::from_rgb(0.95, 0.75, 0.4)),
-                    _ => None,
-                };
-                let mut line = text(entry.to_string()).size(small);
-                if let Some(color) = color {
-                    line = line.color(color);
-                }
-                col.push(line)
-            })
+            entries
+                .iter()
+                .rev()
+                .take(MAX_SHOWN)
+                .fold(column![].spacing(2), |col, entry| {
+                    let color = match entry.level {
+                        log::Level::Error => Some(iced::Color::from_rgb(0.9, 0.35, 0.35)),
+                        log::Level::Warn => Some(iced::Color::from_rgb(0.95, 0.75, 0.4)),
+                        _ => None,
+                    };
+                    let mut line = text(entry.to_string()).size(small);
+                    if let Some(color) = color {
+                        line = line.color(color);
+                    }
+                    col.push(line)
+                })
         };
 
         let toolbar = row![

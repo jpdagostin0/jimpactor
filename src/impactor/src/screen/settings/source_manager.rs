@@ -104,9 +104,13 @@ impl SourcesTab {
             .on_submit(Message::Add)
             .padding(6)
             .width(Fill);
-        let add = button(appearance::icon_text(appearance::PLUS, t!("sources_add"), None))
-            .on_press_maybe((!self.adding && !self.url.trim().is_empty()).then_some(Message::Add))
-            .style(appearance::s_button);
+        let add = button(appearance::icon_text(
+            appearance::PLUS,
+            t!("sources_add"),
+            None,
+        ))
+        .on_press_maybe((!self.adding && !self.url.trim().is_empty()).then_some(Message::Add))
+        .style(appearance::s_button);
 
         let mut content = column![
             text(t!("sources_desc")).size(appearance::THEME_FONT_SIZE - 1.0),
@@ -125,9 +129,13 @@ impl SourcesTab {
         }
 
         for source in self.store.sources() {
-            let remove = button(appearance::icon_text(appearance::MINUS, t!("sources_remove"), None))
-                .on_press_maybe((!source.is_default()).then(|| Message::Remove(source.url.clone())))
-                .style(appearance::s_button);
+            let remove = button(appearance::icon_text(
+                appearance::MINUS,
+                t!("sources_remove"),
+                None,
+            ))
+            .on_press_maybe((!source.is_default()).then(|| Message::Remove(source.url.clone())))
+            .style(appearance::s_button);
             content = content.push(
                 row![
                     column![
