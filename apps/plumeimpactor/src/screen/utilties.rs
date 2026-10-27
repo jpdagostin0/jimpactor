@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, rule, scrollable, text, toggler};
+use iced::widget::{button, checkbox, column, container, row, rule, scrollable, text};
 use iced::{Center, Color, Element, Task};
 use rust_i18n::t;
 
@@ -61,7 +61,7 @@ pub struct UtilitiesScreen {
 }
 
 impl UtilitiesScreen {
-    pub fn new(device: Option<Device>) -> Self {
+    pub fn new(device: Option<Device>, rppairing_enabled: bool) -> Self {
         let mut screen = Self {
             device,
             installed_apps: Vec::new(),
@@ -69,7 +69,7 @@ impl UtilitiesScreen {
             app_statuses: HashMap::new(),
             loading: false,
             trust_loading: false,
-            rppairing_enabled: false,
+            rppairing_enabled,
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
@@ -139,7 +139,7 @@ impl UtilitiesScreen {
                 if let Some(device) = &self.device {
                     let device = device.clone();
                     let bundle_id = app.bundle_id.clone().unwrap_or_default();
-                    let pairing_path = app.app.pairing_file_path().unwrap_or_default();
+                    let signer_app = app.app;
                     let app_key = Self::app_key(&app);
                     let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
@@ -148,23 +148,18 @@ impl UtilitiesScreen {
                     std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new().unwrap();
                         let result = rt.block_on(async move {
-                            if rppairing_enabled {
-                                device
-                                    .install_remote_pairing_record(
-                                        &bundle_id,
-                                        &pairing_path,
-                                        get_data_path(),
-                                    )
-                                    .await
-                                    .map_err(|e| {
-                                        format!("Failed to install remote pairing record: {}", e)
-                                    })
-                            } else {
-                                device
-                                    .install_pairing_record(&bundle_id, &pairing_path)
-                                    .await
-                                    .map_err(|e| format!("Failed to install pairing record: {}", e))
-                            }
+                            device
+                                .install_pairing_files(
+                                    &bundle_id,
+                                    signer_app,
+                                    rppairing_enabled,
+                                    get_data_path(),
+                                )
+                                .await
+                                .map_err(|e| {
+                                    log::error!("Failed to install pairing file: {e}");
+                                    format!("Failed to install pairing file: {}", e)
+                                })
                         });
                         let _ = tx.send(result);
                     });
@@ -240,7 +235,7 @@ impl UtilitiesScreen {
             }
             Message::ToggleRPPairing(enabled) => {
                 self.rppairing_enabled = enabled;
-                Task::perform(async move { Message::RefreshApps(enabled) }, |msg| msg)
+                Task::none()
             }
         }
     }
@@ -302,8 +297,8 @@ impl UtilitiesScreen {
             );
         }
 
-        let toggle = toggler(self.rppairing_enabled)
-            .label(t!("utilities_use_remote_pairing"))
+        let toggle = checkbox(self.rppairing_enabled)
+            .label(t!("pairing_include_remote"))
             .on_toggle(Message::ToggleRPPairing);
 
         content = content.push(toggle);

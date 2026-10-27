@@ -5,7 +5,7 @@ use anyhow::{Ok, Result};
 use clap::{Args, Subcommand};
 use dialoguer::Select;
 
-use plume_core::{AnisetteConfiguration, auth::Account, developer::DeveloperSession};
+use plume_core::{auth::Account, developer::DeveloperSession};
 use plume_store::AccountStore;
 
 use crate::get_data_path;
@@ -126,7 +126,7 @@ pub async fn get_authenticated_account() -> Result<DeveloperSession> {
         })?
         .clone();
 
-    let anisette_config = AnisetteConfiguration::default().set_configuration_path(get_data_path());
+    let anisette_config = plume_store::AnisetteSettings::load_configuration(&get_data_path());
 
     log::info!("Restoring session for {}...", gsa_account.email());
 
@@ -185,7 +185,7 @@ async fn login(args: LoginArgs) -> Result<()> {
         std::result::Result::Ok(TwoFactorAction::SubmitCode(input.to_string()))
     };
 
-    let anisette_config = AnisetteConfiguration::default().set_configuration_path(get_data_path());
+    let anisette_config = plume_store::AnisetteSettings::load_configuration(&get_data_path());
 
     let username = if let Some(user) = args.username {
         user

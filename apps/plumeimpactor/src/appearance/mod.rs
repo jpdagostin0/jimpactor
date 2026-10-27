@@ -28,32 +28,52 @@ pub(crate) fn p_font() -> iced::Font {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlumeTheme {
-    PlumeDark,
+    Dark,
+    Light,
 }
 
 impl PlumeTheme {
     pub(crate) fn to_iced_theme(self) -> Theme {
-        Self::plume_dark()
-    }
-
-    fn plume_dark() -> Theme {
-        Theme::custom(
-            "Plume Dark".to_string(),
-            iced::theme::Palette {
-                background: color!(0x282021),
-                text: color!(0xf2d5cf),
-                primary: color!(0xd3869b),
-                success: color!(0xd9a6b3),
-                danger: color!(0xe78a8a),
-                warning: color!(0xf4b8c4),
-            },
-        )
+        match self {
+            Self::Dark => Theme::custom(
+                "Impactor Dark".to_string(),
+                iced::theme::Palette {
+                    background: color!(0x1e1f22),
+                    text: color!(0xe4e4e7),
+                    primary: color!(0x3b82f6),
+                    success: color!(0x22c55e),
+                    danger: color!(0xef4444),
+                    warning: color!(0xf59e0b),
+                },
+            ),
+            Self::Light => Theme::custom(
+                "Impactor Light".to_string(),
+                iced::theme::Palette {
+                    background: color!(0xf5f5f7),
+                    text: color!(0x1c1c1e),
+                    primary: color!(0x2563eb),
+                    success: color!(0x16a34a),
+                    danger: color!(0xdc2626),
+                    warning: color!(0xd97706),
+                },
+            ),
+        }
     }
 }
 
 impl Default for PlumeTheme {
     fn default() -> Self {
-        Self::PlumeDark
+        Self::Dark
+    }
+}
+
+/// Moves `color` away from the background tone: lighter on dark themes, darker on light ones.
+/// Used for surfaces (buttons, pick lists) layered on the window background.
+pub(crate) fn raise(theme: &Theme, color: Color, amount: f32) -> Color {
+    if theme.extended_palette().is_dark {
+        lighten(color, amount)
+    } else {
+        darken(color, amount)
     }
 }
 

@@ -5,9 +5,31 @@ use serde::{Deserialize, Serialize};
 
 use plume_core::Error;
 
-use crate::{GsaAccount, RefreshDevice};
+use crate::{GsaAccount, RefreshDevice, secrets};
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+fn default_true() -> bool {
+    true
+}
+
+/// Light or dark appearance; `System` follows the OS setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl AppearanceMode {
+    pub const ALL: [AppearanceMode; 3] = [
+        AppearanceMode::System,
+        AppearanceMode::Light,
+        AppearanceMode::Dark,
+    ];
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccountStore {
     selected_account: Option<String>,      // Email
     accounts: HashMap<String, GsaAccount>, // Email -> GsaAccount
@@ -15,8 +37,32 @@ pub struct AccountStore {
     refreshes: HashMap<String, RefreshDevice>, // UDID -> RefreshDevice (apps?)
     #[serde(default)]
     locale: Option<String>, // None = system locale
+    #[serde(default = "default_true")]
+    use_keyring: bool, // Keep account tokens in the OS keyring instead of this file
+    #[serde(default)]
+    remote_pairing: bool, // Include a remote pairing (RPPairing) record in pairing files
+    #[serde(default)]
+    appearance: AppearanceMode,
     #[serde(skip)]
     path: Option<PathBuf>,
+    #[serde(skip)]
+    secrets_on_disk: bool, // Loaded file still holds tokens that belong in the keyring
+}
+
+impl Default for AccountStore {
+    fn default() -> Self {
+        Self {
+            selected_account: None,
+            accounts: HashMap::new(),
+            refreshes: HashMap::new(),
+            locale: None,
+            use_keyring: true,
+            remote_pairing: false,
+            appearance: AppearanceMode::default(),
+            path: None,
+            secrets_on_disk: false,
+        }
+    }
 }
 
 impl AccountStore {
@@ -26,7 +72,7 @@ impl AccountStore {
                 Self::default()
             } else {
                 let contents = tokio::fs::read_to_string(path).await?;
-                serde_json::from_str(&contents)?
+                Self::parse(&contents)?
             };
             settings.path = Some(path.clone());
             Ok(settings)
@@ -41,7 +87,7 @@ impl AccountStore {
                 Self::default()
             } else {
                 let contents = std::fs::read_to_string(path)?;
-                serde_json::from_str(&contents)?
+                Self::parse(&contents)?
             };
             settings.path = Some(path.clone());
             Ok(settings)
@@ -56,7 +102,7 @@ impl AccountStore {
                 tokio::fs::create_dir_all(parent).await?;
             }
 
-            tokio::fs::write(path, serde_json::to_string_pretty(self)?).await?;
+            tokio::fs::write(path, self.to_json()?).await?;
         }
         Ok(())
     }
@@ -67,9 +113,77 @@ impl AccountStore {
                 std::fs::create_dir_all(parent)?;
             }
 
-            std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+            std::fs::write(path, self.to_json()?)?;
         }
         Ok(())
+    }
+
+    fn parse(contents: &str) -> Result<Self, Error> {
+        let mut store: Self = serde_json::from_str(contents)?;
+        for (email, account) in &mut store.accounts {
+            if !account.xcode_gs_token().is_empty() {
+                store.secrets_on_disk = true;
+            } else if let Some(token) = secrets::load_token(email) {
+                account.set_xcode_gs_token(token);
+            }
+        }
+        Ok(store)
+    }
+
+    /// Serializes the store, moving tokens into the OS keyring when enabled.
+    fn to_json(&self) -> Result<String, Error> {
+        let mut on_disk = self.clone();
+        if secrets::keyring_available() {
+            for (email, account) in &mut on_disk.accounts {
+                if !self.use_keyring {
+                    secrets::delete_token(email);
+                    continue;
+                }
+                let token = account.xcode_gs_token();
+                let stored = secrets::load_token(email).as_ref() == Some(token)
+                    || secrets::store_token(email, token);
+                if stored {
+                    account.set_xcode_gs_token(String::new());
+                }
+            }
+        }
+        Ok(serde_json::to_string_pretty(&on_disk)?)
+    }
+
+    /// Rewrites the file if it still holds tokens that should live in the keyring.
+    pub fn migrate_secrets_sync(&mut self) -> Result<(), Error> {
+        if self.secrets_on_disk && self.use_keyring && secrets::keyring_available() {
+            self.save_sync()?;
+            self.secrets_on_disk = false;
+        }
+        Ok(())
+    }
+
+    pub fn use_keyring(&self) -> bool {
+        self.use_keyring
+    }
+
+    pub fn set_use_keyring_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.use_keyring = enabled;
+        self.save_sync()
+    }
+
+    pub fn remote_pairing(&self) -> bool {
+        self.remote_pairing
+    }
+
+    pub fn set_remote_pairing_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.remote_pairing = enabled;
+        self.save_sync()
+    }
+
+    pub fn appearance(&self) -> AppearanceMode {
+        self.appearance
+    }
+
+    pub fn set_appearance_sync(&mut self, appearance: AppearanceMode) -> Result<(), Error> {
+        self.appearance = appearance;
+        self.save_sync()
     }
 
     pub fn accounts(&self) -> &HashMap<String, GsaAccount> {
@@ -100,6 +214,7 @@ impl AccountStore {
 
     pub async fn accounts_remove(&mut self, email: &str) -> Result<(), Error> {
         self.accounts.remove(email);
+        secrets::delete_token(email);
         if self.selected_account.as_ref() == Some(&email.to_string()) {
             self.selected_account = None;
         }
@@ -108,6 +223,7 @@ impl AccountStore {
 
     pub fn accounts_remove_sync(&mut self, email: &str) -> Result<(), Error> {
         self.accounts.remove(email);
+        secrets::delete_token(email);
         if self.selected_account.as_ref() == Some(&email.to_string()) {
             self.selected_account = None;
         }
@@ -225,3 +341,4 @@ impl AccountStore {
         self.save_sync()
     }
 }
+

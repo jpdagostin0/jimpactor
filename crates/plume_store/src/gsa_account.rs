@@ -5,6 +5,8 @@ pub struct GsaAccount {
     email: String,
     first_name: String,
     adsid: String,
+    // Empty on disk when the token lives in the OS keyring.
+    #[serde(default)]
     xcode_gs_token: String,
     #[serde(default)]
     team_id: String,
@@ -43,6 +45,9 @@ impl GsaAccount {
     }
     pub fn set_team_id(&mut self, team_id: String) {
         self.team_id = team_id;
+    }
+    pub(crate) fn set_xcode_gs_token(&mut self, token: String) {
+        self.xcode_gs_token = token;
     }
 }
 

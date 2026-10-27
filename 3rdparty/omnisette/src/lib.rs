@@ -4,19 +4,23 @@
 //!
 //! If you want remote anisette, make sure the `remote-anisette` feature is enabled. (it's currently on by default)
 
-use crate::adi_proxy::{ADIProxyAnisetteProvider, ConfigurableADIProxy};
+use crate::adi_proxy::ADIProxyAnisetteProvider;
 use crate::anisette_headers_provider::AnisetteHeadersProvider;
 use adi_proxy::ADIError;
 use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
 
+pub mod adi_libraries;
 pub mod adi_proxy;
 pub mod anisette_headers_provider;
+pub mod remote_anisette_v1;
 pub mod store_services_core;
 
 #[cfg(feature = "remote-anisette-v3")]
 pub mod remote_anisette_v3;
+#[cfg(feature = "remote-anisette-v3")]
+pub mod remote_servers;
 
 #[allow(dead_code)]
 pub struct AnisetteHeaders;
@@ -59,12 +63,42 @@ pub const DEFAULT_ANISETTE_URL: &str = "https://ani.f1sh.me/";
 
 pub const DEFAULT_ANISETTE_URL_V3: &str = "https://mac-ani.jkcoxson.com";
 
+/// Sub-directory of the configuration path used by [`AnisetteProvider::Fake`].
+pub const FAKE_IDENTITY_DIR: &str = "fake";
+
+/// Where anisette data comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AnisetteProvider {
+    /// Computed on this machine with Apple's ADI libraries, using a persistent identity.
+    Local,
+    /// Requested from a remote anisette v3 server.
+    #[default]
+    Remote,
+    /// Computed on this machine with Apple's ADI libraries, using a spoofed,
+    /// disposable Mac identity that is not tied to this machine.
+    Fake,
+}
+
+impl AnisetteProvider {
+    pub const ALL: [AnisetteProvider; 3] = [
+        AnisetteProvider::Local,
+        AnisetteProvider::Remote,
+        AnisetteProvider::Fake,
+    ];
+
+    /// Whether this provider needs Apple's ADI libraries on disk.
+    pub fn needs_libraries(&self) -> bool {
+        matches!(self, AnisetteProvider::Local | AnisetteProvider::Fake)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AnisetteConfiguration {
     anisette_url: String,
     anisette_url_v3: String,
     configuration_path: PathBuf,
     macos_serial: String,
+    provider: AnisetteProvider,
 }
 
 impl Default for AnisetteConfiguration {
@@ -80,7 +114,26 @@ impl AnisetteConfiguration {
             anisette_url_v3: DEFAULT_ANISETTE_URL_V3.to_string(),
             configuration_path: PathBuf::new(),
             macos_serial: "0".to_string(),
+            provider: AnisetteProvider::default(),
         }
+    }
+
+    pub fn anisette_url_v3(&self) -> &String {
+        &self.anisette_url_v3
+    }
+
+    pub fn provider(&self) -> AnisetteProvider {
+        self.provider
+    }
+
+    pub fn set_anisette_url_v3(mut self, anisette_url_v3: String) -> AnisetteConfiguration {
+        self.anisette_url_v3 = anisette_url_v3.trim().trim_end_matches('/').to_string();
+        self
+    }
+
+    pub fn set_provider(mut self, provider: AnisetteProvider) -> AnisetteConfiguration {
+        self.provider = provider;
+        self
     }
 
     pub fn anisette_url(&self) -> &String {
@@ -137,36 +190,129 @@ impl AnisetteHeaders {
     pub fn get_anisette_headers_provider(
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
-        // TODO: handle Err because it will just go to remote anisette and not tell the user anything
-        if let Ok(ssc_anisette_headers_provider) =
-            AnisetteHeaders::get_ssc_anisette_headers_provider(configuration.clone())
-        {
-            return Ok(ssc_anisette_headers_provider);
+        match configuration.provider {
+            AnisetteProvider::Local => AnisetteHeaders::get_ssc_anisette_headers_provider(configuration),
+            AnisetteProvider::Fake => {
+                AnisetteHeaders::get_fake_anisette_headers_provider(configuration)
+            }
+            AnisetteProvider::Remote => Ok(AnisetteHeadersProviderRes::remote(Box::new(
+                AutoRemoteProvider::new(
+                    configuration.anisette_url_v3,
+                    configuration.configuration_path.clone(),
+                    configuration.macos_serial.clone(),
+                ),
+            ))),
         }
-
-        #[cfg(feature = "remote-anisette-v3")]
-        return Ok(AnisetteHeadersProviderRes::remote(Box::new(
-            remote_anisette_v3::RemoteAnisetteProviderV3::new(
-                configuration.anisette_url_v3,
-                configuration.configuration_path.clone(),
-                configuration.macos_serial.clone(),
-            ),
-        )));
     }
 
     pub fn get_ssc_anisette_headers_provider(
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
-        let mut ssc_adi_proxy = store_services_core::StoreServicesCoreADIProxy::new(
-            configuration.configuration_path(),
-        )?;
         let config_path = configuration.configuration_path();
-        ssc_adi_proxy.set_provisioning_path(config_path.to_str().ok_or(
-            AnisetteError::InvalidArgument("configuration.configuration_path".to_string()),
-        )?)?;
+        let ssc_adi_proxy = store_services_core::StoreServicesCoreADIProxy::new(config_path)?;
         Ok(AnisetteHeadersProviderRes::local(Box::new(
             ADIProxyAnisetteProvider::new(ssc_adi_proxy, config_path.to_path_buf())?,
         )))
+    }
+
+    /// Same ADI libraries as [`AnisetteProvider::Local`], but provisioned in a separate
+    /// directory under a randomly generated Mac identity (device id + serial number).
+    pub fn get_fake_anisette_headers_provider(
+        configuration: AnisetteConfiguration,
+    ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
+        let library_path = configuration.configuration_path();
+        let identity_path = library_path.join(FAKE_IDENTITY_DIR);
+        std::fs::create_dir_all(&identity_path)?;
+
+        let mut ssc_adi_proxy =
+            store_services_core::StoreServicesCoreADIProxy::with_custom_provisioning_path(
+                library_path,
+                &identity_path,
+            )?;
+        ssc_adi_proxy.set_serial_number(adi_libraries::fake_serial_number(&identity_path)?);
+
+        Ok(AnisetteHeadersProviderRes::local(Box::new(
+            ADIProxyAnisetteProvider::new(ssc_adi_proxy, identity_path)?,
+        )))
+    }
+}
+
+/// Remote provider that works with either protocol a server might speak: the
+/// classic v1 JSON endpoint (also what Sideloadly's remote uses) or the v3
+/// provisioning protocol. It tries v1 first and falls back to v3, remembering
+/// whichever answered so later refreshes skip the probe.
+enum RemoteInner {
+    Undecided,
+    V1(remote_anisette_v1::RemoteAnisetteProviderV1),
+    #[cfg(feature = "remote-anisette-v3")]
+    V3(remote_anisette_v3::RemoteAnisetteProviderV3),
+}
+
+pub struct AutoRemoteProvider {
+    url: String,
+    configuration_path: PathBuf,
+    serial: String,
+    inner: RemoteInner,
+}
+
+impl AutoRemoteProvider {
+    pub fn new(url: String, configuration_path: PathBuf, serial: String) -> AutoRemoteProvider {
+        AutoRemoteProvider {
+            url,
+            configuration_path,
+            serial,
+            inner: RemoteInner::Undecided,
+        }
+    }
+}
+
+#[cfg_attr(feature = "async", async_trait::async_trait)]
+impl AnisetteHeadersProvider for AutoRemoteProvider {
+    #[cfg_attr(not(feature = "async"), remove_async_await::remove_async_await)]
+    async fn get_anisette_headers(
+        &mut self,
+        skip_provisioning: bool,
+    ) -> Result<std::collections::HashMap<String, String>, AnisetteError> {
+        match &mut self.inner {
+            RemoteInner::V1(p) => return p.get_anisette_headers(skip_provisioning).await,
+            #[cfg(feature = "remote-anisette-v3")]
+            RemoteInner::V3(p) => return p.get_anisette_headers(skip_provisioning).await,
+            RemoteInner::Undecided => {}
+        }
+
+        let mut v1 = remote_anisette_v1::RemoteAnisetteProviderV1::new(
+            self.url.clone(),
+            self.configuration_path.clone(),
+        );
+        match v1.get_anisette_headers(skip_provisioning).await {
+            Ok(headers) => {
+                log::debug!("Remote server {} speaks anisette v1", self.url);
+                self.inner = RemoteInner::V1(v1);
+                Ok(headers)
+            }
+            Err(v1_err) => {
+                #[cfg(feature = "remote-anisette-v3")]
+                {
+                    log::debug!(
+                        "Remote server {} is not v1 ({v1_err}); trying v3",
+                        self.url
+                    );
+                    let mut v3 = remote_anisette_v3::RemoteAnisetteProviderV3::new(
+                        self.url.clone(),
+                        self.configuration_path.clone(),
+                        self.serial.clone(),
+                    );
+                    let res = v3.get_anisette_headers(skip_provisioning).await;
+                    self.inner = RemoteInner::V3(v3);
+                    res
+                }
+                #[cfg(not(feature = "remote-anisette-v3"))]
+                {
+                    let _ = &self.serial;
+                    Err(v1_err)
+                }
+            }
+        }
     }
 }
 

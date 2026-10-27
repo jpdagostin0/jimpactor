@@ -177,6 +177,13 @@ impl dyn ADIProxy {
             "X-Apple-I-SRL-NO",
             HeaderValue::from_str(self.get_serial_number().as_str())?,
         );
+        headers.insert("X-Mme-Client-Info", HeaderValue::from_static(LOOKUP_CLIENT_INFO));
+        headers.insert(
+            "X-Apple-I-Client-Time",
+            HeaderValue::from_str(&chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())?,
+        );
+        headers.insert("X-Apple-I-TimeZone", HeaderValue::from_static("UTC"));
+        headers.insert("X-Apple-Locale", HeaderValue::from_static("en_US"));
 
         debug!("Headers sent: {headers:?}");
 
@@ -196,7 +203,6 @@ impl dyn ADIProxy {
 
         let url_bag_res = client
             .get("https://gsa.apple.com/grandslam/GsService2/lookup")
-            .header("X-Mme-Client-Info", LOOKUP_CLIENT_INFO)
             .send()
             .await?
             .plist()
@@ -370,6 +376,16 @@ impl<ProxyType: ADIProxy + 'static> AnisetteHeadersProvider
             "X-Mme-Device-Id".to_string(),
             adi_proxy.get_device_identifier(),
         );
+        headers.insert(
+            "X-Mme-Client-Info".to_string(),
+            LOOKUP_CLIENT_INFO.to_string(),
+        );
+        headers.insert(
+            "X-Apple-I-Client-Time".to_string(),
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        );
+        headers.insert("X-Apple-I-TimeZone".to_string(), "UTC".to_string());
+        headers.insert("X-Apple-Locale".to_string(), "en_US".to_string());
 
         Ok(headers)
     }

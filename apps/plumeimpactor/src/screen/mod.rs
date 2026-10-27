@@ -1,6 +1,7 @@
 pub(crate) mod general;
 mod package;
 mod progress;
+mod quick_install;
 pub(crate) mod settings;
 mod utilties;
 mod windows;
@@ -15,7 +16,7 @@ use iced::keyboard::{self, Key, key};
 use iced::window;
 use iced::{Element, Subscription, Task};
 
-use plume_store::AccountStore;
+use plume_store::{AccountStore, AppearanceMode};
 use plume_utils::{Device, SignerOptions};
 
 use crate::subscriptions;
@@ -84,6 +85,9 @@ pub enum Message {
 
     // Installation
     StartInstallation,
+
+    // Appearance
+    SystemThemeChanged(iced::theme::Mode),
 }
 
 pub struct Impactor {
@@ -99,6 +103,9 @@ pub struct Impactor {
     pending_installation: bool,
     certificate_reset_queue: VecDeque<crate::certificate_reset::ConfirmationRequest>,
     selected_locale: Option<String>,
+    quick_install: quick_install::QuickInstall,
+    pending_source_install: Option<(crate::sources::SourceApp, crate::sources::AppVersion)>,
+    system_theme: iced::theme::Mode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,7 +128,10 @@ enum ImpactorScreen {
 impl Impactor {
     pub fn new() -> (Self, Task<Message>) {
         let mut tray = ImpactorTray::new();
-        let store = Self::init_account_store_sync();
+        let mut store = Self::init_account_store_sync();
+        if let Err(err) = store.migrate_secrets_sync() {
+            log::error!("Failed to move account tokens into the keyring: {err}");
+        }
         tray.update_refresh_apps(&store);
         let selected_locale = store.locale().map(str::to_string);
         if let Some(code) = &selected_locale {
@@ -151,14 +161,60 @@ impl Impactor {
                 pending_installation: false,
                 certificate_reset_queue: VecDeque::new(),
                 selected_locale,
+                quick_install: quick_install::QuickInstall::default(),
+                pending_source_install: None,
+                system_theme: iced::theme::Mode::None,
             },
-            open_task,
+            Task::batch([
+                open_task,
+                iced::system::theme().map(Message::SystemThemeChanged),
+                Self::quick_install_task(quick_install::Message::Load),
+            ]),
         )
     }
 
     fn init_account_store_sync() -> AccountStore {
         let path = defaults::get_data_path().join("accounts.json");
         AccountStore::load_sync(&Some(path)).unwrap_or_default()
+    }
+
+    pub fn theme(&self, _window: window::Id) -> iced::Theme {
+        let mode = self
+            .account_store
+            .as_ref()
+            .map(|s| s.appearance())
+            .unwrap_or_default();
+        let theme = match mode {
+            AppearanceMode::Light => appearance::PlumeTheme::Light,
+            AppearanceMode::Dark => appearance::PlumeTheme::Dark,
+            AppearanceMode::System => match self.system_theme {
+                iced::theme::Mode::Light => appearance::PlumeTheme::Light,
+                _ => appearance::PlumeTheme::Dark,
+            },
+        };
+        theme.to_iced_theme()
+    }
+
+    fn quick_install_task(msg: quick_install::Message) -> Task<Message> {
+        Task::done(Message::MainScreen(general::Message::QuickInstall(msg)))
+    }
+
+    fn remote_pairing(&self) -> bool {
+        self.account_store
+            .as_ref()
+            .is_some_and(|s| s.remote_pairing())
+    }
+
+    fn set_remote_pairing(&mut self, enabled: bool) {
+        if let Some(store) = &mut self.account_store {
+            if let Err(err) = store.set_remote_pairing_sync(enabled) {
+                log::error!("Failed to save remote pairing setting: {err}");
+            }
+        }
+    }
+
+    fn new_utilities_screen(&self) -> utilties::UtilitiesScreen {
+        utilties::UtilitiesScreen::new(self.selected_device.clone(), self.remote_pairing())
     }
 
     fn respond_to_next_certificate_reset(&mut self, accepted: bool) {
@@ -188,7 +244,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.new_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -218,7 +274,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.new_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -252,7 +308,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.new_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -437,6 +493,15 @@ impl Impactor {
                                 ImpactorScreen::Settings(settings::SettingsScreen::new());
                         }
 
+                        if let Some((app, version)) = self.pending_source_install.take() {
+                            if matches!(msg, login_window::Message::LoginSuccess(_)) {
+                                return Task::batch([
+                                    window::close(id),
+                                    self.start_source_install(app, version),
+                                ]);
+                            }
+                        }
+
                         if self.pending_installation {
                             if matches!(msg, login_window::Message::LoginSuccess(_)) {
                                 self.pending_installation = false;
@@ -457,6 +522,19 @@ impl Impactor {
                     Task::none()
                 }
             }
+            Message::MainScreen(general::Message::QuickInstall(msg)) => match msg {
+                quick_install::Message::ToggleRemotePairing(enabled) => {
+                    self.set_remote_pairing(enabled);
+                    Task::none()
+                }
+                quick_install::Message::Install(app, version) => {
+                    self.request_source_install(app, version)
+                }
+                msg => self
+                    .quick_install
+                    .update(msg)
+                    .map(|m| Message::MainScreen(general::Message::QuickInstall(m))),
+            },
             Message::MainScreen(msg) => {
                 if let ImpactorScreen::Main(ref mut screen) = self.current_screen {
                     let task = screen.update(msg.clone()).map(Message::MainScreen);
@@ -473,7 +551,7 @@ impl Impactor {
                             _ => false,
                         };
                         self.current_screen = ImpactorScreen::Utilities(
-                            utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                            self.new_utilities_screen(),
                         );
                         return Task::done(Message::UtilitiesScreen(
                             utilties::Message::RefreshApps(rppairing_enabled),
@@ -486,6 +564,9 @@ impl Impactor {
                 }
             }
             Message::UtilitiesScreen(msg) => {
+                if let utilties::Message::ToggleRPPairing(enabled) = msg {
+                    self.set_remote_pairing(enabled);
+                }
                 if let ImpactorScreen::Utilities(ref mut screen) = self.current_screen {
                     screen.update(msg).map(Message::UtilitiesScreen)
                 } else {
@@ -582,7 +663,7 @@ impl Impactor {
                                     );
                                 }
                             }
-                            screen.update(msg).map(Message::SettingsScreen)
+                            screen.update(msg, self.account_store.as_ref()).map(Message::SettingsScreen)
                         }
                         settings::Message::SelectTeam(ref email, ref team_id) => {
                             if let Some(store) = &mut self.account_store {
@@ -594,7 +675,40 @@ impl Impactor {
                                     self.account_store = Some(Self::init_account_store_sync());
                                 }
                             }
-                            screen.update(msg).map(Message::SettingsScreen)
+                            screen.update(msg, self.account_store.as_ref()).map(Message::SettingsScreen)
+                        }
+                        settings::Message::SelectAppearance(settings::AppearanceChoice(mode)) => {
+                            if let Some(store) = &mut self.account_store {
+                                if let Err(err) = store.set_appearance_sync(mode) {
+                                    log::error!("Failed to save appearance: {err}");
+                                }
+                            }
+                            Task::none()
+                        }
+                        settings::Message::ToggleKeyring(enabled) => {
+                            if let Some(store) = &mut self.account_store {
+                                if let Err(err) = store.set_use_keyring_sync(enabled) {
+                                    log::error!("Failed to update keyring setting: {err}");
+                                }
+                            }
+                            Task::none()
+                        }
+                        settings::Message::Pairing(settings::PairingMessage::ToggleRemotePairing(
+                            enabled,
+                        )) => {
+                            self.set_remote_pairing(enabled);
+                            Task::none()
+                        }
+                        settings::Message::Sources(ref sources_msg)
+                            if sources_msg.changes_sources() =>
+                        {
+                            let task = screen
+                                .update(msg, self.account_store.as_ref())
+                                .map(Message::SettingsScreen);
+                            Task::batch([
+                                task,
+                                Self::quick_install_task(quick_install::Message::Load),
+                            ])
                         }
                         settings::Message::SelectLocale(choice) => {
                             self.selected_locale = choice.clone();
@@ -610,7 +724,7 @@ impl Impactor {
                             }
                             Task::none()
                         }
-                        _ => screen.update(msg).map(Message::SettingsScreen),
+                        _ => screen.update(msg, self.account_store.as_ref()).map(Message::SettingsScreen),
                     }
                 } else {
                     Task::none()
@@ -795,6 +909,10 @@ impl Impactor {
                 Task::none()
             }
             Message::StartInstallation => Task::none(),
+            Message::SystemThemeChanged(mode) => {
+                self.system_theme = mode;
+                Task::none()
+            }
         }
     }
 
@@ -835,6 +953,13 @@ impl Impactor {
             _ => None,
         });
 
+        let logs_subscription = match &self.current_screen {
+            ImpactorScreen::Settings(screen) if screen.tab == settings::SettingsTab::Logs => {
+                subscriptions::logs_tick_subscription()
+            }
+            _ => Subscription::none(),
+        };
+
         let tray_menu_refresh_subscription = subscriptions::tray_menu_refresh_subscription();
         let certificate_reset_subscription = subscriptions::certificate_reset_subscription();
         let relaunch_subscription = subscriptions::relaunch_subscription();
@@ -856,6 +981,8 @@ impl Impactor {
             relaunch_subscription,
             close_subscription,
             tab_subscription,
+            logs_subscription,
+            iced::system::theme_changes().map(Message::SystemThemeChanged),
         ])
     }
 
@@ -883,10 +1010,21 @@ impl Impactor {
 
     fn view_current_screen(&self, has_device: bool) -> Element<'_, Message> {
         match &self.current_screen {
-            ImpactorScreen::Main(screen) => screen.view().map(Message::MainScreen),
+            ImpactorScreen::Main(screen) => screen
+                .view(
+                    self.quick_install
+                        .view(self.remote_pairing(), has_device)
+                        .map(general::Message::QuickInstall),
+                )
+                .map(Message::MainScreen),
             ImpactorScreen::Utilities(screen) => screen.view().map(Message::UtilitiesScreen),
             ImpactorScreen::Settings(screen) => screen
-                .view(&self.account_store, &self.selected_locale)
+                .view(
+                    &self.account_store,
+                    &self.selected_locale,
+                    self.selected_device.as_ref(),
+                    &self.devices,
+                )
                 .map(Message::SettingsScreen),
             ImpactorScreen::Installer(screen) => {
                 screen.view(has_device).map(Message::InstallerScreen)
@@ -1000,9 +1138,7 @@ impl Impactor {
                 self.current_screen = ImpactorScreen::Main(general::GeneralScreen::new());
             }
             ImpactorScreenType::Utilities => {
-                self.current_screen = ImpactorScreen::Utilities(utilties::UtilitiesScreen::new(
-                    self.selected_device.clone(),
-                ));
+                self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
             }
             ImpactorScreenType::Settings => {
                 self.current_screen = ImpactorScreen::Settings(settings::SettingsScreen::new());
@@ -1021,6 +1157,73 @@ impl Impactor {
         if let Some(package) = installer.selected_package.clone() {
             package.remove_package_stage();
         }
+    }
+
+    /// Installs an app from a source, asking the user to sign in first if needed.
+    fn request_source_install(
+        &mut self,
+        app: crate::sources::SourceApp,
+        version: crate::sources::AppVersion,
+    ) -> Task<Message> {
+        if self
+            .account_store
+            .as_ref()
+            .and_then(|s| s.selected_account())
+            .is_none()
+        {
+            self.pending_source_install = Some((app, version));
+            let (login_window, task) = login_window::LoginWindow::new();
+            let id = login_window.window_id().unwrap();
+            self.login_windows.insert(id, login_window);
+            return task.map(move |msg| Message::LoginWindowMessage(id, msg));
+        }
+
+        self.start_source_install(app, version)
+    }
+
+    fn start_source_install(
+        &mut self,
+        app: crate::sources::SourceApp,
+        version: crate::sources::AppVersion,
+    ) -> Task<Message> {
+        let device = self.selected_device.clone();
+        let account = self
+            .account_store
+            .as_ref()
+            .and_then(|s| s.selected_account().cloned());
+        let mut store = self.account_store.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut progress_screen = progress::ProgressScreen::new();
+        progress_screen.start_installation(std::sync::Arc::new(std::sync::Mutex::new(rx)));
+        self.current_screen = ImpactorScreen::Progress(progress_screen);
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let result = subscriptions::run_source_install(
+                    &app,
+                    &version,
+                    device.as_ref(),
+                    account.as_ref(),
+                    store.as_mut(),
+                    &tx,
+                )
+                .await;
+                match result {
+                    Ok(()) => {
+                        log::info!("Installed {} {}", app.name, version.version);
+                        let _ = tx.send(("Installation complete!".to_string(), 100));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to install {} {}: {e}", app.name, version.version);
+                        let _ = tx.send((format!("Error: {}", e), -1));
+                    }
+                }
+            });
+        });
+
+        Task::none()
     }
 
     fn start_installation_task(&mut self) -> Task<Message> {

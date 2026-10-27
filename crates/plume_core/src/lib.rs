@@ -4,7 +4,10 @@ mod utils;
 
 pub use apple_codesign::{AppleCodesignError, SettingsScope, SigningSettings, UnifiedSigner};
 
-pub use omnisette::AnisetteConfiguration;
+pub use omnisette::{
+    AnisetteConfiguration, AnisetteProvider, FAKE_IDENTITY_DIR, adi_libraries, remote_anisette_v1,
+    remote_servers,
+};
 
 pub use utils::{CertificateIdentity, MachO, MachOExt, MobileProvision};
 
@@ -61,6 +64,8 @@ pub enum Error {
     Reqwest(#[from] reqwest::Error),
     #[error("Anisette error: {0}")]
     Anisette(#[from] omnisette::AnisetteError),
+    #[error("Sideloadly login error: {0}")]
+    Sideloadly(String),
     #[error("Serde JSON error: {0}")]
     SerdeJson(#[from] serde_json::Error),
     #[error("RSA error: {0}")]

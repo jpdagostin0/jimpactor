@@ -2,7 +2,7 @@ use iced::futures::SinkExt;
 use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Fill, Task, window};
 use plume_core::auth::{TwoFactorAction, TwoFactorMethod, TwoFactorRequest};
-use plume_core::{AnisetteConfiguration, auth::Account};
+use plume_core::auth::Account;
 use plume_store::{AccountStore, GsaAccount};
 use rust_i18n::t;
 use std::sync::mpsc as std_mpsc;
@@ -345,8 +345,9 @@ impl LoginWindow {
                         .build()
                         .unwrap();
 
-                    let anisette_config = AnisetteConfiguration::default()
-                        .set_configuration_path(crate::defaults::get_data_path());
+                    let anisette_config = plume_store::AnisetteSettings::load_configuration(
+                        &crate::defaults::get_data_path(),
+                    );
 
                     let account_result = rt.block_on(Account::login(
                         || Ok((email_clone.clone(), password.clone())),

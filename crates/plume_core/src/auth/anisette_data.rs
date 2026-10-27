@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use omnisette::{AnisetteConfiguration, AnisetteHeaders};
+use tokio::sync::Mutex;
 
 use crate::Error;
 
@@ -14,6 +15,17 @@ pub struct AnisetteData {
 
 impl AnisetteData {
     pub async fn new(config: AnisetteConfiguration) -> Result<Self, Error> {
+        // The ADI libraries keep global state (including the provisioning path),
+        // so only one local/fake provider may use them at a time.
+        static ADI_LOCK: Mutex<()> = Mutex::const_new(());
+        let _adi_guard = if config.provider().needs_libraries() {
+            let guard = ADI_LOCK.lock().await;
+            omnisette::adi_libraries::ensure_libraries(config.configuration_path()).await?;
+            Some(guard)
+        } else {
+            None
+        };
+
         let mut b = AnisetteHeaders::get_anisette_headers_provider(config.clone())?;
         let base_headers = b.provider.get_authentication_headers().await?;
 

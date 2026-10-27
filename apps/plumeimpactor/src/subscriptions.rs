@@ -148,6 +148,34 @@ pub(crate) fn tray_menu_refresh_subscription() -> Subscription<Message> {
     })
 }
 
+pub(crate) fn logs_tick_subscription() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(
+            1,
+            |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                use iced::futures::{SinkExt, StreamExt};
+                let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
+
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        let msg = Message::SettingsScreen(crate::screen::settings::Message::Logs(
+                            crate::screen::settings::LogsMessage::Tick,
+                        ));
+                        if tx.unbounded_send(msg).is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                while let Some(message) = rx.next().await {
+                    let _ = output.send(message).await;
+                }
+            },
+        )
+    })
+}
+
 pub(crate) fn certificate_reset_subscription() -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(
@@ -282,7 +310,9 @@ pub(crate) async fn run_installation(
     mut store: Option<&mut plume_store::AccountStore>,
     tx: &std::sync::mpsc::Sender<(String, i32)>,
 ) -> Result<(), String> {
-    use plume_core::{AnisetteConfiguration, CertificateIdentity, developer::DeveloperSession};
+    let remote_pairing = store.as_ref().is_some_and(|s| s.remote_pairing());
+    let mut pairing_error = None;
+    use plume_core::{CertificateIdentity, developer::DeveloperSession};
     use plume_utils::{Signer, SignerInstallMode, SignerMode};
 
     let package_file: Bundle;
@@ -304,8 +334,7 @@ pub(crate) async fn run_installation(
             let session = DeveloperSession::new(
                 account.adsid().clone(),
                 account.xcode_gs_token().clone(),
-                AnisetteConfiguration::default()
-                    .set_configuration_path(crate::defaults::get_data_path()),
+                plume_store::AnisetteSettings::load_configuration(&crate::defaults::get_data_path()),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -428,16 +457,20 @@ pub(crate) async fn run_installation(
                     .map_err(|e| format!("Install error: {}", e))?;
 
                     if options.app.supports_pairing_file() {
-                        if let (Some(custom_identifier), Some(pairing_file_bundle_path)) = (
-                            options.custom_identifier.as_ref(),
-                            options.app.pairing_file_path(),
-                        ) {
-                            let _ = dev
-                                .install_pairing_record(
+                        if let Some(custom_identifier) = options.custom_identifier.as_ref() {
+                            send("Placing pairing file...".to_string(), 90);
+                            if let Err(e) = dev
+                                .install_pairing_files(
                                     custom_identifier,
-                                    &pairing_file_bundle_path,
+                                    options.app,
+                                    remote_pairing,
+                                    get_data_path(),
                                 )
-                                .await;
+                                .await
+                            {
+                                log::error!("Failed to place pairing file: {e}");
+                                pairing_error = Some(e.to_string());
+                            }
                         }
                     }
                 } else {
@@ -558,6 +591,12 @@ pub(crate) async fn run_installation(
         }
     }
 
+    if let Some(e) = pairing_error {
+        return Err(format!(
+            "The app was installed, but placing its pairing file failed: {e}"
+        ));
+    }
+
     send("Finished!".to_string(), 100);
 
     Ok(())
@@ -565,12 +604,12 @@ pub(crate) async fn run_installation(
 
 #[allow(dead_code)]
 pub(crate) async fn export_certificate(account: plume_store::GsaAccount) -> Result<(), String> {
-    use plume_core::{AnisetteConfiguration, CertificateIdentity, developer::DeveloperSession};
+    use plume_core::{CertificateIdentity, developer::DeveloperSession};
 
     let session = DeveloperSession::new(
         account.adsid().clone(),
         account.xcode_gs_token().clone(),
-        AnisetteConfiguration::default().set_configuration_path(crate::defaults::get_data_path()),
+        plume_store::AnisetteSettings::load_configuration(&crate::defaults::get_data_path()),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -641,12 +680,12 @@ pub(crate) async fn export_certificate(account: plume_store::GsaAccount) -> Resu
 pub(crate) async fn fetch_teams(
     account: &plume_store::GsaAccount,
 ) -> Result<Vec<crate::screen::settings::Team>, String> {
-    use plume_core::{AnisetteConfiguration, developer::DeveloperSession};
+    use plume_core::developer::DeveloperSession;
 
     let session = DeveloperSession::new(
         account.adsid().clone(),
         account.xcode_gs_token().clone(),
-        AnisetteConfiguration::default().set_configuration_path(crate::defaults::get_data_path()),
+        plume_store::AnisetteSettings::load_configuration(&crate::defaults::get_data_path()),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -661,4 +700,106 @@ pub(crate) async fn fetch_teams(
             id: t.team_id,
         })
         .collect())
+}
+
+/// Downloads `version` of a source app and installs it with the default options for that app,
+/// placing its pairing file afterwards (e.g. SideStore's one-click install).
+pub(crate) async fn run_source_install(
+    app: &crate::sources::SourceApp,
+    version: &crate::sources::AppVersion,
+    device: Option<&Device>,
+    account: Option<&plume_store::GsaAccount>,
+    store: Option<&mut plume_store::AccountStore>,
+    tx: &std::sync::mpsc::Sender<(String, i32)>,
+) -> Result<(), String> {
+    use plume_utils::{Package, SignerInstallMode, SignerMode, SignerOptions};
+
+    if device.is_none() {
+        return Err("Connect a device to install apps".to_string());
+    }
+
+    let downloads = get_data_path().join("downloads");
+    let file_name: String = format!("{}-{}.ipa", app.name, version.version)
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "+-._".contains(c) { c } else { '_' })
+        .collect();
+    let ipa_path = downloads.join(file_name);
+
+    log::info!("Downloading {} {} from {}", app.name, version.version, version.download_url);
+    let _ = tx.send((format!("Downloading {} {}...", app.name, version.version), 0));
+    crate::sources::download(&version.download_url, &ipa_path, |percent| {
+        let _ = tx.send((format!("Downloading {} ({percent}%)...", app.name), percent / 10));
+    })
+    .await?;
+
+    let package = Package::new(ipa_path.clone());
+    let _ = tokio::fs::remove_file(&ipa_path).await;
+    let package = package.map_err(|e| format!("Downloaded file is not a valid IPA: {e}"))?;
+
+    let mut options = SignerOptions::default();
+    package.load_into_signer_options(&mut options);
+    options.mode = SignerMode::Pem;
+    options.install_mode = SignerInstallMode::Install;
+
+    let result = run_installation(&package, device, &options, account, store, tx).await;
+    package.remove_package_stage();
+    result
+}
+
+/// Opens a developer session for `account` and resolves the team to act on.
+pub(crate) async fn developer_session(
+    account: &plume_store::GsaAccount,
+) -> Result<(plume_core::developer::DeveloperSession, String), String> {
+    use plume_core::developer::DeveloperSession;
+
+    let session = DeveloperSession::new(
+        account.adsid().clone(),
+        account.xcode_gs_token().clone(),
+        plume_store::AnisetteSettings::load_configuration(&get_data_path()),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let team_id = if account.team_id().is_empty() {
+        session
+            .qh_list_teams()
+            .await
+            .map_err(|e| e.to_string())?
+            .teams
+            .into_iter()
+            .next()
+            .map(|t| t.team_id)
+            .ok_or_else(|| "No teams available for this account".to_string())?
+    } else {
+        account.team_id().clone()
+    };
+
+    Ok((session, team_id))
+}
+
+/// Runs `future` on a dedicated tokio runtime, since reqwest needs one and iced's executor isn't.
+pub(crate) fn run_on_tokio<T: Send + 'static>(
+    future: impl std::future::Future<Output = T> + Send + 'static,
+) -> impl std::future::Future<Output = T> {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = tx.send(rt.block_on(future));
+    });
+    async move { rx.await.expect("background task panicked") }
+}
+
+/// Asks a yes/no question in a native dialog.
+pub(crate) async fn confirm(title: String, description: String) -> bool {
+    rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title(title)
+        .set_description(description)
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        .await
+        == rfd::MessageDialogResult::Yes
 }

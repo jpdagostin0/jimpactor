@@ -22,6 +22,7 @@ pub struct StoreServicesCoreADIProxy<'lt> {
 
     local_user_uuid: String,
     device_identifier: String,
+    serial_number: String,
 
     adi_set_android_id: sysv64_type!(fn(id: *const u8, length: u32) -> i32),
     adi_set_provisioning_path: sysv64_type!(fn(path: *const u8) -> i32),
@@ -66,6 +67,10 @@ pub struct StoreServicesCoreADIProxy<'lt> {
 }
 
 impl StoreServicesCoreADIProxy<'_> {
+    pub fn set_serial_number(&mut self, serial_number: String) {
+        self.serial_number = serial_number;
+    }
+
     pub fn new<'lt>(
         library_path: &PathBuf,
     ) -> Result<StoreServicesCoreADIProxy<'lt>, AnisetteError> {
@@ -150,6 +155,7 @@ impl StoreServicesCoreADIProxy<'_> {
 
                 local_user_uuid: String::new(),
                 device_identifier: String::new(),
+                serial_number: "0".to_string(),
 
                 adi_set_android_id: std::mem::transmute(adi_set_android_id),
                 adi_set_provisioning_path: std::mem::transmute(adi_set_provisioning_path),
@@ -325,7 +331,7 @@ impl ADIProxy for StoreServicesCoreADIProxy<'_> {
     }
 
     fn get_serial_number(&self) -> String {
-        "0".to_string()
+        self.serial_number.clone()
     }
 }
 

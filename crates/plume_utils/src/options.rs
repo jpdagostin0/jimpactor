@@ -300,4 +300,21 @@ impl SignerApp {
             _ => None,
         }
     }
+
+    /// Additional locations the app reads a pairing file from, besides `pairing_file_path`.
+    /// Newer SideStore builds look for separate remote (RPPairing) and lockdown files.
+    pub fn extra_pairing_file_paths(&self) -> &'static [&'static str] {
+        use SignerApp::*;
+        match self {
+            SideStore => &[
+                "/Documents/PairingFile_RemoteRP.plist",
+                "/Documents/PairingFile_Lockdown.plist",
+            ],
+            LiveContainerAndSideStore | LiveContainer => &[
+                "/Documents/SideStore/Documents/PairingFile_RemoteRP.plist",
+                "/Documents/SideStore/Documents/PairingFile_Lockdown.plist",
+            ],
+            _ => &[],
+        }
+    }
 }

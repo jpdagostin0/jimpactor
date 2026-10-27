@@ -10,10 +10,12 @@ use single_instance::SingleInstance;
 mod appearance;
 mod certificate_reset;
 mod defaults;
+mod logging;
 mod macos_app;
 mod refresh;
 mod relaunch;
 mod screen;
+mod sources;
 mod startup;
 mod subscriptions;
 mod tray;
@@ -22,7 +24,7 @@ pub const APP_NAME: &str = "Impactor";
 pub const APP_NAME_VERSIONED: &str = concat!("Impactor", " - Version ", env!("CARGO_PKG_VERSION"));
 
 fn main() -> iced::Result {
-    env_logger::init();
+    logging::init();
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -113,7 +115,7 @@ fn run_daemon() -> iced::Result {
     )
     .subscription(screen::Impactor::subscription)
     .title(APP_NAME_VERSIONED)
-    .theme(appearance::PlumeTheme::default().to_iced_theme())
+    .theme(screen::Impactor::theme)
     .settings(defaults::default_settings())
     .run()
 }

@@ -263,7 +263,7 @@ impl AnisetteClient {
                 if message.contains("-45061") {
                     Err(AnisetteError::AnisetteNotProvisioned)
                 } else {
-                    panic!("Unknown error {}", message)
+                    Err(anyhow::anyhow!("Anisette server error: {}", message).into())
                 }
             }
             AnisetteHeaders::Headers {
@@ -318,8 +318,9 @@ impl AnisetteClient {
             start_provisioning_url, end_provisioning_url
         );
 
-        let provision_ws_url =
-            format!("{}/v3/provisioning_session", self.url).replace("https://", "wss://");
+        let provision_ws_url = format!("{}/v3/provisioning_session", self.url)
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1);
         let (mut connection, _) = connect_async(&provision_ws_url).await?;
 
         #[derive(Deserialize)]
@@ -473,7 +474,7 @@ impl RemoteAnisetteProviderV3 {
         serial: String,
     ) -> RemoteAnisetteProviderV3 {
         RemoteAnisetteProviderV3 {
-            client_url: url,
+            client_url: url.trim().trim_end_matches('/').to_string(),
             client: None,
             state: None,
             configuration_path,
@@ -518,7 +519,7 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
                     plist::to_file_xml(config_path, state)?;
                     client.get_headers(&state).await?
                 } else {
-                    panic!()
+                    return Err(err);
                 }
             }
         };

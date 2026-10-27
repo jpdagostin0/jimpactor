@@ -14,7 +14,7 @@ use idevice::{IdeviceService, RemoteXpcClient};
 use plume_core::MobileProvision;
 
 use crate::Error;
-use crate::options::SignerAppReal;
+use crate::options::{SignerApp, SignerAppReal};
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
 use idevice::usbmuxd::UsbmuxdConnection;
@@ -161,21 +161,18 @@ impl Device {
         Ok(())
     }
 
-    pub async fn install_pairing_record(
-        &self,
-        identifier: &String,
-        path: &str,
-    ) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
+    fn house_arrest_provider(&self) -> Result<UsbmuxdProvider, Error> {
+        match &self.usbmuxd_device {
+            Some(dev) => Ok(dev.to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL)),
+            None => Err(Error::Other("Device is not connected via USB".to_string())),
         }
+    }
 
+    /// Returns the lockdown pair record for this device, enabling wifi debugging so
+    /// apps can use it over the network.
+    pub async fn lockdown_pairing_file(&self) -> Result<Vec<u8>, Error> {
+        let provider = self.house_arrest_provider()?;
         let mut usbmuxd = UsbmuxdConnection::default().await?;
-        let provider = self
-            .usbmuxd_device
-            .clone()
-            .unwrap()
-            .to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL);
         let mut pairing_file = usbmuxd.get_pair_record(&self.udid).await?;
 
         // saving pairing record requires enabling wifi debugging
@@ -192,6 +189,44 @@ impl Device {
 
         pairing_file.udid = Some(self.udid.clone());
 
+        Ok(pairing_file.serialize()?)
+    }
+
+    /// Returns the pairing file to hand to apps. With `remote`, the lockdown pair record is
+    /// merged with a remote pairing (RPPairing) record, so apps can pick whichever they need.
+    pub async fn pairing_file(&self, remote: bool, path_to_store: PathBuf) -> Result<Vec<u8>, Error> {
+        let lockdown = self.lockdown_pairing_file().await?;
+        if !remote {
+            return Ok(lockdown);
+        }
+
+        let provider = self.house_arrest_provider()?;
+        let rppairing = self
+            .get_rsd_pairing_file(&provider, path_to_store)
+            .await?
+            .to_bytes();
+
+        let mut merged = Value::from_reader(std::io::Cursor::new(&lockdown))?
+            .into_dictionary()
+            .ok_or_else(|| Error::Other("Lockdown pair record is not a dictionary".to_string()))?;
+        let rppairing = Value::from_reader(std::io::Cursor::new(&rppairing))?
+            .into_dictionary()
+            .ok_or_else(|| Error::Other("Remote pair record is not a dictionary".to_string()))?;
+        merged.extend(rppairing);
+
+        let mut out = Vec::new();
+        Value::Dictionary(merged).to_writer_xml(&mut out)?;
+        Ok(out)
+    }
+
+    /// Writes `data` to `path` inside the Documents container of the app `identifier`.
+    pub async fn write_app_document(
+        &self,
+        identifier: &String,
+        path: &str,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        let provider = self.house_arrest_provider()?;
         let hc = HouseArrestClient::connect(&provider).await?;
         let mut ac = hc.vend_documents(identifier.clone()).await?;
         if let Some(parent) = Path::new(path).parent() {
@@ -213,9 +248,38 @@ impl Device {
         }
 
         let mut f = ac.open(path, AfcFopenMode::Wr).await?;
-        f.write_entire(&pairing_file.serialize().unwrap()).await?;
+        f.write_entire(data).await?;
 
         Ok(())
+    }
+
+    /// Places the pairing file at every location `app` reads one from.
+    pub async fn install_pairing_files(
+        &self,
+        identifier: &String,
+        app: SignerApp,
+        remote: bool,
+        path_to_store: PathBuf,
+    ) -> Result<(), Error> {
+        let Some(path) = app.pairing_file_path() else {
+            return Err(Error::Other(format!("{app} does not use a pairing file")));
+        };
+
+        let data = self.pairing_file(remote, path_to_store).await?;
+        for path in std::iter::once(path).chain(app.extra_pairing_file_paths().iter().copied()) {
+            self.write_app_document(identifier, path, &data).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn install_pairing_record(
+        &self,
+        identifier: &String,
+        path: &str,
+    ) -> Result<(), Error> {
+        let data = self.lockdown_pairing_file().await?;
+        self.write_app_document(identifier, path, &data).await
     }
 
     pub async fn install_remote_pairing_record(
@@ -224,42 +288,10 @@ impl Device {
         path: &str,
         path_to_store: PathBuf,
     ) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
-
-        let provider = self
-            .usbmuxd_device
-            .clone()
-            .unwrap()
-            .to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL);
-
+        let provider = self.house_arrest_provider()?;
         let pairing_file = self.get_rsd_pairing_file(&provider, path_to_store).await?;
-
-        let hc = HouseArrestClient::connect(&provider).await?;
-        let mut ac = hc.vend_documents(identifier.clone()).await?;
-        if let Some(parent) = Path::new(path).parent() {
-            let mut current = String::new();
-            let has_root = parent.has_root();
-
-            for component in parent.components() {
-                if let Component::Normal(dir) = component {
-                    if has_root && current.is_empty() {
-                        current.push('/');
-                    } else if !current.is_empty() && !current.ends_with('/') {
-                        current.push('/');
-                    }
-
-                    current.push_str(&dir.to_string_lossy());
-                    ac.mk_dir(&current).await?;
-                }
-            }
-        }
-
-        let mut f = ac.open(path, AfcFopenMode::Wr).await?;
-        f.write_entire(&pairing_file.to_bytes()).await?;
-
-        Ok(())
+        self.write_app_document(identifier, path, &pairing_file.to_bytes())
+            .await
     }
 
     async fn get_rsd_pairing_file(
@@ -267,7 +299,7 @@ impl Device {
         provider: &UsbmuxdProvider,
         path: PathBuf,
     ) -> Result<RpPairingFile, Error> {
-        let pairing_file_path = path.join(format!("plume_{}.plist", self.udid));
+        let pairing_file_path = remote_pairing_cache_path(&path, &self.udid);
 
         if pairing_file_path.exists() {
             return Ok(RpPairingFile::read_from_file(pairing_file_path).await?);
@@ -356,6 +388,17 @@ impl Device {
 
         Ok(())
     }
+}
+
+/// Prefix and suffix of cached remote pairing files, `plume_<UDID>.plist`.
+pub const REMOTE_PAIRING_CACHE_PREFIX: &str = "plume_";
+pub const REMOTE_PAIRING_CACHE_SUFFIX: &str = ".plist";
+
+/// Where the remote pairing (RPPairing) record for `udid` is cached inside `dir`.
+fn remote_pairing_cache_path(dir: &Path, udid: &str) -> PathBuf {
+    dir.join(format!(
+        "{REMOTE_PAIRING_CACHE_PREFIX}{udid}{REMOTE_PAIRING_CACHE_SUFFIX}"
+    ))
 }
 
 fn get_app_name_from_info(info: &Value) -> Option<String> {
