@@ -1,0 +1,19 @@
+[package]
+name = "plume_store"
+description = "Data storage layer for Plume Impactor tools."
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["fs"] }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+plume_core = { path = "../core", features = ["tweaks"] }
+log.workspace = true
+rand.workspace = true
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }

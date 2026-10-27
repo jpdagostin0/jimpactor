@@ -1,23 +1,25 @@
 [workspace]
 resolver = "3"
 members = [
-    "apps/plumeimpactor",
-    "apps/plumesign", 
-    "3rdparty/decompress",
-    "3rdparty/omnisette",
-    "crates/plume_core",
-    "crates/plume_gestalt", 
-    "crates/plume_store",
-    "crates/plume_utils",
+    "src/impactor",
+    "src/cli",
+    "crates/decompress",
+    "crates/omnisette",
+    "crates/core",
+    "crates/gestalt",
+    "crates/store",
+    "crates/utils",
+    "tools/genicons",
+    "tools/xtask",
 ]
-default-members = ["apps/plumeimpactor"]
+default-members = ["src/impactor"]
 
 [workspace.package]
 edition = "2024"
-version = "2.7.2"
-authors = ["C <claration@riseup.net>"]
+version = "0.1.0"
+authors = ["JP D'Agostino"]
 license = "MIT"
-repository = "https://github.com/claration/Impactor"
+repository = "https://github.com/jpdagostin0/jimpactor"
 
 # We use `opt-level = "s"` as it significantly reduces binary size.
 # We could then use the `#[optimize(speed)]` attribute for spot optimizations.
@@ -76,4 +78,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 
 [patch.crates-io]
-apple-codesign = { path = "3rdparty/apple-codesign-0.29.0" }
+apple-codesign = { path = "crates/apple-codesign" }

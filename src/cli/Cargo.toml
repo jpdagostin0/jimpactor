@@ -1,0 +1,27 @@
+[package]
+name = "jimpactor-cli"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+idevice.workspace = true
+plist.workspace = true
+tokio.workspace = true
+futures.workspace = true
+env_logger.workspace = true
+log.workspace = true
+rustls.workspace = true
+goblin.workspace = true
+plume_core = { path = "../../crates/core", features = ["tweaks"] }
+plume_utils = { path = "../../crates/utils" }
+plume_store = { path = "../../crates/store" }
+
+clap = { version = "4.5", default-features = false, features = ["std", "derive"] }
+dialoguer = "0.12"
+anyhow = "1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plume_gestalt = { path = "../../crates/gestalt" }

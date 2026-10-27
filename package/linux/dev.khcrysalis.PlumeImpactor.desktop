@@ -7,6 +7,6 @@ Comment=Feature rich iOS sideloading application
 Categories=Utility;
 
 Icon=dev.khcrysalis.PlumeImpactor
-Exec=plumeimpactor
+Exec=jimpactor
 Terminal=false
 StartupWMClass=dev.khcrysalis.PlumeImpactor

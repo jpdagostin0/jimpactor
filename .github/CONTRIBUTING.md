@@ -21,30 +21,37 @@ Impactor is a sideloading app meant to be used on stock versions, to keep compat
 
 The project is seperated in multiple modules, all serve single or multiple uses depending on their importance.
 
-| Module                        | Description                                                                                                                       |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/plumeimpactor`          | GUI interface for the crates shown below, backend using Iced.                                                                     |
-| `apps/plumesign`              | Simple CLI interface for signing, using `clap`.                                                                                   |
-| `crates/plume_compression`.   | Handles compression logic, copied and modified from https://github.com/rusty-ferris-club/decompress.                              |
-| `crates/plume_core`.          | Handles all api request used for communicating with Apple developer services, along with providing auth for Apple's grandslam.    |
-| `crates/plume_gestalt`        | Wrapper for `libMobileGestalt.dylib`, used for obtaining your Mac's UDID for Apple Silicon sideloading.                           |
-| `crates/plume_utils`          | Shared code between GUI and CLI, contains signing and modification logic, and helpers.                                            |
-| `crates/plume_shared`         | Shared code between GUI and CLI, contains keychain functionality and shared datapaths.                                            |
+| Module                  | Description                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `src/impactor`          | GUI interface for the crates shown below, backend using Iced.                                                                  |
+| `src/cli`               | Simple CLI interface for signing, using `clap`.                                                                                |
+| `crates/core`           | Handles all api request used for communicating with Apple developer services, along with providing auth for Apple's grandslam. |
+| `crates/gestalt`        | Wrapper for `libMobileGestalt.dylib`, used for obtaining your Mac's UDID for Apple Silicon sideloading.                        |
+| `crates/store`          | Shared code between GUI and CLI, contains keychain functionality and shared datapaths.                                         |
+| `crates/utils`          | Shared code between GUI and CLI, contains signing and modification logic, and helpers.                                         |
+| `crates/decompress`     | Handles compression logic, copied and modified from https://github.com/rusty-ferris-club/decompress.                           |
+| `crates/omnisette`      | Anisette data provider, vendored and modified. See [Attributions](../Attributions.md).                                         |
+| `crates/apple-codesign` | Vendored `apple-codesign` 0.29.0 with local modifications. See [Attributions](../Attributions.md).                             |
+| `tools/genicons`        | Renders every platform icon from `package/icon.svg`. Used by the app's `build.rs` and by `cargo xtask`.                      |
+| `tools/xtask`           | Release builds and packaging: `cargo xtask dist [--target <triple>]`.                                                          |
 
 ### Building
 
-Building is going to be a bit convoluted for each platform, each having their own unique specifications, but the best reference for building should be looking at how [GitHub actions](./.github/workflows/build.yml) does it.
+The only icon source is `package/icon.svg`. Every icon file is generated from it during the build, and none are checked in.
 
-You need:
-- [Rust](https://rustup.rs/).
-- [CMake](https://cmake.org/download/) (and a c++ compiler).
+You need [Rust](https://rustup.rs/) and [CMake](https://cmake.org/download/) (and a C++ compiler).
 
 ```sh
 # Building / testing GUI
-cargo run --bin plumeimpactor
-# Building / texting CLI
-cargo run --bin plumesign -- <args>
+cargo run --bin jimpactor
+# Building / testing CLI
+cargo run --bin jimpactor-cli -- <args>
+
+# Release binaries and packages for this machine (or --target <triple>), written to dist/
+cargo xtask dist
 ```
+
+`cargo xtask dist` also builds the platform's package. On Linux it builds an AppImage (linuxdeploy is downloaded for you). On Windows it builds the NSIS installer (`makensis` must be on `PATH`). On macOS it builds a universal `Impactor.app`, which needs both `aarch64-apple-darwin` and `x86_64-apple-darwin` installed through rustup. [`release.yml`](./workflows/release.yml) shows the full setup for each platform.
 
 Extra requirements are shown below for building if you don't have these already, and trust me, it is convoluted.
 

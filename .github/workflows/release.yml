@@ -5,22 +5,13 @@ on:
     tags:
       - v*
   workflow_dispatch:
-env:
-  BINARY_NAME: plumeimpactor
-  BINARY_NAME_CLI: plumesign
-  BUNDLE_NAME: Impactor
 
 jobs:
-  build-linux:
-    runs-on: ${{ matrix.os }}
+  linux:
+    runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
       matrix:
-        include:
-          - os: ubuntu-24.04
-            arch: x86_64
-          - os: ubuntu-24.04-arm
-            arch: aarch64
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -28,31 +19,25 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder libglib2.0-dev libsecret-1-dev libgtk-3-dev libpng-dev libjpeg-dev libgl1-mesa-dev libglu1-mesa-dev libxkbcommon-dev libexpat1-dev libtiff-dev libxdo-dev libappindicator3-dev
+          sudo apt-get install -y libglib2.0-dev libsecret-1-dev libgtk-3-dev libpng-dev libjpeg-dev libgl1-mesa-dev libglu1-mesa-dev libxkbcommon-dev libexpat1-dev libtiff-dev libxdo-dev libappindicator3-dev
 
-      - name: Build binaries
-        run: |
-          make linux PROFILE=release APPIMAGE=1
+      - run: cargo xtask dist
 
-      - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.BINARY_NAME }}-linux-${{ matrix.arch }}
+          name: linux-${{ matrix.runner }}
           path: dist/*
 
-  build-windows:
+  windows:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
         include:
           - target: x86_64-pc-windows-gnu
-            arch: x86_64
             runner: ubuntu-24.04
           - target: i686-pc-windows-gnu
-            arch: x86
             runner: ubuntu-24.04
           - target: aarch64-pc-windows-msvc
-            arch: arm64
             runner: windows-11-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,118 +45,32 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install mingw-w64 (x86_64/x86)
-        if: matrix.arch == 'x86_64' || matrix.arch == 'x86'
+      - name: Install dependencies (Linux cross-compile)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 nasm
+          sudo apt-get install -y mingw-w64 nasm nsis
 
-      - name: Build binaries (Linux cross-compile)
-        if: matrix.arch != 'arm64'
-        run: |
-          cargo build --bins --workspace --release --target ${{ matrix.target }}
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/plumeimpactor.exe dist/Impactor-windows-${{ matrix.arch }}-portable.exe
-          cp target/${{ matrix.target }}/release/plumesign.exe dist/plumesign-windows-${{ matrix.arch }}.exe
-
-      - name: Build binaries (Windows ARM64 native)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          cargo build --bins --workspace --release --target ${{ matrix.target }}
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/${{ matrix.target }}/release/plumeimpactor.exe" "dist/Impactor-windows-${{ matrix.arch }}-portable.exe"
-          Copy-Item "target/${{ matrix.target }}/release/plumesign.exe" "dist/plumesign-windows-${{ matrix.arch }}.exe"
-
-      - name: Upload Bundles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-${{ matrix.arch }}
-          path: dist/*.exe
-
-  build-windows-installer:
-    runs-on: windows-latest
-    needs: [build-windows]
-    strategy:
-      matrix:
-        arch: [x86_64, x86, arm64]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download Windows Artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-${{ matrix.arch }}
-          path: dist
-
-      - name: Install NSIS
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
         run: choco install nsis.portable
 
-      - name: Build NSIS Installer
-        run: |
-          mkdir dist\nsis
-          copy package\windows\* dist\nsis\
-          copy dist\Impactor-windows-${{ matrix.arch }}-portable.exe dist\nsis\plumeimpactor.exe
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$').Matches.Groups[1].Value
-          makensis /DAPPVERSION=$version dist\nsis\installer.nsi
-          move dist\nsis\installer.exe dist\Impactor-windows-${{ matrix.arch }}-setup.exe
+      - run: cargo xtask dist --target ${{ matrix.target }}
 
-      - name: Upload Installer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.BINARY_NAME }}-windows-installer-${{ matrix.arch }}
-          path: dist/Impactor-windows-${{ matrix.arch }}-setup.exe
+          name: windows-${{ matrix.target }}
+          path: dist/*
 
-  build-macos-slices:
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            arch: arm
-            suffix: arm64
-            runner: macos-latest
-          - target: x86_64-apple-darwin
-            arch: intel
-            suffix: x86_64
-            runner: macos-latest
-
-    runs-on: ${{ matrix.runner }}
+  macos:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Build binaries (${{ matrix.arch }})
-        run: |
-          cargo build --bins --workspace --release --target "${{ matrix.target }}"
-          mkdir -p dist
-          cp "target/${{ matrix.target }}/release/plumeimpactor" "dist/plumeimpactor-macos-${{ matrix.suffix }}"
-          cp "target/${{ matrix.target }}/release/plumesign" "dist/plumesign-macos-${{ matrix.suffix }}"
-
-      - name: Upload ${{ matrix.arch }} Slice
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-macos-slice-${{ matrix.arch }}
-          path: dist/*
-
-  build-macos-universal:
-    runs-on: macos-latest
-    needs: [build-macos-slices]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Get ARM Slice
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-macos-slice-arm
-          path: dist/slices
-
-      - name: Get Intel Slice
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-macos-slice-intel
-          path: dist/slices
+      - run: cargo xtask dist
 
       - name: Setup Certificates
         uses: apple-actions/import-codesign-certs@5142e029c445c10ffc7149d172e540235a065466 # v7.0.0
@@ -179,118 +78,51 @@ jobs:
           p12-file-base64: ${{ secrets.DEV_ID_P12_BASE64 }}
           p12-password: ${{ secrets.DEV_ID_P12_PASSWORD }}
 
-      - name: Download CreateDMG
-        run: |
-          brew install create-dmg
-
-      - name: Create Universal Binary
-        run: |
-          make macos BIN1=dist/slices/${{ env.BINARY_NAME }}-macos-arm64 BIN2=dist/slices/${{ env.BINARY_NAME }}-macos-x86_64 BUNDLE=1 ARCH=universal
-          make macos BIN1=dist/slices/${{ env.BINARY_NAME_CLI }}-macos-arm64 BIN2=dist/slices/${{ env.BINARY_NAME_CLI }}-macos-x86_64 ARCH=universal
-
       - name: Codesign
         run: |
           mkdir -p dist/dmg
-          mv dist/${{ env.BUNDLE_NAME }}.app dist/dmg/
+          mv dist/Impactor.app dist/dmg/
           codesign --deep --force --options runtime \
-            --sign "${{ secrets.DEV_ID_IDENTITY_NAME }}" dist/dmg/${{ env.BUNDLE_NAME }}.app
+            --sign "${{ secrets.DEV_ID_IDENTITY_NAME }}" dist/dmg/Impactor.app
 
       - name: Create DMG
         run: |
-          mkdir -p dist/out
+          brew install create-dmg
           create-dmg \
-            --volname ${{ env.BUNDLE_NAME }} \
+            --volname Impactor \
             --background "package/macos/background.png" \
             --window-pos 200 120 \
             --window-size 510 350 \
             --icon-size 100 \
-            --icon ${{ env.BUNDLE_NAME }}.app 160 155 \
-            --hide-extension "${{ env.BUNDLE_NAME }}.app" \
+            --icon Impactor.app 160 155 \
+            --hide-extension Impactor.app \
             --app-drop-link 350 155 \
-            dist/${{ env.BUNDLE_NAME }}-macos-universal.dmg dist/dmg
+            dist/jimpactor-macos-universal.dmg dist/dmg
 
       - name: Notarize DMG
         run: |
-          xcrun notarytool submit dist/${{ env.BUNDLE_NAME }}-macos-universal.dmg --apple-id "${{ secrets.APPLE_ID_EMAIL }}" --password "${{ secrets.APPLE_ID_PASSWORD }}" --team-id "${{ secrets.APPLE_ID_TEAM }}" --wait
-          xcrun stapler staple dist/${{ env.BUNDLE_NAME }}-macos-universal.dmg
+          xcrun notarytool submit dist/jimpactor-macos-universal.dmg --apple-id "${{ secrets.APPLE_ID_EMAIL }}" --password "${{ secrets.APPLE_ID_PASSWORD }}" --team-id "${{ secrets.APPLE_ID_TEAM }}" --wait
+          xcrun stapler staple dist/jimpactor-macos-universal.dmg
 
-      - name: Upload Universal DMG
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.BINARY_NAME }}-macos-universal
+          name: macos
           path: |
-            dist/${{ env.BUNDLE_NAME }}-macos-universal.dmg
-            dist/${{ env.BINARY_NAME_CLI }}-macos-universal
+            dist/jimpactor-macos-universal.dmg
+            dist/jimpactor-macos-universal
+            dist/jimpactor-cli-macos-universal
 
   release:
     runs-on: ubuntu-24.04
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-windows-installer, build-macos-universal]
+    needs: [linux, windows, macos]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download Linux x86_64 Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
         with:
-          name: ${{ env.BINARY_NAME }}-linux-x86_64
-          path: prepare/
-
-      - name: Download Linux aarch64 Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-linux-aarch64
-          path: prepare/
-
-      - name: Download Windows x86_64 Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-x86_64
-          path: prepare/
-
-      - name: Download Windows x86_64 Installer Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-installer-x86_64
-          path: prepare/
-
-      - name: Download Windows arm64 Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-arm64
-          path: prepare/
-
-      - name: Download Windows arm64 Installer Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-installer-arm64
-          path: prepare/
-
-      - name: Download Windows x86 Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-x86
-          path: prepare/
-
-      - name: Download Windows x86 Installer Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-windows-installer-x86
-          path: prepare/
-
-      - name: Download MacOS Universal Artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
-        with:
-          name: ${{ env.BINARY_NAME }}-macos-universal
-          path: prepare/
-
-      - name: Prepare Uploads
-        run: |
-          mkdir -p upload
-          shopt -s globstar
-          mv prepare/**/*.dmg upload/
-          mv prepare/**/*.appimage upload/
-          mv prepare/**/*.exe upload/
-          mv prepare/**/plumesign* upload/
+          path: upload
+          merge-multiple: true
 
       - name: Extract Version
         id: get_version
@@ -308,5 +140,3 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: true
-        env:
-          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}

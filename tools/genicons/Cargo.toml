@@ -1,0 +1,12 @@
+[package]
+name = "genicons"
+description = "Renders all platform icons from package/icon.svg."
+publish = false
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+resvg = { version = "0.45", default-features = false }

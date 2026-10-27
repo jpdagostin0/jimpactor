@@ -3,7 +3,7 @@
 ;===========================================================
 
 !define APPNAME "PlumeImpactor"
-!define APPEXE  "plumeimpactor.exe"
+!define APPEXE  "jimpactor.exe"
 !define COMPANY "Samara"
 
 !ifndef APPVERSION
