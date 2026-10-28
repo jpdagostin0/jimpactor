@@ -127,7 +127,6 @@ impl QuickInstall {
         .style(appearance::p_button);
 
         let mut content = column![
-            text(t!("quick_install_title")),
             row![app_pick, version_pick, install_button]
                 .spacing(appearance::THEME_PADDING)
                 .align_y(Alignment::Center),

@@ -56,9 +56,9 @@ mod sideloadly_tests {
 
 impl AnisetteMode {
     pub const ALL: [AnisetteMode; 3] = [
+        AnisetteMode::Fake,
         AnisetteMode::Local,
         AnisetteMode::Remote,
-        AnisetteMode::Fake,
     ];
 }
 
@@ -68,10 +68,15 @@ pub enum RemoteProvider {
     #[default]
     SideStore,
     Sideloadly,
+    Custom,
 }
 
 impl RemoteProvider {
-    pub const ALL: [RemoteProvider; 2] = [RemoteProvider::SideStore, RemoteProvider::Sideloadly];
+    pub const ALL: [RemoteProvider; 3] = [
+        RemoteProvider::Sideloadly,
+        RemoteProvider::SideStore,
+        RemoteProvider::Custom,
+    ];
 }
 
 impl From<AnisetteMode> for AnisetteProvider {

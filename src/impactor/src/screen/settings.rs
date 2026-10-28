@@ -46,7 +46,9 @@ pub enum Message {
     FetchTeams(String),
     TeamsLoaded(String, u64, Result<Vec<Team>, String>),
     ProbeRemoteServer,
+    ProbePreviewServer,
     RemoteServerProbed(
+        ProbeTarget,
         u64,
         String,
         Result<plume_core::remote_probe::ServerInfo, String>,
@@ -58,6 +60,7 @@ pub enum Message {
     SetupLocalAnisette,
     LocalAnisetteReady(AnisetteMode, Result<(), String>),
     SelectAnisetteServer(AnisetteServer),
+    ApplyAnisetteServer,
     FetchAnisetteServers,
     AnisetteServersLoaded(Result<Vec<AnisetteServer>, String>),
     UpdateCustomAnisetteServer(String),
@@ -99,6 +102,7 @@ impl std::fmt::Debug for PatreonLoginInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    RemoteAnisette,
     Account,
     Pairing,
     Developer,
@@ -107,8 +111,9 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 6] = [
+    const ALL: [SettingsTab; 7] = [
         SettingsTab::General,
+        SettingsTab::RemoteAnisette,
         SettingsTab::Account,
         SettingsTab::Pairing,
         SettingsTab::Developer,
@@ -119,6 +124,7 @@ impl SettingsTab {
     fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
             SettingsTab::General => t!("settings_tab_general"),
+            SettingsTab::RemoteAnisette => t!("settings_tab_remote_anisette"),
             SettingsTab::Account => t!("settings_tab_account"),
             SettingsTab::Pairing => t!("settings_tab_pairing"),
             SettingsTab::Developer => t!("settings_tab_developer"),
@@ -145,11 +151,18 @@ impl std::fmt::Display for AnisetteModeChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteProviderChoice(pub RemoteProvider);
 
+#[derive(Debug, Clone, Copy)]
+pub enum ProbeTarget {
+    Current,
+    Preview,
+}
+
 impl std::fmt::Display for RemoteProviderChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self.0 {
             RemoteProvider::SideStore => t!("settings_anisette_sidestore"),
             RemoteProvider::Sideloadly => t!("settings_anisette_sideloadly"),
+            RemoteProvider::Custom => t!("settings_anisette_custom"),
         };
         write!(f, "{}", name)
     }
@@ -204,6 +217,9 @@ impl std::fmt::Display for LocaleChoice {
 pub struct SettingsScreen {
     account: account::AccountTab,
     server_info: server_info::ServerInfoPanel,
+    preview_info: server_info::ServerInfoPanel,
+    remote_provider: RemoteProvider,
+    pending_server: Option<AnisetteServer>,
     anisette: AnisetteSettings,
     anisette_servers: Vec<AnisetteServer>,
     loading_anisette_servers: bool,
@@ -223,13 +239,26 @@ pub struct SettingsScreen {
 impl SettingsScreen {
     pub fn new() -> Self {
         let anisette = AnisetteSettings::load_sync(&crate::defaults::get_data_path());
+        let remote_provider = if anisette.remote_server.name == t!("settings_anisette_custom") {
+            RemoteProvider::Custom
+        } else {
+            anisette.remote_provider
+        };
+        let custom_anisette_server = if remote_provider == RemoteProvider::Custom {
+            anisette.remote_server.address.clone()
+        } else {
+            String::new()
+        };
         let mut screen = Self {
             account: account::AccountTab::default(),
             server_info: server_info::ServerInfoPanel::default(),
+            preview_info: server_info::ServerInfoPanel::default(),
+            remote_provider,
+            pending_server: Some(anisette.remote_server.clone()),
             anisette,
             anisette_servers: remote_servers::builtin_servers(),
             loading_anisette_servers: false,
-            custom_anisette_server: String::new(),
+            custom_anisette_server,
             anisette_status: None,
             testing_anisette: false,
             sideloadly_logging_in: false,
@@ -246,6 +275,9 @@ impl SettingsScreen {
     }
 
     fn ensure_selected_server_listed(&mut self) {
+        if self.anisette.remote_provider != RemoteProvider::SideStore {
+            return;
+        }
         let selected = &self.anisette.remote_server;
         if !self
             .anisette_servers
@@ -254,6 +286,15 @@ impl SettingsScreen {
         {
             self.anisette_servers.insert(0, selected.clone());
         }
+    }
+
+    fn can_select_server(&self) -> bool {
+        !self.testing_anisette
+            && !self.sideloadly_logging_in
+            && self
+                .pending_server
+                .as_ref()
+                .is_some_and(|server| server.address != self.anisette.remote_server.address)
     }
 
     fn save_anisette(&mut self) -> bool {
@@ -284,6 +325,7 @@ impl SettingsScreen {
                 self.tab = tab;
                 match tab {
                     SettingsTab::General => self.update(Message::ProbeRemoteServer, store),
+                    SettingsTab::RemoteAnisette => self.update(Message::ProbePreviewServer, store),
                     SettingsTab::Account => {
                         if let Some(account) = store.and_then(|store| store.selected_account()) {
                             self.account.check(account.email().clone(), store)
@@ -315,18 +357,25 @@ impl SettingsScreen {
                 self.account.checked(email, request, result);
                 Task::none()
             }
-            Message::ProbeRemoteServer => {
-                if self.anisette.mode == AnisetteMode::Remote
-                    && (self.anisette.remote_provider != RemoteProvider::Sideloadly
-                        || self.anisette.sideloadly_session.is_some())
-                {
-                    self.server_info.probe(&self.anisette.remote_server)
-                } else {
-                    Task::none()
+            Message::ProbeRemoteServer => match self.anisette.mode {
+                AnisetteMode::Remote => self
+                    .server_info
+                    .probe(&self.anisette.remote_server, ProbeTarget::Current),
+                AnisetteMode::Local => self.server_info.probe_local(
+                    self.anisette
+                        .configuration(&crate::defaults::get_data_path()),
+                ),
+                AnisetteMode::Fake => Task::none(),
+            },
+            Message::ProbePreviewServer => match &self.pending_server {
+                Some(server) => self.preview_info.probe(server, ProbeTarget::Preview),
+                None => Task::none(),
+            },
+            Message::RemoteServerProbed(target, request, address, result) => {
+                match target {
+                    ProbeTarget::Current => self.server_info.probed(request, address, result),
+                    ProbeTarget::Preview => self.preview_info.probed(request, address, result),
                 }
-            }
-            Message::RemoteServerProbed(request, address, result) => {
-                self.server_info.probed(request, address, result);
                 Task::none()
             }
             Message::ToggleAutoStart(_) => Task::none(),
@@ -356,7 +405,7 @@ impl SettingsScreen {
                 self.anisette_status = None;
                 if self.save_anisette() {
                     return match mode {
-                        AnisetteMode::Local => self.update(Message::SetupLocalAnisette, store),
+                        AnisetteMode::Local => self.update(Message::ProbeRemoteServer, store),
                         AnisetteMode::Remote => self.update(Message::ProbeRemoteServer, store),
                         AnisetteMode::Fake => Task::none(),
                     };
@@ -399,9 +448,26 @@ impl SettingsScreen {
                 if self.testing_anisette || self.sideloadly_logging_in {
                     return Task::none();
                 }
+                self.pending_server = Some(server);
+                self.anisette_status = None;
+                self.update(Message::ProbePreviewServer, store)
+            }
+            Message::ApplyAnisetteServer => {
+                if !self.can_select_server() {
+                    return Task::none();
+                }
+                let Some(server) = self.pending_server.clone() else {
+                    return Task::none();
+                };
+                if server.address == self.anisette.remote_server.address {
+                    return Task::none();
+                }
+                let previous = self.anisette.clone();
+                self.anisette.remote_provider = self.remote_provider;
                 if self.select_anisette_server(server) {
                     self.update(Message::ProbeRemoteServer, store)
                 } else {
+                    self.anisette = previous;
                     Task::none()
                 }
             }
@@ -425,6 +491,17 @@ impl SettingsScreen {
                     Ok(servers) if !servers.is_empty() => {
                         self.anisette_servers = servers;
                         self.ensure_selected_server_listed();
+                        if self.remote_provider == RemoteProvider::SideStore {
+                            if let Some(server) = &self.pending_server {
+                                if !self
+                                    .anisette_servers
+                                    .iter()
+                                    .any(|s| s.address == server.address)
+                                {
+                                    self.anisette_servers.insert(0, server.clone());
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {}
                     Err(err) => {
@@ -437,6 +514,9 @@ impl SettingsScreen {
             }
             Message::UpdateCustomAnisetteServer(url) => {
                 self.custom_anisette_server = url;
+                self.pending_server = None;
+                self.preview_info.clear();
+                self.anisette_status = None;
                 Task::none()
             }
             Message::UseCustomAnisetteServer => {
@@ -444,7 +524,9 @@ impl SettingsScreen {
                     return Task::none();
                 }
                 let input = self.custom_anisette_server.trim();
-                let server = if input.starts_with("https://") || input.starts_with("http://") {
+                let server = if reqwest::Url::parse(input).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                }) {
                     AnisetteServer::new(t!("settings_anisette_custom"), input)
                 } else if let Some(server) = parse_sideloadly_shortcut(input) {
                     // A Sideloadly provider shortcut, optionally with a self-hosted host.
@@ -453,12 +535,9 @@ impl SettingsScreen {
                     self.anisette_status = Some(t!("settings_anisette_invalid_url").to_string());
                     return Task::none();
                 };
-                self.custom_anisette_server.clear();
-                if self.select_anisette_server(server) {
-                    self.update(Message::ProbeRemoteServer, store)
-                } else {
-                    Task::none()
-                }
+                self.pending_server = Some(server);
+                self.anisette_status = None;
+                self.update(Message::ProbePreviewServer, store)
             }
             Message::TestAnisette => {
                 if self.testing_anisette {
@@ -518,10 +597,9 @@ impl SettingsScreen {
                             name = server.name.clone()
                         )
                         .to_string();
-                        if self.select_anisette_server(server) {
-                            self.anisette_status = Some(status);
-                            return self.update(Message::ProbeRemoteServer, store);
-                        }
+                        self.pending_server = Some(server);
+                        self.anisette_status = Some(status);
+                        return self.update(Message::ProbePreviewServer, store);
                     }
                     None => {
                         self.anisette_status =
@@ -534,23 +612,33 @@ impl SettingsScreen {
                 if self.testing_anisette || self.sideloadly_logging_in {
                     return Task::none();
                 }
-                self.server_info.clear();
-                self.anisette.remote_provider = provider;
+                self.preview_info.clear();
+                self.remote_provider = provider;
                 self.anisette_status = None;
-                self.save_anisette();
-                if provider == RemoteProvider::Sideloadly {
-                    if let Some(session) = &self.anisette.sideloadly_session {
-                        self.select_anisette_server(session.server.clone());
+                self.pending_server = match provider {
+                    RemoteProvider::Sideloadly => self
+                        .anisette
+                        .sideloadly_session
+                        .as_ref()
+                        .map(|s| s.server.clone()),
+                    RemoteProvider::SideStore => {
+                        Some(if self.anisette.remote_provider == provider {
+                            self.anisette.remote_server.clone()
+                        } else {
+                            remote_servers::builtin_servers().remove(0)
+                        })
                     }
-                } else if self
-                    .anisette
-                    .sideloadly_session
-                    .as_ref()
-                    .is_some_and(|session| session.server == self.anisette.remote_server)
-                {
-                    self.select_anisette_server(remote_servers::builtin_servers().remove(0));
-                }
-                self.update(Message::ProbeRemoteServer, store)
+                    RemoteProvider::Custom => {
+                        if self.anisette.remote_provider == provider
+                            && self.custom_anisette_server.is_empty()
+                        {
+                            self.custom_anisette_server =
+                                self.anisette.remote_server.address.clone();
+                        }
+                        None
+                    }
+                };
+                self.update(Message::ProbePreviewServer, store)
             }
             Message::SideloadlyLogin => {
                 if self.sideloadly_logging_in {
@@ -581,9 +669,10 @@ impl SettingsScreen {
                             account,
                             server: server.clone(),
                         });
-                        self.anisette.remote_provider = RemoteProvider::Sideloadly;
-                        self.anisette.mode = AnisetteMode::Remote;
-                        if self.select_anisette_server(server.clone()) {
+                        if self.remote_provider == RemoteProvider::Sideloadly {
+                            self.pending_server = Some(server.clone());
+                        }
+                        if self.save_anisette() {
                             self.anisette_status = Some(
                                 t!(
                                     "settings_anisette_sideloadly_login_ok",
@@ -600,7 +689,7 @@ impl SettingsScreen {
                         );
                     }
                 }
-                self.update(Message::ProbeRemoteServer, store)
+                self.update(Message::ProbePreviewServer, store)
             }
             Message::SideloadlyRefreshDeviceToken => {
                 if self.sideloadly_logging_in {
@@ -628,6 +717,9 @@ impl SettingsScreen {
                         if let Some(session) = &mut self.anisette.sideloadly_session {
                             let previous = std::mem::replace(&mut session.server, server.clone());
                             self.anisette_servers.retain(|s| *s != previous);
+                            if self.remote_provider == RemoteProvider::Sideloadly {
+                                self.pending_server = Some(server.clone());
+                            }
                             let saved =
                                 if self.anisette.remote_provider == RemoteProvider::Sideloadly {
                                     self.select_anisette_server(server)
@@ -642,7 +734,10 @@ impl SettingsScreen {
                     }
                     Err(err) => self.anisette_status = Some(err),
                 }
-                self.update(Message::ProbeRemoteServer, store)
+                Task::batch([
+                    self.update(Message::ProbeRemoteServer, store),
+                    self.update(Message::ProbePreviewServer, store),
+                ])
             }
             Message::SideloadlyPatreonLogin => {
                 if self.sideloadly_logging_in {
@@ -692,6 +787,11 @@ impl SettingsScreen {
                 if let Some(session) = self.anisette.logout_sideloadly() {
                     self.anisette_servers.retain(|s| *s != session.server);
                 }
+                if self.remote_provider == RemoteProvider::Sideloadly {
+                    self.pending_server = None;
+                    self.preview_info.clear();
+                }
+                self.server_info.clear();
                 self.sideloadly_patreon_pending = false;
                 self.sideloadly_completion = PatreonLoginInput::default();
                 self.ensure_selected_server_listed();
@@ -742,6 +842,7 @@ impl SettingsScreen {
         let account = account_store.as_ref().and_then(|s| s.selected_account());
         let body = match self.tab {
             SettingsTab::General => self.view_general(account_store, selected_locale),
+            SettingsTab::RemoteAnisette => self.view_remote_anisette(),
             SettingsTab::Account => self.account.view(account_store.as_ref()),
             SettingsTab::Pairing => self
                 .pairing
@@ -843,109 +944,35 @@ impl SettingsScreen {
         let mut section =
             column![text(t!("settings_anisette")), mode_picker,].spacing(appearance::THEME_PADDING);
 
-        if mode == AnisetteMode::Remote {
-            let provider = self.anisette.remote_provider;
-            let provider_picker = pick_list(
-                RemoteProvider::ALL.map(RemoteProviderChoice),
-                Some(RemoteProviderChoice(provider)),
-                Message::SelectRemoteProvider,
-            )
-            .style(appearance::s_pick_list);
-
-            if provider == RemoteProvider::SideStore {
-                let selected = self
-                    .anisette_servers
-                    .iter()
-                    .find(|s| s.address == self.anisette.remote_server.address)
-                    .cloned();
-                let placeholder = if self.loading_anisette_servers {
-                    t!("settings_anisette_loading_servers").to_string()
-                } else {
-                    self.anisette.remote_server.to_string()
-                };
+        match mode {
+            AnisetteMode::Remote => {
                 section = section.push(
-                    row![
-                        provider_picker,
-                        pick_list(
-                            self.anisette_servers.clone(),
-                            selected,
-                            Message::SelectAnisetteServer,
-                        )
-                        .placeholder(placeholder)
-                        .on_open(Message::FetchAnisetteServers)
-                        .style(appearance::s_pick_list)
-                        .width(Fill),
-                    ]
-                    .spacing(appearance::THEME_PADDING)
-                    .align_y(Alignment::Center),
+                    self.server_info
+                        .view(&self.anisette.remote_server, Message::ProbeRemoteServer),
                 );
-
-                let custom_input = text_input(
-                    &t!("settings_anisette_custom_placeholder"),
-                    &self.custom_anisette_server,
-                )
-                .on_input(Message::UpdateCustomAnisetteServer)
-                .on_submit(Message::UseCustomAnisetteServer)
-                .padding(6)
-                .width(Fill);
-                let use_custom = button(text(t!("settings_anisette_use_custom")))
-                    .on_press_maybe(
-                        (!self.custom_anisette_server.trim().is_empty())
-                            .then_some(Message::UseCustomAnisetteServer),
-                    )
-                    .style(appearance::s_button);
+            }
+            AnisetteMode::Local => {
                 section = section.push(
-                    row![custom_input, use_custom]
-                        .spacing(appearance::THEME_PADDING)
-                        .align_y(Alignment::Center),
+                    text(t!("settings_anisette_local_desc"))
+                        .size(appearance::THEME_FONT_SIZE - 1.0),
+                );
+                section = section.push(self.server_info.view(
+                    &AnisetteServer::new(t!("settings_anisette_local"), "local"),
+                    Message::ProbeRemoteServer,
+                ));
+            }
+            AnisetteMode::Fake => {
+                section = section.push(
+                    text(t!("settings_anisette_fake_desc")).size(appearance::THEME_FONT_SIZE - 1.0),
                 );
                 section = section.push(
-                    button(text(t!("settings_anisette_find_fastest")))
+                    button(text(t!("settings_anisette_fake_setup")))
                         .on_press_maybe(
-                            (!self.testing_anisette).then_some(Message::FindFastestAnisetteServer),
+                            (!self.testing_anisette).then_some(Message::SetupLocalAnisette),
                         )
                         .style(appearance::s_button),
                 );
-            } else {
-                section = section.push(provider_picker);
             }
-            if provider == RemoteProvider::Sideloadly {
-                section = section.push(self.view_sideloadly_options());
-            }
-            if provider != RemoteProvider::Sideloadly || self.anisette.sideloadly_session.is_some()
-            {
-                section = section.push(self.server_info.view(&self.anisette.remote_server));
-            }
-        } else {
-            let description = if mode == AnisetteMode::Local {
-                t!("settings_anisette_local_desc")
-            } else {
-                t!("settings_anisette_fake_desc")
-            };
-            section = section.push(text(description).size(appearance::THEME_FONT_SIZE - 1.0));
-            section = section.push(
-                button(text(if mode == AnisetteMode::Fake {
-                    t!("settings_anisette_fake_setup")
-                } else {
-                    t!("settings_anisette_local_setup")
-                }))
-                .on_press_maybe((!self.testing_anisette).then_some(Message::SetupLocalAnisette))
-                .style(appearance::s_button),
-            );
-        }
-
-        if mode == AnisetteMode::Remote
-            && self.anisette.remote_provider == RemoteProvider::Sideloadly
-            && self.anisette.sideloadly_session.is_none()
-        {
-            if let Some(status) = &self.anisette_status {
-                section = section.push(text(status));
-            }
-            return container(section)
-                .padding(appearance::THEME_PADDING)
-                .style(container::rounded_box)
-                .width(Fill)
-                .into();
         }
 
         let test_button = button(text(t!("settings_anisette_test")))
@@ -968,6 +995,99 @@ impl SettingsScreen {
             .style(container::rounded_box)
             .width(Fill)
             .into()
+    }
+
+    fn view_remote_anisette(&self) -> Element<'_, Message> {
+        let idle = !self.testing_anisette && !self.sideloadly_logging_in;
+        let mut content = column![
+            text(t!("settings_tab_remote_anisette")),
+            pick_list(
+                RemoteProvider::ALL.map(RemoteProviderChoice),
+                Some(RemoteProviderChoice(self.remote_provider)),
+                Message::SelectRemoteProvider,
+            )
+            .style(appearance::s_pick_list),
+        ]
+        .spacing(appearance::THEME_PADDING);
+
+        match self.remote_provider {
+            RemoteProvider::SideStore => {
+                content = content.push(
+                    pick_list(
+                        self.anisette_servers.clone(),
+                        self.pending_server.clone(),
+                        Message::SelectAnisetteServer,
+                    )
+                    .placeholder(t!("settings_anisette_loading_servers"))
+                    .on_open(Message::FetchAnisetteServers)
+                    .style(appearance::s_pick_list)
+                    .width(Fill),
+                );
+            }
+            RemoteProvider::Sideloadly => {}
+            RemoteProvider::Custom => {
+                content = content.push(
+                    row![
+                        text_input(
+                            &t!("settings_anisette_custom_placeholder"),
+                            &self.custom_anisette_server,
+                        )
+                        .on_input(Message::UpdateCustomAnisetteServer)
+                        .on_submit(Message::UseCustomAnisetteServer)
+                        .padding(6)
+                        .width(Fill),
+                        button(text(t!("settings_anisette_test_server")))
+                            .on_press_maybe(
+                                (idle && !self.custom_anisette_server.trim().is_empty())
+                                    .then_some(Message::UseCustomAnisetteServer)
+                            )
+                            .style(appearance::s_button),
+                    ]
+                    .spacing(appearance::THEME_PADDING)
+                    .align_y(Alignment::Center),
+                );
+            }
+        }
+        if let Some(server) = &self.pending_server {
+            content = content.push(self.preview_info.view(server, Message::ProbePreviewServer));
+        }
+        if self.remote_provider == RemoteProvider::Sideloadly {
+            content = content.push(self.view_sideloadly_options());
+        }
+        if self.remote_provider == RemoteProvider::SideStore {
+            content = content.push(
+                button(text(t!("settings_anisette_find_fastest")))
+                    .on_press_maybe(idle.then_some(Message::FindFastestAnisetteServer))
+                    .style(appearance::s_button),
+            );
+        }
+        if let Some(status) = &self.anisette_status {
+            content = content.push(text(status).size(appearance::THEME_FONT_SIZE - 1.0));
+        }
+        let can_select = self.can_select_server();
+        column![
+            scrollable(
+                content
+                    .padding([0.0, appearance::THEME_PADDING])
+                    .width(Fill)
+            )
+            .height(Fill),
+            container(
+                button(text(t!("settings_anisette_select_server")))
+                    .on_press_maybe(can_select.then_some(Message::ApplyAnisetteServer))
+                    .style(if can_select {
+                        appearance::p_button
+                    } else {
+                        appearance::s_button
+                    }),
+            )
+            .align_x(Alignment::End)
+            .width(Fill)
+            .padding(appearance::THEME_PADDING),
+        ]
+        .height(Fill)
+        .spacing(appearance::THEME_PADDING)
+        .into()
     }
 
     fn view_sideloadly_options(&self) -> Element<'_, Message> {
@@ -1177,4 +1297,62 @@ fn parse_sideloadly_shortcut(input: &str) -> Option<AnisetteServer> {
         name,
         remote_anisette_v1::sideloadly_anisette_url(host, token),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn previewing_providers_and_servers_preserves_the_active_configuration() {
+        let mut screen = SettingsScreen::new();
+        let active = screen.anisette.clone();
+        let _ = screen.update(
+            Message::SelectRemoteProvider(RemoteProviderChoice(RemoteProvider::Custom)),
+            None,
+        );
+        assert_eq!(screen.anisette, active);
+        assert!(!screen.can_select_server());
+        let _ = screen.update(
+            Message::UpdateCustomAnisetteServer("https://preview.example".into()),
+            None,
+        );
+        let _ = screen.update(Message::UseCustomAnisetteServer, None);
+        assert_eq!(screen.anisette, active);
+        assert_eq!(
+            screen.pending_server.as_ref().unwrap().address,
+            "https://preview.example"
+        );
+        assert!(screen.can_select_server());
+        let _ = screen.update(
+            Message::UpdateCustomAnisetteServer("https://edited.example".into()),
+            None,
+        );
+        assert!(screen.pending_server.is_none());
+        assert!(!screen.can_select_server());
+    }
+
+    #[test]
+    fn select_server_is_disabled_for_the_active_endpoint_even_with_a_different_name() {
+        let mut screen = SettingsScreen::new();
+        screen.pending_server = Some(AnisetteServer::new(
+            "Different name",
+            &screen.anisette.remote_server.address,
+        ));
+        assert!(!screen.can_select_server());
+        screen.pending_server = Some(AnisetteServer::new("Other", "https://other.example"));
+        assert!(screen.can_select_server());
+        screen.sideloadly_logging_in = true;
+        assert!(!screen.can_select_server());
+    }
+
+    #[test]
+    fn invalid_custom_url_cannot_leave_a_previous_server_selectable() {
+        let mut screen = SettingsScreen::new();
+        let _ = screen.update(Message::UpdateCustomAnisetteServer("https://".into()), None);
+        let _ = screen.update(Message::UseCustomAnisetteServer, None);
+        assert!(screen.pending_server.is_none());
+        assert!(!screen.can_select_server());
+        assert!(screen.anisette_status.is_some());
+    }
 }

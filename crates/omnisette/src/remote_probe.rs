@@ -11,6 +11,7 @@ use crate::AnisetteError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
+    Local,
     V1,
     V3,
 }
@@ -47,6 +48,15 @@ fn field(json: &Value, name: &str) -> Option<String> {
 }
 
 impl ServerInfo {
+    /// Describes a local provider without retaining authentication headers.
+    pub fn from_local_headers(
+        headers: &std::collections::HashMap<String, String>,
+        elapsed: Duration,
+    ) -> Self {
+        let json = serde_json::to_value(headers).unwrap_or_default();
+        Self::from_response(Protocol::Local, &json, None, elapsed)
+    }
+
     fn from_response(
         protocol: Protocol,
         json: &Value,
@@ -120,7 +130,7 @@ async fn get(client: &Client, url: Url) -> Result<(Value, Option<String>), Anise
     Ok((json, software))
 }
 
-/// Detects v1 headers or v3 client metadata. A reported Mac identity is a claim
+/// Detects v3 client metadata first, falling back to v1 headers. A reported Mac identity is a claim
 /// made by the service; it cannot attest to the hardware hosting that service.
 pub async fn probe_server(address: &str, data_path: &Path) -> Result<ServerInfo, AnisetteError> {
     let mut url = Url::parse(address)
@@ -132,12 +142,30 @@ pub async fn probe_server(address: &str, data_path: &Path) -> Result<ServerInfo,
     }
     let client = Client::builder().timeout(Duration::from_secs(6)).build()?;
     let mut v1_url = url.clone();
+    url.set_path(&format!(
+        "{}/v3/client_info",
+        url.path().trim_end_matches('/')
+    ));
+    url.set_query(None);
+    let start = Instant::now();
+    let v3_error = match get(&client, url).await {
+        Ok((json, software)) if field(&json, "client_info").is_some() => {
+            return Ok(ServerInfo::from_response(
+                Protocol::V3,
+                &json,
+                software,
+                start.elapsed(),
+            ));
+        }
+        Ok(_) => "missing client_info".to_string(),
+        Err(error) => error.to_string(),
+    };
     if !v1_url.query_pairs().any(|(key, _)| key == "u") {
         let hash = crate::remote_anisette_v1::ensure_device_hash(data_path)?;
         v1_url.query_pairs_mut().append_pair("u", &hash);
     }
     let start = Instant::now();
-    let v1_error = match get(&client, v1_url).await {
+    match get(&client, v1_url).await {
         Ok((json, software))
             if field(&json, "X-Apple-I-MD").is_some()
                 && field(&json, "X-Apple-I-MD-M").is_some() =>
@@ -149,24 +177,11 @@ pub async fn probe_server(address: &str, data_path: &Path) -> Result<ServerInfo,
                 start.elapsed(),
             ));
         }
-        Ok(_) => "the endpoint did not return both anisette headers".to_string(),
-        Err(error) => error.to_string(),
-    };
-    url.set_path(&format!(
-        "{}/v3/client_info",
-        url.path().trim_end_matches('/')
-    ));
-    url.set_query(None);
-    let start = Instant::now();
-    match get(&client, url).await {
-        Ok((json, software)) if field(&json, "client_info").is_some() => Ok(
-            ServerInfo::from_response(Protocol::V3, &json, software, start.elapsed()),
-        ),
         Ok(_) => Err(AnisetteError::InvalidArgument(format!(
-            "No supported anisette response. v1: {v1_error}; v3: missing client_info"
+            "No supported anisette response. v3: {v3_error}; v1: missing anisette headers"
         ))),
         Err(error) => Err(AnisetteError::InvalidArgument(format!(
-            "No supported anisette response. v1: {v1_error}; v3: {error}"
+            "No supported anisette response. v3: {v3_error}; v1: {error}"
         ))),
     }
 }
@@ -222,10 +237,13 @@ mod tests {
 
     #[tokio::test]
     async fn probes_v1_without_overwriting_an_existing_identity() {
-        let (address, task) = server(vec![json!({
-            "X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine",
-            "X-MMe-Client-Info": "<iMac21,1> <macOS;14.5> <AuthKit>"
-        })]);
+        let (address, task) = server(vec![
+            json!({}),
+            json!({
+                "X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine",
+                "X-MMe-Client-Info": "<iMac21,1> <macOS;14.5> <AuthKit>"
+            }),
+        ]);
         let path = std::env::temp_dir().join(format!("jimpactor-probe-{}", uuid::Uuid::new_v4()));
         let info = probe_server(
             &format!("{address}/anisette/test?u=preserved&keep=yes"),
@@ -237,19 +255,17 @@ mod tests {
         assert_eq!(info.identity, ReportedIdentity::Mac);
         assert_eq!(info.server_software.as_deref(), Some("test-server"));
         let requests = task.join().unwrap();
-        assert!(requests[0].contains("u=preserved&keep=yes"));
-        assert_eq!(requests[0].matches("u=").count(), 1);
+        assert!(requests[0].starts_with("GET /anisette/test/v3/client_info HTTP/1.1"));
+        assert!(requests[1].contains("u=preserved&keep=yes"));
+        assert_eq!(requests[1].matches("u=").count(), 1);
         assert!(!path.exists());
     }
 
     #[tokio::test]
     async fn probes_v3_metadata_without_provisioning_or_claiming_host_hardware() {
-        let (address, task) = server(vec![
-            json!({"service":"anisette"}),
-            json!({
-                "client_info":"<Unknown> <Darwin> <AuthKit>", "user_agent":"test-agent"
-            }),
-        ]);
+        let (address, task) = server(vec![json!({
+            "client_info":"<Unknown> <Darwin> <AuthKit>", "user_agent":"test-agent"
+        })]);
         let path = std::env::temp_dir().join(format!("jimpactor-probe-{}", uuid::Uuid::new_v4()));
         let info = probe_server(&format!("{address}?u=preserved"), &path)
             .await
@@ -258,21 +274,94 @@ mod tests {
         assert_eq!(info.identity, ReportedIdentity::Unknown);
         assert_eq!(info.user_agent.as_deref(), Some("test-agent"));
         let requests = task.join().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert!(requests[1].starts_with("GET /v3/client_info HTTP/1.1"));
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /v3/client_info HTTP/1.1"));
         assert!(!path.exists());
     }
 
     #[tokio::test]
     async fn rejects_partial_headers_and_non_anisette_json() {
         let (address, task) = server(vec![
-            json!({"X-Apple-I-MD":"otp"}),
             json!({"client_info":""}),
+            json!({"X-Apple-I-MD":"otp"}),
         ]);
         let path = std::env::temp_dir();
         let result = probe_server(&format!("{address}?u=preserved"), &path).await;
         assert!(result.is_err());
         assert_eq!(task.join().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn authentication_falls_back_to_v1_and_remembers_the_protocol() {
+        use crate::{AutoRemoteProvider, anisette_headers_provider::AnisetteHeadersProvider};
+
+        let headers = json!({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"});
+        let (address, task) = server(vec![json!({}), headers.clone(), headers]);
+        let path = std::env::temp_dir().join(format!("jimpactor-auth-{}", uuid::Uuid::new_v4()));
+        let mut provider = AutoRemoteProvider::new(address, path.clone(), "0".into());
+        for _ in 0..2 {
+            let headers = provider.get_anisette_headers(false).await.unwrap();
+            assert_eq!(headers["X-Apple-I-MD"], "otp");
+        }
+        let requests = task.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].starts_with("GET /v3/client_info HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /?u="));
+        assert!(requests[2].starts_with("GET /?u="));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn authentication_prefers_v3_and_reuses_it_without_trying_v1() {
+        use crate::{AutoRemoteProvider, anisette_headers_provider::AnisetteHeadersProvider};
+
+        let headers = json!({
+            "result": "Headers", "X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine",
+            "X-Apple-I-MD-RINFO": "1"
+        });
+        let (address, task) = server(vec![
+            json!({"client_info": "<Mac> <macOS> <AuthKit>", "user_agent": "test"}),
+            headers.clone(),
+            headers,
+        ]);
+        let path = std::env::temp_dir().join(format!("jimpactor-auth-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        let mut state = plist::Dictionary::new();
+        state.insert(
+            "keychain_identifier".into(),
+            plist::Value::Data(vec![0; 16]),
+        );
+        state.insert("adi_pb".into(), plist::Value::Data(vec![1]));
+        plist::to_file_xml(path.join("state.plist"), &state).unwrap();
+        let mut provider = AutoRemoteProvider::new(address, path.clone(), "0".into());
+        for _ in 0..2 {
+            let headers = provider.get_anisette_headers(false).await.unwrap();
+            assert_eq!(headers["X-Apple-I-MD"], "otp");
+        }
+        let requests = task.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[0].starts_with("GET /v3/client_info HTTP/1.1"));
+        assert!(requests[1].starts_with("POST /v3/get_headers HTTP/1.1"));
+        assert!(requests[2].starts_with("POST /v3/get_headers HTTP/1.1"));
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn local_probe_reports_metadata_without_retaining_authentication_headers() {
+        let info = ServerInfo::from_local_headers(
+            &std::collections::HashMap::from([
+                (
+                    "X-Mme-Client-Info".into(),
+                    "<MacBookPro18,3> <macOS;14.5> <AuthKit>".into(),
+                ),
+                ("X-Apple-I-MD".into(), "private-otp".into()),
+            ]),
+            Duration::ZERO,
+        );
+        assert_eq!(info.protocol, Protocol::Local);
+        assert_eq!(info.identity, ReportedIdentity::Mac);
+        assert_eq!(info.model.as_deref(), Some("MacBookPro18,3"));
+        assert!(!format!("{info:?}").contains("private-otp"));
     }
 
     #[test]

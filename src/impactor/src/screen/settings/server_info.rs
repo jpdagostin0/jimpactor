@@ -4,7 +4,7 @@ use plume_core::remote_probe::{self, Protocol, ReportedIdentity, ServerInfo};
 use plume_core::remote_servers::AnisetteServer;
 use rust_i18n::t;
 
-use super::Message;
+use super::{Message, ProbeTarget};
 use crate::{appearance, subscriptions::run_on_tokio};
 
 #[derive(Debug, Default)]
@@ -23,7 +23,7 @@ impl ServerInfoPanel {
         self.result = None;
     }
 
-    pub fn probe(&mut self, server: &AnisetteServer) -> Task<Message> {
+    pub fn probe(&mut self, server: &AnisetteServer, target: ProbeTarget) -> Task<Message> {
         if self.checking && self.address.as_ref() == Some(&server.address) {
             return Task::none();
         }
@@ -41,7 +41,29 @@ impl ServerInfoPanel {
             }),
             {
                 let address = server.address.clone();
-                move |result| Message::RemoteServerProbed(request, address.clone(), result)
+                move |result| Message::RemoteServerProbed(target, request, address.clone(), result)
+            },
+        )
+    }
+
+    pub fn probe_local(&mut self, config: plume_core::AnisetteConfiguration) -> Task<Message> {
+        if self.checking {
+            return Task::none();
+        }
+        self.clear();
+        self.address = Some("local".into());
+        self.checking = true;
+        let request = self.request;
+        Task::perform(
+            run_on_tokio(async move {
+                let start = std::time::Instant::now();
+                plume_core::auth::anisette_data::AnisetteData::new(config)
+                    .await
+                    .map(|data| ServerInfo::from_local_headers(&data.base_headers, start.elapsed()))
+                    .map_err(|error| error.to_string())
+            }),
+            move |result| {
+                Message::RemoteServerProbed(ProbeTarget::Current, request, "local".into(), result)
             },
         )
     }
@@ -53,7 +75,7 @@ impl ServerInfoPanel {
         }
     }
 
-    pub fn view<'a>(&'a self, server: &'a AnisetteServer) -> Element<'a, Message> {
+    pub fn view<'a>(&'a self, server: &AnisetteServer, refresh: Message) -> Element<'a, Message> {
         let endpoint = reqwest::Url::parse(&server.address)
             .ok()
             .map(|url| url.origin().ascii_serialization())
@@ -62,11 +84,15 @@ impl ServerInfoPanel {
             row![
                 text(t!("server_info_title")).width(Fill),
                 button(text(t!("server_info_probe")))
-                    .on_press_maybe((!self.checking).then_some(Message::ProbeRemoteServer))
+                    .on_press_maybe((!self.checking).then_some(refresh))
                     .style(appearance::s_button),
             ]
             .align_y(iced::Alignment::Center),
-            text(format!("{} - {endpoint}", server.name)),
+            text(if endpoint.is_empty() {
+                server.name.clone()
+            } else {
+                format!("{} - {endpoint}", server.name)
+            }),
         ]
         .spacing(appearance::THEME_PADDING);
         if self.checking {
@@ -75,6 +101,7 @@ impl ServerInfoPanel {
             match result {
                 Ok(info) => {
                     let protocol = match info.protocol {
+                        Protocol::Local => "local",
                         Protocol::V1 => "v1",
                         Protocol::V3 => "v3",
                     };
@@ -105,10 +132,12 @@ impl ServerInfoPanel {
                             );
                         }
                     }
-                    content = content.push(
-                        text(t!("server_info_reported_note"))
-                            .size(appearance::THEME_FONT_SIZE - 1.0),
-                    );
+                    if info.protocol != Protocol::Local {
+                        content = content.push(
+                            text(t!("server_info_reported_note"))
+                                .size(appearance::THEME_FONT_SIZE - 1.0),
+                        );
+                    }
                 }
                 Err(error) => {
                     content = content

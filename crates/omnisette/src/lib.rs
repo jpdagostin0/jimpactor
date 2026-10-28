@@ -243,7 +243,7 @@ impl AnisetteHeaders {
 
 /// Remote provider that works with either protocol a server might speak: the
 /// classic v1 JSON endpoint (also what Sideloadly's remote uses) or the v3
-/// provisioning protocol. It tries v1 first and falls back to v3, remembering
+/// provisioning protocol. It tries v3 first and falls back to v1, remembering
 /// whichever answered so later refreshes skip the probe.
 enum RemoteInner {
     Undecided,
@@ -284,6 +284,26 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
             RemoteInner::Undecided => {}
         }
 
+        #[cfg(feature = "remote-anisette-v3")]
+        {
+            let mut v3 = remote_anisette_v3::RemoteAnisetteProviderV3::new(
+                self.url.clone(),
+                self.configuration_path.clone(),
+                self.serial.clone(),
+            );
+            match v3.get_anisette_headers(skip_provisioning).await {
+                Ok(headers) => {
+                    self.inner = RemoteInner::V3(v3);
+                    return Ok(headers);
+                }
+                Err(error) => {
+                    log::debug!("Remote anisette v3 failed ({error}); trying v1");
+                }
+            }
+        }
+        #[cfg(not(feature = "remote-anisette-v3"))]
+        let _ = &self.serial;
+
         let mut v1 = remote_anisette_v1::RemoteAnisetteProviderV1::new(
             self.url.clone(),
             self.configuration_path.clone(),
@@ -294,25 +314,7 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
                 self.inner = RemoteInner::V1(v1);
                 Ok(headers)
             }
-            Err(v1_err) => {
-                #[cfg(feature = "remote-anisette-v3")]
-                {
-                    log::debug!("Remote server {} is not v1 ({v1_err}); trying v3", self.url);
-                    let mut v3 = remote_anisette_v3::RemoteAnisetteProviderV3::new(
-                        self.url.clone(),
-                        self.configuration_path.clone(),
-                        self.serial.clone(),
-                    );
-                    let res = v3.get_anisette_headers(skip_provisioning).await;
-                    self.inner = RemoteInner::V3(v3);
-                    res
-                }
-                #[cfg(not(feature = "remote-anisette-v3"))]
-                {
-                    let _ = &self.serial;
-                    Err(v1_err)
-                }
-            }
+            Err(error) => Err(error),
         }
     }
 }
