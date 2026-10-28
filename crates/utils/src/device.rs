@@ -55,7 +55,7 @@ impl Device {
         Device {
             name,
             udid: usbmuxd_device.udid.clone(),
-            device_id: usbmuxd_device.device_id.clone(),
+            device_id: usbmuxd_device.device_id,
             usbmuxd_device: Some(usbmuxd_device),
             is_mac: false,
         }
@@ -226,22 +226,22 @@ impl Device {
     /// Writes `data` to `path` inside the Documents container of the app `identifier`.
     pub async fn write_app_document(
         &self,
-        identifier: &String,
+        identifier: &str,
         path: &str,
         data: &[u8],
     ) -> Result<(), Error> {
         let provider = self.house_arrest_provider()?;
         let hc = HouseArrestClient::connect(&provider).await?;
-        let mut ac = hc.vend_documents(identifier.clone()).await?;
+        let mut ac = hc.vend_documents(identifier.to_owned()).await?;
         if let Some(parent) = Path::new(path).parent() {
             let mut current = String::new();
             let has_root = parent.has_root();
 
             for component in parent.components() {
                 if let Component::Normal(dir) = component {
-                    if has_root && current.is_empty() {
-                        current.push('/');
-                    } else if !current.is_empty() && !current.ends_with('/') {
+                    if (has_root && current.is_empty())
+                        || (!current.is_empty() && !current.ends_with('/'))
+                    {
                         current.push('/');
                     }
 
@@ -260,7 +260,7 @@ impl Device {
     /// Places the pairing file at every location `app` reads one from.
     pub async fn install_pairing_files(
         &self,
-        identifier: &String,
+        identifier: &str,
         app: SignerApp,
         remote: bool,
         path_to_store: PathBuf,
@@ -277,18 +277,14 @@ impl Device {
         Ok(())
     }
 
-    pub async fn install_pairing_record(
-        &self,
-        identifier: &String,
-        path: &str,
-    ) -> Result<(), Error> {
+    pub async fn install_pairing_record(&self, identifier: &str, path: &str) -> Result<(), Error> {
         let data = self.lockdown_pairing_file().await?;
         self.write_app_document(identifier, path, &data).await
     }
 
     pub async fn install_remote_pairing_record(
         &self,
-        identifier: &String,
+        identifier: &str,
         path: &str,
         path_to_store: PathBuf,
     ) -> Result<(), Error> {
@@ -306,7 +302,7 @@ impl Device {
         let pairing_file_path = remote_pairing_cache_path(&path, &self.udid);
 
         if pairing_file_path.exists() {
-            return Ok(RpPairingFile::read_from_file(pairing_file_path).await?);
+            Ok(RpPairingFile::read_from_file(pairing_file_path).await?)
         } else {
             let cdp = CoreDeviceProxy::connect(provider).await?;
             let cdp_port = cdp.tunnel_info().server_rsd_port;

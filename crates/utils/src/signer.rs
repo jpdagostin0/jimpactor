@@ -72,63 +72,58 @@ impl Signer {
 
         let identifier = bundle.get_bundle_identifier();
 
-        if self.options.mode != SignerMode::Adhoc && self.options.custom_identifier.is_none() {
-            if let (Some(identifier), Some(team_id)) = (identifier.as_ref(), team_id.as_ref()) {
-                self.options.custom_identifier = Some(format!("{identifier}.{team_id}"));
-            }
-        }
-
-        if let Some(new_identifier) = self.options.custom_identifier.as_ref() {
-            if let Some(orig_identifier) = identifier {
-                for embedded_bundle in &bundles {
-                    embedded_bundle.set_matching_identifier(&orig_identifier, new_identifier)?;
-                }
-            }
-        }
-
-        if self.options.app == SignerApp::SideStore
-            || self.options.app == SignerApp::AltStore
-            || self.options.app == SignerApp::LiveContainerAndSideStore
+        if self.options.mode != SignerMode::Adhoc
+            && self.options.custom_identifier.is_none()
+            && let (Some(identifier), Some(team_id)) = (identifier.as_ref(), team_id.as_ref())
         {
-            if let Some(cert_identity) = &self.certificate {
-                if let (Some(p12_data), Some(serial_number)) =
-                    (&cert_identity.p12_data, &cert_identity.serial_number)
-                {
-                    let bundles = bundle
-                        .collect_bundles_sorted()?
-                        .into_iter()
-                        .collect::<Vec<_>>();
+            self.options.custom_identifier = Some(format!("{identifier}.{team_id}"));
+        }
 
-                    let id_key = match self.options.app {
-                        SignerApp::StikStore => "MachineID",
-                        _ => "ALTCertificateID",
-                    };
-                    let cert_file_name = match self.options.app {
-                        SignerApp::StikStore => "Certificate.p12",
-                        _ => "ALTCertificate.p12",
-                    };
+        if let Some(new_identifier) = self.options.custom_identifier.as_ref()
+            && let Some(orig_identifier) = identifier
+        {
+            for embedded_bundle in &bundles {
+                embedded_bundle.set_matching_identifier(&orig_identifier, new_identifier)?;
+            }
+        }
 
-                    match self.options.app {
-                        SignerApp::LiveContainerAndSideStore => {
-                            if let Some(embedded_bundle) = bundles
-                                .iter()
-                                .find(|b| b.bundle_dir().ends_with("SideStoreApp.framework"))
-                            {
-                                embedded_bundle.set_info_plist_key(id_key, &**serial_number)?;
-                                fs::write(
-                                    embedded_bundle.bundle_dir().join(cert_file_name),
-                                    p12_data,
-                                )
-                                .await?;
-                            }
-                        }
-                        SignerApp::SideStore | SignerApp::AltStore => {
-                            bundle.set_info_plist_key(id_key, &**serial_number)?;
-                            fs::write(bundle.bundle_dir().join(cert_file_name), p12_data).await?;
-                        }
-                        _ => {}
+        if (self.options.app == SignerApp::SideStore
+            || self.options.app == SignerApp::AltStore
+            || self.options.app == SignerApp::LiveContainerAndSideStore)
+            && let Some(cert_identity) = &self.certificate
+            && let (Some(p12_data), Some(serial_number)) =
+                (&cert_identity.p12_data, &cert_identity.serial_number)
+        {
+            let bundles = bundle
+                .collect_bundles_sorted()?
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            let id_key = match self.options.app {
+                SignerApp::StikStore => "MachineID",
+                _ => "ALTCertificateID",
+            };
+            let cert_file_name = match self.options.app {
+                SignerApp::StikStore => "Certificate.p12",
+                _ => "ALTCertificate.p12",
+            };
+
+            match self.options.app {
+                SignerApp::LiveContainerAndSideStore => {
+                    if let Some(embedded_bundle) = bundles
+                        .iter()
+                        .find(|b| b.bundle_dir().ends_with("SideStoreApp.framework"))
+                    {
+                        embedded_bundle.set_info_plist_key(id_key, &**serial_number)?;
+                        fs::write(embedded_bundle.bundle_dir().join(cert_file_name), p12_data)
+                            .await?;
                     }
                 }
+                SignerApp::SideStore | SignerApp::AltStore => {
+                    bundle.set_info_plist_key(id_key, &**serial_number)?;
+                    fs::write(bundle.bundle_dir().join(cert_file_name), p12_data).await?;
+                }
+                _ => {}
             }
         }
 
@@ -193,7 +188,7 @@ impl Signer {
         let has_tweaks = self.options.tweaks.as_ref().is_some_and(|t| !t.is_empty());
 
         if self.options.features.support_ellekit || has_tweaks {
-            crate::Tweak::install_ellekit(&bundle).await?;
+            crate::Tweak::install_ellekit(bundle).await?;
         }
 
         if let Some(tweak_files) = self.options.tweaks.as_ref() {
@@ -226,7 +221,7 @@ impl Signer {
         &mut self,
         bundle: &Bundle,
         session: &DeveloperSession,
-        team_id: &String,
+        team_id: &str,
         is_refresh: bool,
     ) -> Result<(), Error> {
         if self.options.mode != SignerMode::Pem {
@@ -242,7 +237,7 @@ impl Signer {
 
         let bundle_arc = Arc::new(bundle.clone());
         let session_arc = Arc::new(session);
-        let team_id_arc = Arc::new(team_id.clone());
+        let team_id_arc = Arc::new(team_id.to_owned());
 
         let futures = bundles.iter().filter_map(|sub_bundle| {
             let sub_bundle = sub_bundle.clone();
@@ -315,20 +310,19 @@ impl Signer {
                         app_group_ids.push(default_group_id.application_group);
                     }
 
-                    if !is_refresh {
-                        if signer_settings.app == SignerApp::SideStore
-                            || signer_settings.app == SignerApp::AltStore
-                        {
-                            bundle.set_info_plist_key(
-                                "ALTAppGroups",
-                                Value::Array(
-                                    app_groups
-                                        .iter()
-                                        .map(|s| Value::String(format!("{s}.{team_id}")))
-                                        .collect(),
-                                ),
-                            )?;
-                        }
+                    if !is_refresh
+                        && (signer_settings.app == SignerApp::SideStore
+                            || signer_settings.app == SignerApp::AltStore)
+                    {
+                        bundle.set_info_plist_key(
+                            "ALTAppGroups",
+                            Value::Array(
+                                app_groups
+                                    .iter()
+                                    .map(|s| Value::String(format!("{s}.{team_id}")))
+                                    .collect(),
+                            ),
+                        )?;
                     }
 
                     session
@@ -384,10 +378,10 @@ impl Signer {
             )?;
         }
 
-        if let Some(cert) = &self.certificate {
-            if let Some(key) = &cert.key {
-                key.finish()?;
-            }
+        if let Some(cert) = &self.certificate
+            && let Some(key) = &cert.key
+        {
+            key.finish()?;
         }
 
         Ok(())
@@ -398,13 +392,13 @@ impl Signer {
         bundle: &Bundle,
         provisioning_files: &[MobileProvision],
         mut settings: SigningSettings<'_>,
-        entitlements_xml: &String,
+        entitlements_xml: &str,
     ) -> Result<(), Error> {
         if *bundle.bundle_type() == BundleType::Unknown {
             return Ok(());
         }
 
-        let mut entitlements_xml = entitlements_xml.clone();
+        let mut entitlements_xml = entitlements_xml.to_owned();
 
         // Only Apps and AppExtensions should have entitlements from provisioning profiles
         // Dylibs, frameworks, and other components should be signed without entitlements
@@ -418,22 +412,21 @@ impl Signer {
             for prov in provisioning_files {
                 if let (Some(bundle_id), Some(team_id)) =
                     (bundle.get_bundle_identifier(), prov.bundle_id())
+                    && team_id == bundle_id
                 {
-                    if team_id == bundle_id {
-                        matched_prov = Some(prov);
-                        break;
-                    }
+                    matched_prov = Some(prov);
+                    break;
                 }
             }
 
             if let Some(prov) = matched_prov.or_else(|| provisioning_files.first()) {
                 let mut prov = prov.clone();
 
-                if let Some(bundle_executable) = bundle.get_executable() {
-                    if let Some(bundle_id) = bundle.get_bundle_identifier() {
-                        let binary_path = bundle.bundle_dir().join(bundle_executable);
-                        prov.merge_entitlements(binary_path, &bundle_id).ok();
-                    }
+                if let Some(bundle_executable) = bundle.get_executable()
+                    && let Some(bundle_id) = bundle.get_bundle_identifier()
+                {
+                    let binary_path = bundle.bundle_dir().join(bundle_executable);
+                    prov.merge_entitlements(binary_path, &bundle_id).ok();
                 }
 
                 std::fs::write(
@@ -448,11 +441,11 @@ impl Signer {
         }
 
         if self.options.mode != SignerMode::Adhoc {
-            if self.options.embedding.single_profile {
-                if let Some(ent_path) = &self.options.custom_entitlements {
-                    let ent_bytes = std::fs::read(ent_path)?;
-                    entitlements_xml = String::from_utf8_lossy(&ent_bytes).to_string();
-                }
+            if self.options.embedding.single_profile
+                && let Some(ent_path) = &self.options.custom_entitlements
+            {
+                let ent_bytes = std::fs::read(ent_path)?;
+                entitlements_xml = String::from_utf8_lossy(&ent_bytes).to_string();
             }
             settings.set_entitlements_xml(SettingsScope::Main, entitlements_xml)?;
         }

@@ -159,7 +159,7 @@ fn unfilter_and_fix_pixels(
         let row = apply_filter(filter, raw, &prev_row, 4);
 
         // BGRA premultiplied -> RGBA straight alpha
-        for px in row.chunks_exact(4) {
+        for px in row.as_chunks::<4>().0 {
             let (b, g, r, a) = (px[0], px[1], px[2], px[3]);
             match a {
                 0 => pixels.extend_from_slice(&[0, 0, 0, 0]),

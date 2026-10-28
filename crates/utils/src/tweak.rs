@@ -180,15 +180,15 @@ impl Tweak {
         let framework_name = framework_path.file_name().ok_or(Error::TweakInvalidPath)?;
         let dest = frameworks_dir.join(framework_name);
 
-        copy_dir_recursively(&framework_path, &dest).await?;
+        copy_dir_recursively(framework_path, &dest).await?;
 
-        if let Ok(bundle) = Bundle::new(&dest) {
-            if let Some(exec_name) = bundle.get_executable() {
-                let exec_path = dest.join(exec_name);
-                if exec_path.exists() {
-                    Self::patch_cydiasubstrate(&exec_path);
-                    self.inject_dylib(&exec_path, true).await?;
-                }
+        if let Ok(bundle) = Bundle::new(&dest)
+            && let Some(exec_name) = bundle.get_executable()
+        {
+            let exec_path = dest.join(exec_name);
+            if exec_path.exists() {
+                Self::patch_cydiasubstrate(&exec_path);
+                self.inject_dylib(&exec_path, true).await?;
             }
         }
 
@@ -308,7 +308,6 @@ mod tests {
             Cursor::new(data),
         )
         .unwrap();
-        drop(ar);
         file
     }
 

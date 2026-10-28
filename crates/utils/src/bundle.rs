@@ -115,21 +115,18 @@ impl Bundle {
             }
 
             // NSExtension → NSExtensionAttributes → WKAppBundleIdentifier
-            if let Some(Value::Dictionary(extension_dict)) = dict.get_mut("NSExtension") {
-                if let Some(Value::Dictionary(attributes)) =
+            if let Some(Value::Dictionary(extension_dict)) = dict.get_mut("NSExtension")
+                && let Some(Value::Dictionary(attributes)) =
                     extension_dict.get_mut("NSExtensionAttributes")
-                {
-                    if let Some(Value::String(old_value)) = attributes.get("WKAppBundleIdentifier")
-                    {
-                        let new_value = old_value.replace(old_identifier, new_identifier);
-                        if old_value != &new_value {
-                            attributes.insert(
-                                "WKAppBundleIdentifier".to_string(),
-                                Value::String(new_value),
-                            );
-                            did_change = true;
-                        }
-                    }
+                && let Some(Value::String(old_value)) = attributes.get("WKAppBundleIdentifier")
+            {
+                let new_value = old_value.replace(old_identifier, new_identifier);
+                if old_value != &new_value {
+                    attributes.insert(
+                        "WKAppBundleIdentifier".to_string(),
+                        Value::String(new_value),
+                    );
+                    did_change = true;
                 }
             }
         }
@@ -216,24 +213,24 @@ fn collect_embeded_bundles_from_dir(dir: &PathBuf) -> Result<Vec<Bundle>, Error>
                 continue;
             }
 
-            if is_bundle_dir(name) {
-                if let Ok(bundle) = Bundle::new(&path) {
-                    bundles.push(bundle.clone());
+            if is_bundle_dir(name)
+                && let Ok(bundle) = Bundle::new(&path)
+            {
+                bundles.push(bundle.clone());
 
-                    if bundle.bundle_type != BundleType::App {
-                        if let Ok(embedded) = bundle.collect_nested_bundles() {
-                            bundles.extend(embedded);
-                        }
-                    }
-                    continue;
+                if bundle.bundle_type != BundleType::App
+                    && let Ok(embedded) = bundle.collect_nested_bundles()
+                {
+                    bundles.extend(embedded);
                 }
+                continue;
             }
         }
 
-        if path.is_dir() {
-            if let Ok(mut sub_bundles) = collect_embeded_bundles_from_dir(&path) {
-                bundles.append(&mut sub_bundles);
-            }
+        if path.is_dir()
+            && let Ok(mut sub_bundles) = collect_embeded_bundles_from_dir(&path)
+        {
+            bundles.append(&mut sub_bundles);
         }
     }
 

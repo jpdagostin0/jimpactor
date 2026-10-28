@@ -1,7 +1,7 @@
 use super::{Bundle, PlistInfoTrait};
 use crate::{Error, SignerApp, SignerOptions, cgbi};
 use plist::Dictionary;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs, io::Read};
 use uuid::Uuid;
 use zip::ZipArchive;
@@ -173,10 +173,10 @@ impl Package {
             .find(|p| p.is_dir() && p.extension().and_then(|e| e.to_str()) == Some("app"))
             .ok_or_else(|| Error::PackageInfoPlistMissing)?;
 
-        Ok(Bundle::new(app_dir)?)
+        Bundle::new(app_dir)
     }
 
-    pub fn get_archive_based_on_path(&self, path: &PathBuf) -> Result<PathBuf, Error> {
+    pub fn get_archive_based_on_path(&self, path: &Path) -> Result<PathBuf, Error> {
         if path.is_dir() {
             self.clone().archive_package_bundle()
         } else {
