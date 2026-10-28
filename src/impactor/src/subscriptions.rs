@@ -1,7 +1,10 @@
-use ::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use iced::{Subscription, window};
 use idevice::usbmuxd::{UsbmuxdConnection, UsbmuxdListenEvent};
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use tray_icon::MouseButtonState;
+use tray_icon::menu::MenuEvent;
+use tray_icon::{MouseButton, TrayIconEvent};
 
 use crate::{
     defaults::get_data_path,
@@ -83,36 +86,40 @@ pub(crate) fn tray_subscription() -> Subscription<Message> {
                 use iced::futures::{SinkExt, StreamExt};
                 let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
 
+                // Forward native callbacks directly instead of polling tray channels.
+                let menu_tx = tx.clone();
+                MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+                    let _ = menu_tx.unbounded_send(Message::TrayMenuSelected(event.id));
+                }));
+                let icon_tx = tx.clone();
+                TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+                    match event {
+                        TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        } => {
+                            let _ = icon_tx.unbounded_send(Message::TrayIconClicked);
+                        }
+                        // StatusNotifier hosts handle the context menu themselves.
+                        // Left-click activation opens the main window on Linux.
+                        #[cfg(target_os = "linux")]
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            let _ = icon_tx.unbounded_send(Message::TrayIconClicked);
+                        }
+                        _ => {}
+                    }
+                }));
+
+                #[cfg(target_os = "macos")]
                 std::thread::spawn(move || {
-                    let tray_channel = TrayIconEvent::receiver();
                     loop {
-                        if let Ok(event) = tray_channel.try_recv() {
-                            match event {
-                                TrayIconEvent::DoubleClick {
-                                    button: MouseButton::Left,
-                                    ..
-                                } => {
-                                    let _ = tx.unbounded_send(Message::TrayIconClicked);
-                                }
-                                TrayIconEvent::Click {
-                                    button: MouseButton::Left | MouseButton::Right,
-                                    button_state: MouseButtonState::Up,
-                                    position,
-                                    ..
-                                } => {
-                                    let _ = tx.unbounded_send(Message::ShowTrayMenu(
-                                        iced::Point::new(position.x as f32, position.y as f32),
-                                    ));
-                                }
-                                _ => {}
-                            }
+                        if tx.unbounded_send(Message::MacOsActivationTick).is_err() {
+                            break;
                         }
-
-                        #[cfg(target_os = "macos")]
-                        {
-                            let _ = tx.unbounded_send(Message::MacOsActivationTick);
-                        }
-
                         std::thread::sleep(std::time::Duration::from_millis(32));
                     }
                 });
@@ -230,7 +237,7 @@ pub(crate) fn relaunch_subscription() -> Subscription<Message> {
 }
 
 pub(crate) fn file_hover_subscription() -> Subscription<Message> {
-    let window_events = window::events().filter_map(|(_id, event)| match event {
+    window::events().filter_map(|(_id, event)| match event {
         window::Event::FileHovered(_) => Some(Message::MainScreen(general::Message::FilesHovered)),
         window::Event::FilesHoveredLeft => {
             Some(Message::MainScreen(general::Message::FilesHoveredLeft))
@@ -241,18 +248,18 @@ pub(crate) fn file_hover_subscription() -> Subscription<Message> {
             ])))
         }
         _ => None,
-    });
-
-    window_events
+    })
 }
 
+type InstallationProgressReceiver = Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(String, i32)>>>;
+
 pub(crate) fn installation_progress_listener(
-    progress_rx: Option<Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(String, i32)>>>>,
+    progress_rx: Option<InstallationProgressReceiver>,
 ) -> Subscription<(String, i32)> {
     match progress_rx {
         Some(rx) => {
             struct State {
-                rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<(String, i32)>>>,
+                rx: InstallationProgressReceiver,
             }
 
             impl std::hash::Hash for State {
@@ -313,7 +320,7 @@ pub(crate) async fn run_installation(
     let remote_pairing = store.as_ref().is_some_and(|s| s.remote_pairing());
     let mut pairing_error = None;
     use plume_core::{CertificateIdentity, developer::DeveloperSession};
-    use plume_utils::{Signer, SignerInstallMode, SignerMode};
+    use plume_utils::{ConfirmRevocation, Signer, SignerInstallMode, SignerMode, XkitSigner};
 
     let package_file: Bundle;
     let mut options = options.clone();
@@ -363,53 +370,105 @@ pub(crate) async fn run_installation(
                 team_id
             };
 
-            let mut on_certificate_reset = || {
-                send(crate::certificate_reset::WARNING.to_string(), 20);
-                crate::certificate_reset::confirm()
-            };
-            let identity = CertificateIdentity::new_with_session(
-                &session,
-                crate::defaults::get_data_path(),
-                None,
-                team_id,
-                false,
-                Some(&mut on_certificate_reset),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-
-            send("Ensuring device is registered...".to_string(), 30);
-
-            if let Some(dev) = &device {
-                session
-                    .qh_ensure_device(team_id, &dev.name, &dev.udid)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-
-            send("Extracting package...".to_string(), 50);
-
-            let mut signer = Signer::new(Some(identity), options.clone());
-
             let bundle = package.get_package_bundle().map_err(|e| e.to_string())?;
 
-            send("Signing package...".to_string(), 70);
+            if XkitSigner::supports(&options) {
+                send("Ensuring device is registered...".to_string(), 30);
 
-            signer
-                .modify_bundle(&bundle, &Some(team_id.clone()))
-                .await
-                .map_err(|e| e.to_string())?;
-            signer
-                .register_bundle(&bundle, &session, team_id, false)
-                .await
-                .map_err(|e| e.to_string())?;
-            signer
-                .sign_bundle(&bundle)
+                let xkit_signer = XkitSigner::new(
+                    account.adsid(),
+                    account.xcode_gs_token(),
+                    plume_store::AnisetteSettings::load_configuration(
+                        &crate::defaults::get_data_path(),
+                    ),
+                    team_id,
+                    &crate::defaults::get_data_path(),
+                )
                 .await
                 .map_err(|e| e.to_string())?;
 
-            options = signer.options.clone();
-            package_file = bundle;
+                let mut signer = Signer::new(None, options.clone());
+
+                send("Preparing package...".to_string(), 50);
+
+                signer
+                    .modify_bundle(&bundle, &Some(team_id.clone()))
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let reset_tx = tx.clone();
+                let confirm: Box<ConfirmRevocation> = Box::new(move |_certificates| {
+                    let _ = reset_tx.send((crate::certificate_reset::WARNING.to_string(), 20));
+                    Box::pin(async {
+                        tokio::task::spawn_blocking(crate::certificate_reset::confirm)
+                            .await
+                            .unwrap_or(false)
+                    })
+                });
+                let status_tx = tx.clone();
+                // xkit reports stage names with 0..1 progress; map them onto 50..90.
+                let status = move |stage: &str, progress: Option<f64>| {
+                    let percent = 50 + (progress.unwrap_or(0.0).clamp(0.0, 1.0) * 40.0) as i32;
+                    let _ = status_tx.send((format!("{stage}..."), percent));
+                };
+                let device_info = device
+                    .filter(|d| !d.udid.is_empty())
+                    .map(|d| (d.udid.as_str(), d.name.as_str()));
+
+                xkit_signer
+                    .provision_and_sign(&bundle, device_info, &*confirm, &status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                options = signer.options.clone();
+                package_file = bundle;
+            } else {
+                let mut on_certificate_reset = || {
+                    send(crate::certificate_reset::WARNING.to_string(), 20);
+                    crate::certificate_reset::confirm()
+                };
+                let identity = CertificateIdentity::new_with_session(
+                    &session,
+                    crate::defaults::get_data_path(),
+                    None,
+                    team_id,
+                    false,
+                    Some(&mut on_certificate_reset),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+
+                send("Ensuring device is registered...".to_string(), 30);
+
+                if let Some(dev) = &device {
+                    session
+                        .qh_ensure_device(team_id, &dev.name, &dev.udid)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+
+                send("Extracting package...".to_string(), 50);
+
+                let mut signer = Signer::new(Some(identity), options.clone());
+
+                send("Signing package...".to_string(), 70);
+
+                signer
+                    .modify_bundle(&bundle, &Some(team_id.clone()))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                signer
+                    .register_bundle(&bundle, &session, team_id, false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                signer
+                    .sign_bundle(&bundle)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                options = signer.options.clone();
+                package_file = bundle;
+            }
         }
         SignerMode::Adhoc => {
             send("Extracting package...".to_string(), 50);
@@ -448,7 +507,7 @@ pub(crate) async fn run_installation(
                     send("Sending to device...".to_string(), 70);
 
                     let tx_clone = tx.clone();
-                    dev.install_app(&package_file.bundle_dir(), move |progress: i32| {
+                    dev.install_app(package_file.bundle_dir(), move |progress: i32| {
                         let tx = tx_clone.clone();
                         // Some libraries expect this future to be processed.
                         // We ensure it sends and resolves immediately.
@@ -459,27 +518,27 @@ pub(crate) async fn run_installation(
                     .await
                     .map_err(|e| format!("Install error: {}", e))?;
 
-                    if options.app.supports_pairing_file() {
-                        if let Some(custom_identifier) = options.custom_identifier.as_ref() {
-                            send("Placing pairing file...".to_string(), 90);
-                            if let Err(e) = dev
-                                .install_pairing_files(
-                                    custom_identifier,
-                                    options.app,
-                                    remote_pairing,
-                                    get_data_path(),
-                                )
-                                .await
-                            {
-                                log::error!("Failed to place pairing file: {e}");
-                                pairing_error = Some(e.to_string());
-                            }
+                    if options.app.supports_pairing_file()
+                        && let Some(custom_identifier) = options.custom_identifier.as_ref()
+                    {
+                        send("Placing pairing file...".to_string(), 90);
+                        if let Err(e) = dev
+                            .install_pairing_files(
+                                custom_identifier,
+                                options.app,
+                                remote_pairing,
+                                get_data_path(),
+                            )
+                            .await
+                        {
+                            log::error!("Failed to place pairing file: {e}");
+                            pairing_error = Some(e.to_string());
                         }
                     }
                 } else {
                     send("Installing...".to_string(), 90);
 
-                    plume_utils::install_app_mac(&package_file.bundle_dir())
+                    plume_utils::install_app_mac(package_file.bundle_dir())
                         .await
                         .map_err(|e| e.to_string())?;
                 }
@@ -491,7 +550,7 @@ pub(crate) async fn run_installation(
             send("Exporting...".to_string(), 90);
 
             let archive_path = package
-                .get_archive_based_on_path(&package_file.bundle_dir())
+                .get_archive_based_on_path(package_file.bundle_dir())
                 .map_err(|e| e.to_string())?;
 
             let file = rfd::AsyncFileDialog::new()
@@ -534,7 +593,7 @@ pub(crate) async fn run_installation(
         };
         let dest_path = path.join(dest_name);
 
-        plume_utils::copy_dir_recursively(&package_file.bundle_dir(), &dest_path)
+        plume_utils::copy_dir_recursively(package_file.bundle_dir(), &dest_path)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -551,7 +610,7 @@ pub(crate) async fn run_installation(
                 use plume_core::MobileProvision;
 
                 if let Ok(provision) = MobileProvision::load_with_path(&prov_path) {
-                    let expiration_date = provision.expiration_date().clone();
+                    let expiration_date = *provision.expiration_date();
                     let scheduled_refresh = expiration_date
                         .to_xml_format()
                         .parse::<chrono::DateTime<chrono::Utc>>()

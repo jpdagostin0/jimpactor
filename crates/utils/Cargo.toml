@@ -21,6 +21,8 @@ zip.workspace = true
 flate2.workspace = true
 plume_core = { path = "../core", features = ["tweaks"] }
 plume_store = { path = "../store" }
+xkit = { path = "../xkit" }
+chrono.workspace = true
 ar = "0.9"
 tar = "0.4"
 bzip2 = "0.6"

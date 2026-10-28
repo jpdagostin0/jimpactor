@@ -5,6 +5,7 @@ mod options;
 mod package;
 mod signer;
 mod tweak;
+mod xkit_bridge;
 
 use std::path::Path;
 
@@ -25,6 +26,7 @@ pub use options::{
 pub use package::Package; // Package helper
 pub use signer::Signer; // Signer
 pub use tweak::Tweak; // Tweak helper
+pub use xkit_bridge::{ConfirmRevocation, XkitSigner}; // xkit provisioning and signing
 
 use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]
@@ -55,11 +57,19 @@ pub enum Error {
     #[error("Idevice error: {0}")]
     Idevice(#[from] idevice::IdeviceError),
     #[error("Codesign error: {0}")]
-    Codesign(#[from] plume_core::AppleCodesignError),
+    Codesign(#[from] Box<plume_core::AppleCodesignError>),
+    #[error("Xkit error: {0}")]
+    Xkit(#[from] xkit::Error),
     #[error("Other error: {0}")]
     Other(String),
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
+}
+
+impl From<plume_core::AppleCodesignError> for Error {
+    fn from(error: plume_core::AppleCodesignError) -> Self {
+        Self::Codesign(Box::new(error))
+    }
 }
 
 pub trait PlistInfoTrait {

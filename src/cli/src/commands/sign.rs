@@ -4,7 +4,9 @@ use anyhow::Result;
 use clap::Args;
 
 use plume_core::{CertificateIdentity, MobileProvision};
-use plume_utils::{Bundle, Package, Signer, SignerMode, SignerOptions};
+use plume_utils::{
+    Bundle, ConfirmRevocation, Package, Signer, SignerMode, SignerOptions, XkitSigner,
+};
 
 use crate::{
     commands::{
@@ -85,32 +87,51 @@ pub async fn execute(args: SignArgs) -> Result<()> {
         (bundle, Some(pkg))
     };
 
-    let (mut signer, team_id_opt) = if let Some(ref pem_files) = args.pem_files {
+    let (mut signer, team_id_opt, xkit_signer) = if let Some(ref pem_files) = args.pem_files {
         let cert_identity = CertificateIdentity::new_with_paths(Some(pem_files.clone())).await?;
 
         options.mode = SignerMode::Pem;
-        (Signer::new(Some(cert_identity), options), None)
+        (Signer::new(Some(cert_identity), options), None, None)
     } else if args.apple_id {
         let session = get_authenticated_account().await?;
         let team_id = teams(&session).await?;
-        let cert_identity = CertificateIdentity::new_with_session(
-            &session,
-            get_data_path(),
-            None,
-            &team_id,
-            false,
-            None,
-        )
-        .await?;
 
         options.mode = SignerMode::Pem;
-        (
-            Signer::new(Some(cert_identity), options),
-            Some((session, team_id)),
-        )
+
+        if XkitSigner::supports(&options) {
+            let xkit_signer = XkitSigner::new(
+                session.adsid(),
+                session.xcode_gs_token(),
+                plume_store::AnisetteSettings::load_configuration(&get_data_path()),
+                &team_id,
+                &get_data_path(),
+            )
+            .await?;
+            (
+                Signer::new(None, options),
+                Some((session, team_id)),
+                Some(xkit_signer),
+            )
+        } else {
+            let cert_identity = CertificateIdentity::new_with_session(
+                &session,
+                get_data_path(),
+                None,
+                &team_id,
+                false,
+                None,
+            )
+            .await?;
+
+            (
+                Signer::new(Some(cert_identity), options),
+                Some((session, team_id)),
+                None,
+            )
+        }
     } else {
         options.mode = SignerMode::Adhoc;
-        (Signer::new(None, options), None)
+        (Signer::new(None, options), None, None)
     };
 
     if let Some(provision_path) = args.provisioning_files {
@@ -148,17 +169,37 @@ pub async fn execute(args: SignArgs) -> Result<()> {
             .modify_bundle(&bundle, &Some(team_id.clone()))
             .await?;
 
-        if let Some(ref dev) = device {
-            log::info!("Registering device: {} ({})", dev.name, dev.udid);
-            session
-                .qh_ensure_device(&team_id, &dev.name, &dev.udid)
-                .await?;
-        }
+        if let Some(xkit_signer) = &xkit_signer {
+            let confirm: Box<ConfirmRevocation> = Box::new(|certificates| {
+                log::warn!(
+                    "Revoking {} existing development certificate(s) to issue a new one",
+                    certificates.len()
+                );
+                Box::pin(async { true })
+            });
+            let device_info = device
+                .as_ref()
+                .filter(|d| !d.udid.is_empty())
+                .map(|d| (d.udid.as_str(), d.name.as_str()));
 
-        signer
-            .register_bundle(&bundle, &session, &team_id, false)
-            .await?;
-        signer.sign_bundle(&bundle).await?;
+            xkit_signer
+                .provision_and_sign(&bundle, device_info, &*confirm, &|stage, _| {
+                    log::info!("{stage}...")
+                })
+                .await?;
+        } else {
+            if let Some(ref dev) = device {
+                log::info!("Registering device: {} ({})", dev.name, dev.udid);
+                session
+                    .qh_ensure_device(&team_id, &dev.name, &dev.udid)
+                    .await?;
+            }
+
+            signer
+                .register_bundle(&bundle, &session, &team_id, false)
+                .await?;
+            signer.sign_bundle(&bundle).await?;
+        }
 
         if let Some(dev) = device {
             log::info!("Installing to device: {}", dev.name);
@@ -199,7 +240,7 @@ pub async fn execute(args: SignArgs) -> Result<()> {
 
     if let Some(pkg) = package {
         if let Some(output_path) = args.output {
-            let archived_path = pkg.get_archive_based_on_path(&bundle.bundle_dir())?;
+            let archived_path = pkg.get_archive_based_on_path(bundle.bundle_dir())?;
             tokio::fs::copy(&archived_path, &output_path).await?;
             log::info!("Saved signed package to: {}", output_path.display());
             if std::env::var("PLUME_DELETE_AFTER_FINISHED").is_err() {

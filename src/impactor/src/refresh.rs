@@ -6,7 +6,9 @@ use std::time::Duration;
 use chrono::Utc;
 use plume_core::{CertificateIdentity, MobileProvision, developer::DeveloperSession};
 use plume_store::{AccountStore, AnisetteSettings, RefreshDevice};
-use plume_utils::{Bundle, Device, Signer, SignerMode, SignerOptions};
+use plume_utils::{
+    Bundle, ConfirmRevocation, Device, Signer, SignerMode, SignerOptions, XkitSigner,
+};
 
 use crate::defaults::get_data_path;
 
@@ -160,7 +162,7 @@ impl RefreshDaemon {
             .body(&format!(
                 "Started refreshing {} for {}",
                 app.name.as_deref().unwrap_or("???"),
-                &refresh_device.name
+                refresh_device.name
             ))
             .show()
             .ok();
@@ -192,7 +194,29 @@ impl RefreshDaemon {
             account.team_id()
         };
 
-        let identity_is_new = {
+        // SideStore-family apps embed their signing certificate and must keep the legacy signer.
+        let xkit_signer = if embeds_certificate(&app.path) {
+            None
+        } else {
+            Some(
+                XkitSigner::new(
+                    account.adsid(),
+                    account.xcode_gs_token(),
+                    AnisetteSettings::load_configuration(&get_data_path()),
+                    team_id,
+                    &get_data_path(),
+                )
+                .await
+                .map_err(|e| format!("Failed to create signing context: {}", e))?,
+            )
+        };
+
+        let identity_is_new = if let Some(xkit_signer) = &xkit_signer {
+            xkit_signer
+                .ensure_certificate(&*confirm_revocation())
+                .await
+                .map_err(|e| format!("Failed to create identity: {}", e))?
+        } else {
             let mut on_certificate_reset = crate::certificate_reset::confirm;
             let identity = CertificateIdentity::new_with_session(
                 &session,
@@ -224,7 +248,7 @@ impl RefreshDaemon {
         let needs_reinstall = device.is_mac || identity_is_new || !is_installed;
 
         if needs_reinstall {
-            self.resign_and_reinstall(app, device, &session, team_id)
+            self.resign_and_reinstall(app, device, &session, team_id, xkit_signer.as_ref())
                 .await?;
         } else {
             log::info!(
@@ -244,7 +268,7 @@ impl RefreshDaemon {
             .body(&format!(
                 "Successfully refreshed {} for {}",
                 app.name.as_deref().unwrap_or("???"),
-                &refresh_device.name
+                refresh_device.name
             ))
             .show()
             .ok();
@@ -258,16 +282,36 @@ impl RefreshDaemon {
         device: &Device,
         session: &DeveloperSession,
         team_id: &str,
+        xkit_signer: Option<&XkitSigner>,
     ) -> Result<(), String> {
-        let team_id_string = team_id.to_string();
-        session
-            .qh_ensure_device(&team_id_string, &device.name, &device.udid)
-            .await
-            .map_err(|e| format!("Failed to ensure device: {}", e))?;
-
         let bundle =
             Bundle::new(app.path.clone()).map_err(|e| format!("Failed to create bundle: {}", e))?;
 
+        if let Some(xkit_signer) = xkit_signer {
+            let device_info =
+                (!device.is_mac).then_some((device.udid.as_str(), device.name.as_str()));
+            xkit_signer
+                .provision_and_sign(&bundle, device_info, &*confirm_revocation(), &|_, _| {})
+                .await
+                .map_err(|e| format!("Failed to sign bundle: {}", e))?;
+        } else {
+            let team_id_string = team_id.to_string();
+            session
+                .qh_ensure_device(&team_id_string, &device.name, &device.udid)
+                .await
+                .map_err(|e| format!("Failed to ensure device: {}", e))?;
+            self.legacy_sign(&bundle, session, team_id).await?;
+        }
+
+        self.install(app, device).await
+    }
+
+    async fn legacy_sign(
+        &self,
+        bundle: &Bundle,
+        session: &DeveloperSession,
+        team_id: &str,
+    ) -> Result<(), String> {
         let options = SignerOptions {
             mode: SignerMode::Pem,
             ..Default::default()
@@ -289,15 +333,19 @@ impl RefreshDaemon {
         let mut signer = Signer::new(Some(signing_identity), options);
 
         signer
-            .register_bundle(&bundle, session, &team_id.to_string(), true)
+            .register_bundle(bundle, session, team_id, true)
             .await
             .map_err(|e| format!("Failed to register bundle: {}", e))?;
 
         signer
-            .sign_bundle(&bundle)
+            .sign_bundle(bundle)
             .await
             .map_err(|e| format!("Failed to sign bundle: {}", e))?;
 
+        Ok(())
+    }
+
+    async fn install(&self, app: &plume_store::RefreshApp, device: &Device) -> Result<(), String> {
         if !device.is_mac {
             device
                 .install_app(&app.path, |_| async {})
@@ -330,7 +378,7 @@ impl RefreshDaemon {
         let mut signer = Signer::new(None, options);
 
         signer
-            .register_bundle(&bundle, session, &team_id.to_string(), true)
+            .register_bundle(&bundle, session, team_id, true)
             .await
             .map_err(|e| format!("Failed to register bundle: {}", e))?;
 
@@ -358,7 +406,7 @@ impl RefreshDaemon {
         let provision = MobileProvision::load_with_path(&embedded_prov_path)
             .map_err(|e| format!("Failed to load mobile provision: {}", e))?;
 
-        let expiration_date = provision.expiration_date().clone();
+        let expiration_date = *provision.expiration_date();
         let scheduled_refresh = expiration_date
             .to_xml_format()
             .parse::<chrono::DateTime<chrono::Utc>>()
@@ -380,6 +428,26 @@ impl RefreshDaemon {
 
         Ok(())
     }
+}
+
+fn confirm_revocation() -> Box<ConfirmRevocation> {
+    Box::new(|_certificates| {
+        Box::pin(async {
+            tokio::task::spawn_blocking(crate::certificate_reset::confirm)
+                .await
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// SideStore-family apps ship the signing certificate as a p12 next to their executable.
+fn embeds_certificate(app: &std::path::Path) -> bool {
+    ["ALTCertificate.p12", "Certificate.p12"]
+        .iter()
+        .any(|name| app.join(name).exists())
+        || app
+            .join("SideStoreApp.framework/ALTCertificate.p12")
+            .exists()
 }
 
 pub fn spawn_refresh_daemon() -> (thread::JoinHandle<()>, ConnectedDevices) {
