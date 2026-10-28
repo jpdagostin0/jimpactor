@@ -4,9 +4,7 @@ use anyhow::{Error, Ok, Result};
 use clap::Args;
 use dialoguer::Select;
 use idevice::{
-    IdeviceService,
-    installation_proxy::InstallationProxyClient,
-    usbmuxd::{UsbmuxdAddr, UsbmuxdConnection},
+    IdeviceService, installation_proxy::InstallationProxyClient, usbmuxd::UsbmuxdConnection,
 };
 use plume_utils::{Device, Package, get_device_for_id};
 
@@ -55,6 +53,7 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
                     udid: String::new(),
                     device_id: 0,
                     usbmuxd_device: None,
+                    network: None,
                     is_mac: true,
                 }
             } else {
@@ -144,12 +143,9 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
 
 async fn apps(device: &Device) -> Result<String, Error> {
     const INSTALLATION_LABEL: &str = "App Installation";
-    let p = device.usbmuxd_device.clone().unwrap().to_provider(
-        UsbmuxdAddr::from_env_var().unwrap_or_default(),
-        INSTALLATION_LABEL,
-    );
+    let p = device.provider(INSTALLATION_LABEL)?;
 
-    let mut lpc = InstallationProxyClient::connect(&p)
+    let mut lpc = InstallationProxyClient::connect(p.as_ref())
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create installation proxy client: {}", e))?;
 

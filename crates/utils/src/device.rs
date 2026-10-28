@@ -5,7 +5,7 @@ use idevice::core_device_proxy::CoreDeviceProxy;
 use idevice::installation_proxy::InstallationProxyClient;
 use idevice::lockdown::LockdownClient;
 use idevice::misagent::MisagentClient;
-use idevice::provider::UsbmuxdProvider;
+use idevice::provider::IdeviceProvider;
 use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
 use idevice::rsd::RsdHandshake;
 use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice};
@@ -13,8 +13,8 @@ use idevice::utils::installation;
 use idevice::{IdeviceService, RemoteXpcClient};
 use plume_core::MobileProvision;
 
-use crate::Error;
 use crate::options::{SignerApp, SignerAppReal};
+use crate::{Error, NetworkConnection};
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
 use idevice::usbmuxd::UsbmuxdConnection;
@@ -24,23 +24,13 @@ pub const CONNECTION_LABEL: &str = "plume_info";
 pub const INSTALLATION_LABEL: &str = "plume_install";
 pub const HOUSE_ARREST_LABEL: &str = "plume_house_arrest";
 
-macro_rules! get_dict_string {
-    ($dict:expr, $key:expr) => {
-        $dict
-            .as_dictionary()
-            .and_then(|dict| dict.get($key))
-            .and_then(|v| v.as_string())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "".to_string())
-    };
-}
-
 #[derive(Debug, Clone)]
 pub struct Device {
     pub name: String,
     pub udid: String,
     pub device_id: u32,
     pub usbmuxd_device: Option<UsbmuxdDevice>,
+    pub network: Option<NetworkConnection>,
     // On x86_64 macs, `is_mac` variable should never be true
     // since its only true if the device is added manually.
     pub is_mac: bool,
@@ -48,96 +38,144 @@ pub struct Device {
 
 impl Device {
     pub async fn new(usbmuxd_device: UsbmuxdDevice) -> Self {
-        let name = Self::get_name_from_usbmuxd_device(&usbmuxd_device)
-            .await
-            .unwrap_or_default();
+        Self::with_address(
+            usbmuxd_device,
+            UsbmuxdAddr::from_env_var().unwrap_or_default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn with_address(usbmuxd_device: UsbmuxdDevice, address: UsbmuxdAddr) -> Self {
+        let name = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            Self::get_name_from_usbmuxd_device(&usbmuxd_device, address),
+        )
+        .await
+        {
+            Ok(Ok(name)) if !name.is_empty() => name,
+            result => {
+                log::warn!(
+                    "Could not read device name for {}: {result:?}",
+                    usbmuxd_device.udid
+                );
+                usbmuxd_device.udid.clone()
+            }
+        };
 
         Device {
             name,
             udid: usbmuxd_device.udid.clone(),
             device_id: usbmuxd_device.device_id,
             usbmuxd_device: Some(usbmuxd_device),
+            network: None,
             is_mac: false,
         }
     }
 
-    async fn get_name_from_usbmuxd_device(device: &UsbmuxdDevice) -> Result<String, Error> {
+    /// Connects services through the transport on which this device was found.
+    pub fn provider(&self, label: &str) -> Result<Box<dyn IdeviceProvider>, Error> {
+        if let Some(network) = &self.network {
+            return Ok(Box::new(network.provider(label)));
+        }
+        self.usbmuxd_device
+            .as_ref()
+            .map(|device| {
+                Box::new(device.to_provider(UsbmuxdAddr::from_env_var().unwrap_or_default(), label))
+                    as Box<dyn IdeviceProvider>
+            })
+            .ok_or_else(|| Error::Other("Device is not connected".into()))
+    }
+
+    async fn with_provider<T, F, Fut>(&self, label: &str, operation: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn IdeviceProvider>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let result = match &self.network {
+            Some(network) => network.execute(label, operation).await,
+            None => operation(self.provider(label)?).await,
+        };
+        result.map_err(|error| match error {
+            Error::Idevice(idevice::IdeviceError::Socket(source)) if self.network.is_some() => {
+                log::warn!("Wi-Fi operation failed for {}: {source:?}", self.name);
+                Error::Other(format!("Wi-Fi connection to {} failed: {source}. Wake and unlock the iPhone and retry.", self.name))
+            }
+            error => error,
+        })
+    }
+
+    async fn get_name_from_usbmuxd_device(
+        device: &UsbmuxdDevice,
+        address: UsbmuxdAddr,
+    ) -> Result<String, Error> {
         let mut lockdown =
-            LockdownClient::connect(&device.to_provider(UsbmuxdAddr::default(), CONNECTION_LABEL))
-                .await?;
-        let values = lockdown.get_value(None, None).await?;
-        Ok(get_dict_string!(values, "DeviceName"))
+            LockdownClient::connect(&device.to_provider(address, CONNECTION_LABEL)).await?;
+        let value = lockdown.get_value(Some("DeviceName"), None).await?;
+        Ok(value.as_string().unwrap_or_default().to_owned())
     }
 
     pub async fn installed_apps(&self) -> Result<Vec<SignerAppReal>, Error> {
-        let device = match &self.usbmuxd_device {
-            Some(dev) => dev,
-            None => return Err(Error::Other("Device is not connected via USB".to_string())),
-        };
+        self.with_provider(INSTALLATION_LABEL, |provider| async move {
+            let mut ic = InstallationProxyClient::connect(provider.as_ref()).await?;
+            let apps = ic.get_apps(Some("User"), None).await?;
 
-        let provider = device.to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
+            let mut found_apps = Vec::new();
 
-        let mut ic = InstallationProxyClient::connect(&provider).await?;
-        let apps = ic.get_apps(Some("User"), None).await?;
+            for (bundle_id, info) in apps {
+                let app_name = get_app_name_from_info(&info);
+                let signer_app = SignerAppReal::from_bundle_identifier_and_name(
+                    Some(bundle_id.as_str()),
+                    app_name.as_deref(),
+                );
 
-        let mut found_apps = Vec::new();
-
-        for (bundle_id, info) in apps {
-            let app_name = get_app_name_from_info(&info);
-            let signer_app = SignerAppReal::from_bundle_identifier_and_name(
-                Some(bundle_id.as_str()),
-                app_name.as_deref(),
-            );
-
-            if signer_app.app.supports_pairing_file_alt()
-                && !found_apps
-                    .iter()
-                    .any(|a: &SignerAppReal| a.bundle_id == signer_app.bundle_id)
-            {
-                found_apps.push(signer_app);
+                if signer_app.app.supports_pairing_file_alt()
+                    && !found_apps
+                        .iter()
+                        .any(|a: &SignerAppReal| a.bundle_id == signer_app.bundle_id)
+                {
+                    found_apps.push(signer_app);
+                }
             }
-        }
 
-        Ok(found_apps)
+            Ok(found_apps)
+        })
+        .await
     }
 
     pub async fn is_app_installed(&self, bundle_id: &str) -> Result<bool, Error> {
-        let device = match &self.usbmuxd_device {
-            Some(dev) => dev,
-            None => return Err(Error::Other("Device is not connected via USB".to_string())),
-        };
+        let bundle_id = bundle_id.to_owned();
+        self.with_provider(INSTALLATION_LABEL, move |provider| async move {
+            let mut ic = InstallationProxyClient::connect(provider.as_ref()).await?;
+            let apps = ic.get_apps(Some("User"), None).await?;
 
-        let provider = device.to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
-
-        let mut ic = InstallationProxyClient::connect(&provider).await?;
-        let apps = ic.get_apps(Some("User"), None).await?;
-
-        Ok(apps.contains_key(bundle_id))
+            Ok(apps.contains_key(&bundle_id))
+        })
+        .await
     }
 
     pub async fn install_profile(&self, profile: &MobileProvision) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
+        let data = profile.data.clone();
+        self.with_provider(INSTALLATION_LABEL, move |provider| async move {
+            let mut mc = MisagentClient::connect(provider.as_ref()).await?;
+            mc.install(data).await?;
 
-        let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
-
-        let mut mc = MisagentClient::connect(&provider).await?;
-        mc.install(profile.data.clone()).await?;
-
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     pub async fn pair(&self) -> Result<(), Error> {
+        if self.network.is_some() {
+            return self
+                .with_provider(CONNECTION_LABEL, |provider| async move {
+                    let pairing = provider.get_pairing_file().await?;
+                    let mut lockdown = LockdownClient::connect(provider.as_ref()).await?;
+                    lockdown.start_session(&pairing).await?;
+                    Ok(())
+                })
+                .await;
+        }
         if self.usbmuxd_device.is_none() {
             return Err(Error::Other("Device is not connected via USB".to_string()));
         }
@@ -161,35 +199,30 @@ impl Device {
         Ok(())
     }
 
-    fn house_arrest_provider(&self) -> Result<UsbmuxdProvider, Error> {
-        match &self.usbmuxd_device {
-            Some(dev) => Ok(dev.to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL)),
-            None => Err(Error::Other("Device is not connected via USB".to_string())),
-        }
-    }
-
     /// Returns the lockdown pair record for this device, enabling wifi debugging so
     /// apps can use it over the network.
     pub async fn lockdown_pairing_file(&self) -> Result<Vec<u8>, Error> {
-        let provider = self.house_arrest_provider()?;
-        let mut usbmuxd = UsbmuxdConnection::default().await?;
-        let mut pairing_file = usbmuxd.get_pair_record(&self.udid).await?;
+        let udid = self.udid.clone();
+        self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+            let mut pairing_file = provider.get_pairing_file().await?;
 
-        // saving pairing record requires enabling wifi debugging
-        // since operations are done over wifi
-        let mut lc = LockdownClient::connect(&provider).await?;
-        lc.start_session(&pairing_file).await.ok();
-        lc.set_value(
-            "EnableWifiDebugging",
-            true.into(),
-            Some("com.apple.mobile.wireless_lockdown"),
-        )
+            // saving pairing record requires enabling wifi debugging
+            // since operations are done over wifi
+            let mut lc = LockdownClient::connect(provider.as_ref()).await?;
+            lc.start_session(&pairing_file).await.ok();
+            lc.set_value(
+                "EnableWifiDebugging",
+                true.into(),
+                Some("com.apple.mobile.wireless_lockdown"),
+            )
+            .await
+            .ok();
+
+            pairing_file.udid = Some(udid);
+
+            Ok(pairing_file.serialize()?)
+        })
         .await
-        .ok();
-
-        pairing_file.udid = Some(self.udid.clone());
-
-        Ok(pairing_file.serialize()?)
     }
 
     /// Returns the pairing file to hand to apps. With `remote`, the lockdown pair record is
@@ -204,11 +237,15 @@ impl Device {
             return Ok(lockdown);
         }
 
-        let provider = self.house_arrest_provider()?;
+        let device = self.clone();
         let rppairing = self
-            .get_rsd_pairing_file(&provider, path_to_store)
-            .await?
-            .to_bytes();
+            .with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+                Ok(device
+                    .get_rsd_pairing_file(provider.as_ref(), path_to_store)
+                    .await?
+                    .to_bytes())
+            })
+            .await?;
 
         let mut merged = Value::from_reader(std::io::Cursor::new(&lockdown))?
             .into_dictionary()
@@ -230,31 +267,36 @@ impl Device {
         path: &str,
         data: &[u8],
     ) -> Result<(), Error> {
-        let provider = self.house_arrest_provider()?;
-        let hc = HouseArrestClient::connect(&provider).await?;
-        let mut ac = hc.vend_documents(identifier.to_owned()).await?;
-        if let Some(parent) = Path::new(path).parent() {
-            let mut current = String::new();
-            let has_root = parent.has_root();
+        let identifier = identifier.to_owned();
+        let path = path.to_owned();
+        let data = data.to_vec();
+        self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+            let hc = HouseArrestClient::connect(provider.as_ref()).await?;
+            let mut ac = hc.vend_documents(identifier.to_owned()).await?;
+            if let Some(parent) = Path::new(&path).parent() {
+                let mut current = String::new();
+                let has_root = parent.has_root();
 
-            for component in parent.components() {
-                if let Component::Normal(dir) = component {
-                    if (has_root && current.is_empty())
-                        || (!current.is_empty() && !current.ends_with('/'))
-                    {
-                        current.push('/');
+                for component in parent.components() {
+                    if let Component::Normal(dir) = component {
+                        if (has_root && current.is_empty())
+                            || (!current.is_empty() && !current.ends_with('/'))
+                        {
+                            current.push('/');
+                        }
+
+                        current.push_str(&dir.to_string_lossy());
+                        ac.mk_dir(&current).await?;
                     }
-
-                    current.push_str(&dir.to_string_lossy());
-                    ac.mk_dir(&current).await?;
                 }
             }
-        }
 
-        let mut f = ac.open(path, AfcFopenMode::Wr).await?;
-        f.write_entire(data).await?;
+            let mut f = ac.open(&path, AfcFopenMode::Wr).await?;
+            f.write_entire(&data).await?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     /// Places the pairing file at every location `app` reads one from.
@@ -288,15 +330,22 @@ impl Device {
         path: &str,
         path_to_store: PathBuf,
     ) -> Result<(), Error> {
-        let provider = self.house_arrest_provider()?;
-        let pairing_file = self.get_rsd_pairing_file(&provider, path_to_store).await?;
-        self.write_app_document(identifier, path, &pairing_file.to_bytes())
+        let device = self.clone();
+        let pairing_file = self
+            .with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+                Ok(device
+                    .get_rsd_pairing_file(provider.as_ref(), path_to_store)
+                    .await?
+                    .to_bytes())
+            })
+            .await?;
+        self.write_app_document(identifier, path, &pairing_file)
             .await
     }
 
     async fn get_rsd_pairing_file(
         &self,
-        provider: &UsbmuxdProvider,
+        provider: &dyn IdeviceProvider,
         path: PathBuf,
     ) -> Result<RpPairingFile, Error> {
         let pairing_file_path = remote_pairing_cache_path(&path, &self.udid);
@@ -363,30 +412,31 @@ impl Device {
     ) -> Result<(), Error>
     where
         F: FnMut(i32) -> Fut + Send + Clone + 'static,
-        Fut: std::future::Future<Output = ()> + Send,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
+        let app_path = app_path.clone();
+        self.with_provider(INSTALLATION_LABEL, move |provider| async move {
+            let callback = move |(progress, _): (u64, ())| {
+                let mut cb = progress_callback.clone();
+                async move {
+                    cb(progress as i32).await;
+                }
+            };
 
-        let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
+            let state = ();
 
-        let callback = move |(progress, _): (u64, ())| {
-            let mut cb = progress_callback.clone();
-            async move {
-                cb(progress as i32).await;
-            }
-        };
-
-        let state = ();
-
-        installation::install_package_with_callback(&provider, app_path, None, callback, state)
+            installation::install_package_with_callback(
+                provider.as_ref(),
+                &app_path,
+                None,
+                callback,
+                state,
+            )
             .await?;
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -424,6 +474,7 @@ impl fmt::Display for Device {
                     Connection::Network(_) => "WiFi",
                     Connection::Unknown(_) => "Unknown",
                 },
+                None if self.network.is_some() => "WiFi",
                 None => "LOCAL",
             },
             self.name

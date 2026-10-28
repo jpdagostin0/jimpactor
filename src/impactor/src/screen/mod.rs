@@ -254,7 +254,17 @@ impl Impactor {
                 Task::none()
             }
             Message::DeviceConnected(device) => {
-                if !self.devices.iter().any(|d| d.device_id == device.device_id) {
+                if let Some(existing) = self
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.device_id == device.device_id)
+                {
+                    *existing = device.clone();
+                    if self.selected_device.as_ref().map(|d| d.device_id) == Some(device.device_id)
+                    {
+                        self.selected_device = Some(device.clone());
+                    }
+                } else {
                     self.devices.push(device.clone());
 
                     if self.selected_device.is_none() && device.device_id != u32::MAX {
@@ -291,13 +301,23 @@ impl Impactor {
                 self.devices.retain(|d| d.device_id != id);
 
                 if self.selected_device.as_ref().map(|d| d.device_id) == Some(id) {
-                    self.selected_device = self.devices.first().cloned();
+                    self.selected_device = self
+                        .devices
+                        .iter()
+                        .find(|device| Some(&device.udid) == udid.as_ref())
+                        .or_else(|| self.devices.first())
+                        .cloned();
                 }
 
                 if let (Some(udid), Some(daemon_devices)) = (udid, REFRESH_DAEMON_DEVICES.get())
                     && let Ok(mut devices) = daemon_devices.lock()
                 {
-                    devices.remove(&udid);
+                    if let Some(remaining) = self.devices.iter().find(|device| device.udid == udid)
+                    {
+                        devices.insert(udid, remaining.clone());
+                    } else {
+                        devices.remove(&udid);
+                    }
                 }
 
                 if let ImpactorScreen::Utilities(_) = self.current_screen {

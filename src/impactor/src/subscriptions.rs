@@ -1,5 +1,5 @@
 use iced::{Subscription, window};
-use idevice::usbmuxd::{UsbmuxdConnection, UsbmuxdListenEvent};
+use idevice::usbmuxd::UsbmuxdAddr;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use tray_icon::MouseButtonState;
@@ -10,68 +10,67 @@ use crate::{
     defaults::get_data_path,
     screen::{Message, general},
 };
-use plume_utils::{Bundle, Device, PlistInfoTrait};
+use plume_utils::{
+    Bundle, Device, DeviceEvent, PlistInfoTrait, watch_devices, watch_network_devices,
+};
 
 pub(crate) fn device_listener() -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(
             100,
             |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
-                use iced::futures::{SinkExt, StreamExt};
-                let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
+                use iced::futures::SinkExt;
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DeviceEvent>();
 
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
+                let network_tx = tx.clone();
+                std::thread::Builder::new()
+                    .name("jimpactor-wifi-discovery".into())
+                    .spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("Could not start Wi-Fi discovery runtime");
+                        rt.block_on(watch_network_devices(network_tx));
+                    })
+                    .expect("Could not start Wi-Fi discovery thread");
 
-                    rt.block_on(async move {
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        {
-                            if let Some(mac_udid) = plume_gestalt::get_udid() {
-                                let _ = tx.unbounded_send(Message::DeviceConnected(Device {
-                                    name: "This Mac".into(),
-                                    udid: mac_udid,
-                                    device_id: u32::MAX,
-                                    usbmuxd_device: None,
-                                    is_mac: true,
-                                }));
-                            }
-                        }
+                std::thread::Builder::new()
+                    .name("jimpactor-usb-discovery".into())
+                    .spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
 
-                        let Ok(mut muxer) = UsbmuxdConnection::default().await else {
-                            return;
-                        };
-
-                        if let Ok(devices) = muxer.get_devices().await {
-                            for dev in devices {
-                                let device = Device::new(dev).await;
-                                let _ = tx.unbounded_send(Message::DeviceConnected(device));
-                            }
-                        }
-
-                        let Ok(mut stream) = muxer.listen().await else {
-                            return;
-                        };
-
-                        while let Some(event) = stream.next().await {
-                            let msg = match event {
-                                Ok(UsbmuxdListenEvent::Connected(dev)) => {
-                                    Message::DeviceConnected(Device::new(dev).await)
+                        rt.block_on(async move {
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            {
+                                if let Some(mac_udid) = plume_gestalt::get_udid() {
+                                    let _ = tx.send(DeviceEvent::Connected(Device {
+                                        name: "This Mac".into(),
+                                        udid: mac_udid,
+                                        device_id: u32::MAX,
+                                        usbmuxd_device: None,
+                                        network: None,
+                                        is_mac: true,
+                                    }));
                                 }
-                                Ok(UsbmuxdListenEvent::Disconnected(id)) => {
-                                    Message::DeviceDisconnected(id)
-                                }
-                                Err(_) => continue,
-                            };
-                            let _ = tx.unbounded_send(msg);
-                        }
-                    });
-                });
+                            }
 
-                while let Some(message) = rx.next().await {
-                    let _ = output.send(message).await;
+                            watch_devices(UsbmuxdAddr::from_env_var().unwrap_or_default(), tx)
+                                .await;
+                        });
+                    })
+                    .expect("Could not start USB discovery thread");
+
+                while let Some(event) = rx.recv().await {
+                    let message = match event {
+                        DeviceEvent::Connected(device) => Message::DeviceConnected(device),
+                        DeviceEvent::Disconnected(id) => Message::DeviceDisconnected(id),
+                    };
+                    if output.send(message).await.is_err() {
+                        break;
+                    }
                 }
             },
         )

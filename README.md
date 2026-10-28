@@ -10,6 +10,7 @@ Report Jimpactor issues and request features in [this repository](https://github
 
 - Sign and sideload iOS apps using your Apple Account, with GUI and CLI interfaces.
 - Refresh installed apps from the system tray.
+- Discover paired iPhones and iPads over Wi-Fi and install or refresh apps wirelessly.
 - Choose local or remote anisette providers, including custom servers and Sideloadly connections.
 - Browse app sources and install release IPAs.
 - Export signing certificates and generate or install device pairing files.
@@ -22,7 +23,13 @@ Jimpactor can supply pairing files to apps such as StikDebug. It does not includ
 
 Use artifacts published under [Jimpactor releases](https://github.com/jpdagostin0/jimpactor/releases), when available, or build from source. The original project's releases, Homebrew cask, and Flathub listing distribute the original project.
 
+## Connect your device
+
 On Windows, install Apple's device drivers through [iTunes](https://support.apple.com/en-us/106372). On Linux, install and run `usbmuxd` before connecting your device.
+
+Pair your iPhone or iPad with this computer over USB first and accept **Trust This Computer** on the device. For wireless connections, keep the computer and device on the same Wi-Fi network. Jimpactor automatically discovers paired devices; select the entry labeled `[WiFi]` in the device dropdown to install or refresh apps and manage pairing files wirelessly.
+
+Wi-Fi devices stay in the list for five minutes after disconnecting. Jimpactor reconnects automatically when a device returns, preserving your selection. Before starting a device operation, it waits briefly for a cached device to reconnect. If the device is unavailable, wake and unlock it, check its Wi-Fi connection, and retry.
 
 ## Build
 

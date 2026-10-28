@@ -1,6 +1,10 @@
 mod bundle;
 mod cgbi;
 mod device;
+mod device_discovery;
+mod device_worker;
+mod network_connection;
+mod network_discovery;
 mod options;
 mod package;
 mod signer;
@@ -14,6 +18,9 @@ pub use device::{
     Device, REMOTE_PAIRING_CACHE_PREFIX, REMOTE_PAIRING_CACHE_SUFFIX, get_device_for_id,
     install_app_mac,
 }; // Device helper
+pub use device_discovery::{DeviceEvent, watch_devices};
+pub use network_connection::NetworkConnection;
+pub use network_discovery::watch_network_devices;
 pub use options::{
     SignerApp, // Supported app types
     SignerAppReal,

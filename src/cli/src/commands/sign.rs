@@ -150,6 +150,7 @@ pub async fn execute(args: SignArgs) -> Result<()> {
                     udid: String::new(),
                     device_id: 0,
                     usbmuxd_device: None,
+                    network: None,
                     is_mac: true,
                 })
             } else {
