@@ -26,7 +26,7 @@ impl Account {
             ));
         }
 
-        return Ok(LoginState::Needs2FAVerification);
+        Ok(LoginState::Needs2FAVerification)
     }
 
     pub async fn send_sms_2fa_to_devices(&self, phone_id: u32) -> Result<LoginState, Error> {
@@ -55,7 +55,7 @@ impl Account {
             ));
         }
 
-        return Ok(LoginState::NeedsSMS2FAVerification(body));
+        Ok(LoginState::NeedsSMS2FAVerification(body))
     }
 
     pub async fn get_auth_extras(&self) -> Result<AuthenticationExtras, Error> {

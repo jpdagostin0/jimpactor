@@ -37,12 +37,12 @@ pub async fn parse_response(
 pub fn check_error(res: &plist::Dictionary) -> Result<(), Error> {
     let res = match res.get("Status") {
         Some(plist::Value::Dictionary(d)) => d,
-        _ => &res,
+        _ => res,
     };
 
     if res.get("ec").unwrap().as_signed_integer().unwrap() != 0 {
         return Err(Error::AuthSrpWithMessage(
-            res.get("ec").unwrap().as_signed_integer().unwrap().into(),
+            res.get("ec").unwrap().as_signed_integer().unwrap(),
             res.get("em").unwrap().as_string().unwrap().to_owned(),
         ));
     }
@@ -57,12 +57,12 @@ pub fn decrypt_cbc(usr: &ClientVerifier<Sha256>, data: &[u8]) -> Vec<u8> {
 
     cbc::Decryptor::<aes::Aes256>::new_from_slices(&extra_data_key, extra_data_iv)
         .unwrap()
-        .decrypt_padded_vec::<Pkcs7>(&data)
+        .decrypt_padded_vec::<Pkcs7>(data)
         .unwrap()
 }
 
 pub fn create_session_key(usr: &ClientVerifier<Sha256>, name: &str) -> Vec<u8> {
-    Hmac::<Sha256>::new_from_slice(&usr.key())
+    Hmac::<Sha256>::new_from_slice(usr.key())
         .unwrap()
         .chain_update(name.as_bytes())
         .finalize()

@@ -8,11 +8,11 @@ use crate::developer::strip_invalid_chars;
 use crate::developer_endpoint;
 
 impl DeveloperSession {
-    pub async fn qh_list_app_ids(&self, team_id: &String) -> Result<AppIDsResponse, Error> {
+    pub async fn qh_list_app_ids(&self, team_id: &str) -> Result<AppIDsResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/listAppIds.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: AppIDsResponse = plist::from_value(&Value::Dictionary(response))?;
@@ -22,16 +22,19 @@ impl DeveloperSession {
 
     pub async fn qh_add_app_id(
         &self,
-        team_id: &String,
-        name: &String,
-        identifier: &String,
+        team_id: &str,
+        name: &str,
+        identifier: &str,
     ) -> Result<AppIDResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/addAppId.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
         body.insert("name".to_string(), Value::String(strip_invalid_chars(name)));
-        body.insert("identifier".to_string(), Value::String(identifier.clone()));
+        body.insert(
+            "identifier".to_string(),
+            Value::String(identifier.to_owned()),
+        );
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: AppIDResponse = plist::from_value(&Value::Dictionary(response))?;
@@ -41,14 +44,14 @@ impl DeveloperSession {
 
     pub async fn qh_delete_app_id(
         &self,
-        team_id: &String,
-        app_id_id: &String,
+        team_id: &str,
+        app_id_id: &str,
     ) -> Result<QHResponseMeta, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/deleteAppId.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
-        body.insert("appIdId".to_string(), Value::String(app_id_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
+        body.insert("appIdId".to_string(), Value::String(app_id_id.to_owned()));
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: QHResponseMeta = plist::from_value(&Value::Dictionary(response))?;
@@ -58,15 +61,15 @@ impl DeveloperSession {
 
     pub async fn qh_update_app_id(
         &self,
-        team_id: &String,
-        app_id_id: &String,
+        team_id: &str,
+        app_id_id: &str,
         features: Dictionary,
     ) -> Result<AppIDResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/updateAppId.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
-        body.insert("appIdId".to_string(), Value::String(app_id_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
+        body.insert("appIdId".to_string(), Value::String(app_id_id.to_owned()));
 
         for (key, value) in features {
             body.insert(key, value);
@@ -80,7 +83,7 @@ impl DeveloperSession {
 
     pub async fn qh_get_app_id(
         &self,
-        team_id: &String,
+        team_id: &str,
         identifier: &String,
     ) -> Result<Option<AppID>, Error> {
         let response_data = self.qh_list_app_ids(team_id).await?;
@@ -95,8 +98,8 @@ impl DeveloperSession {
 
     pub async fn qh_ensure_app_id(
         &self,
-        team_id: &String,
-        name: &String,
+        team_id: &str,
+        name: &str,
         identifier: &String,
     ) -> Result<AppID, Error> {
         if let Some(app_id) = self.qh_get_app_id(team_id, identifier).await? {

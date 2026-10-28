@@ -102,12 +102,12 @@ pub trait MachOExt {
 // theres multiple binaries in MachFile, being Vec<MachOBinary>
 impl<'a> MachOExt for MachOBinary<'a> {
     fn embedded_entitlements(&self) -> Result<Option<Dictionary>, Error> {
-        if let Some(embedded_sig) = self.code_signature()? {
-            if let Ok(Some(slot)) = embedded_sig.entitlements() {
-                let value = Value::from_reader_xml(slot.to_string().as_bytes())?;
-                if let Value::Dictionary(dict) = value {
-                    return Ok(Some(dict));
-                }
+        if let Some(embedded_sig) = self.code_signature()?
+            && let Ok(Some(slot)) = embedded_sig.entitlements()
+        {
+            let value = Value::from_reader_xml(slot.to_string().as_bytes())?;
+            if let Value::Dictionary(dict) = value {
+                return Ok(Some(dict));
             }
         }
 
@@ -158,19 +158,19 @@ impl<'a> MachOExt for MachOBinary<'a> {
         let dylib_exists_in_macho = |macho: &GoblinMachO, base_offset: usize| -> bool {
             macho.load_commands.iter().any(|load_cmd| {
                 if let CommandVariant::LoadDylib(dylib) = &load_cmd.command {
-                    extract_dylib_path(&self.data, base_offset + load_cmd.offset, dylib.dylib.name)
-                        .map_or(false, |name| name == path)
+                    extract_dylib_path(self.data, base_offset + load_cmd.offset, dylib.dylib.name)
+                        .is_some_and(|name| name == path)
                 } else {
-                    manually_parse_dylib(&self.data, base_offset + load_cmd.offset)
-                        .map_or(false, |name| name == path)
+                    manually_parse_dylib(self.data, base_offset + load_cmd.offset)
+                        .is_some_and(|name| name == path)
                 }
             })
         };
 
         let is_64 = matches!(macho.header.cputype, CPU_TYPE_ARM64);
         let dylib_exists = dylib_exists_in_macho(macho, 0);
-        let current_sizeofcmds = read_u32_le(&self.data, 20);
-        let current_ncmds = read_u32_le(&self.data, 16);
+        let current_sizeofcmds = read_u32_le(self.data, 20);
+        let current_ncmds = read_u32_le(self.data, 16);
 
         // Create a mutable Vec<u8> so we can modify the Mach-O data in place
         let mut data = self.data.to_vec();
@@ -229,7 +229,7 @@ impl<'a> MachOExt for MachOBinary<'a> {
         // Write the new load command into the available space (no splice needed!)
         let insert_offset = load_commands_end;
         let mut new_command = Vec::new();
-        new_command.extend_from_slice(&(LC_LOAD_WEAK_DYLIB as u32).to_le_bytes()); // cmd
+        new_command.extend_from_slice(&LC_LOAD_WEAK_DYLIB.to_le_bytes()); // cmd
         new_command.extend_from_slice(&(dylib_command_size as u32).to_le_bytes()); // cmdsize
 
         // dylib_command structure:
@@ -286,7 +286,7 @@ impl<'a> MachOExt for MachOBinary<'a> {
                 }
                 .and_then(|name| {
                     if name == path {
-                        let cmdsize = read_u32_le(&self.data, load_cmd.offset + 4) as usize;
+                        let cmdsize = read_u32_le(self.data, load_cmd.offset + 4) as usize;
                         Some((0, load_cmd.offset, cmdsize))
                     } else {
                         None
@@ -300,8 +300,8 @@ impl<'a> MachOExt for MachOBinary<'a> {
             return Ok(data);
         }
 
-        let current_sizeofcmds = read_u32_le(&self.data, 20);
-        let current_ncmds = read_u32_le(&self.data, 16);
+        let current_sizeofcmds = read_u32_le(self.data, 20);
+        let current_ncmds = read_u32_le(self.data, 16);
         let mut total_removed_size = 0;
         for (arch_offset, cmd_offset, cmdsize) in &replacements {
             let absolute_cmd_offset = arch_offset + cmd_offset - total_removed_size;
@@ -350,17 +350,17 @@ impl<'a> MachOExt for MachOBinary<'a> {
                     let path = match &load_cmd.command {
                         goblin::mach::load_command::CommandVariant::LoadDylib(dylib) => {
                             extract_dylib_path(
-                                &self.data,
+                                self.data,
                                 base_offset + load_cmd.offset,
                                 dylib.dylib.name,
                             )
                         }
-                        _ => manually_parse_dylib(&self.data, base_offset + load_cmd.offset),
+                        _ => manually_parse_dylib(self.data, base_offset + load_cmd.offset),
                     }?;
 
                     if path == old_path {
                         let cmdsize =
-                            read_u32_le(&self.data, base_offset + load_cmd.offset + 4) as usize;
+                            read_u32_le(self.data, base_offset + load_cmd.offset + 4) as usize;
                         return Some((load_cmd.offset, cmdsize));
                     }
                     None

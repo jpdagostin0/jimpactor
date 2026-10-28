@@ -63,7 +63,7 @@ impl CertificateIdentity {
     ) -> Result<Self, Error> {
         let machine_name = machine_name.unwrap_or_else(|| MACHINE_NAME.to_string());
 
-        let key_path = Self::key_dir(config_path, &team_id)?.join("key.pem");
+        let key_path = Self::key_dir(config_path, team_id)?.join("key.pem");
 
         let mut identity = Self {
             cert: None,
@@ -77,7 +77,7 @@ impl CertificateIdentity {
         // To same some unnecessary requests, we're going to list our certificates first here
         // then pass them into the necessary functions that need it, if the functions absolutely
         // need to request certificates (after submitting a CSR, for example), they can do so
-        let certs = session.qh_list_certs(&team_id).await?.certificates;
+        let certs = session.qh_list_certs(team_id).await?.certificates;
 
         // Only the key will be written to disk, certificate can just be gotten via the request
         // request we've made, by trying to match our public key with the requests public key
@@ -256,19 +256,19 @@ impl CertificateIdentity {
         let pub_key_der_obj = priv_key.to_public_key().to_pkcs1_der()?.as_bytes().to_vec();
 
         for cert in certs {
-            if cert.machine_name.as_deref() == Some(machine_name) {
-                if let Some(cert_content) = &cert.cert_content {
-                    let parsed_cert = X509Certificate::from_der(&cert_content)?;
-                    if pub_key_der_obj == parsed_cert.public_key_data().as_ref() {
-                        // We need to save the machine_id for our P12
-                        if let Some(ref machine_id) = cert.machine_id {
-                            self.set_machine_id(machine_id.clone());
-                        }
-
-                        self.set_serial_number(cert.serial_number.clone());
-
-                        return Ok(Some(cert));
+            if cert.machine_name.as_deref() == Some(machine_name)
+                && let Some(cert_content) = &cert.cert_content
+            {
+                let parsed_cert = X509Certificate::from_der(cert_content)?;
+                if pub_key_der_obj == parsed_cert.public_key_data().as_ref() {
+                    // We need to save the machine_id for our P12
+                    if let Some(ref machine_id) = cert.machine_id {
+                        self.set_machine_id(machine_id.clone());
                     }
+
+                    self.set_serial_number(cert.serial_number.clone());
+
+                    return Ok(Some(cert));
                 }
             }
         }
@@ -279,8 +279,8 @@ impl CertificateIdentity {
     async fn request_new_certificate(
         &mut self,
         session: &DeveloperSession,
-        team_id: &String,
-        machine_name: &String,
+        team_id: &str,
+        machine_name: &str,
         certs: Vec<Cert>,
         mut on_certificate_reset: Option<&mut dyn FnMut() -> bool>,
     ) -> Result<(Cert, RsaPrivateKey), Error> {
@@ -315,7 +315,7 @@ impl CertificateIdentity {
         // an error
         let cert_id = loop {
             match session
-                .qh_submit_cert_csr(&team_id, cert_csr.clone(), machine_name)
+                .qh_submit_cert_csr(team_id, cert_csr.clone(), machine_name)
                 .await
             {
                 Ok(id) => break id,
@@ -324,12 +324,12 @@ impl CertificateIdentity {
                     if matches!(&e, Error::DeveloperApi { result_code, .. } if *result_code == 7460)
                     {
                         if !warned_about_reset {
-                            if let Some(callback) = on_certificate_reset.as_deref_mut() {
-                                if !callback() {
-                                    return Err(Error::Certificate(
-                                        "Certificate reset cancelled".into(),
-                                    ));
-                                }
+                            if let Some(callback) = on_certificate_reset.as_deref_mut()
+                                && !callback()
+                            {
+                                return Err(Error::Certificate(
+                                    "Certificate reset cancelled".into(),
+                                ));
                             }
                             warned_about_reset = true;
                         }
@@ -337,7 +337,7 @@ impl CertificateIdentity {
                         // Try to revoke certificates from the candidate list
                         let mut revoked_any = false;
                         for cid in &cert_serial_numbers {
-                            if session.qh_revoke_cert(&team_id, cid).await.is_ok() {
+                            if session.qh_revoke_cert(team_id, cid).await.is_ok() {
                                 log::warn!("Revoked certificate with serial number {}", cid);
                                 revoked_any = true;
                                 break;
@@ -369,7 +369,7 @@ impl CertificateIdentity {
         // We request again, and hope this has our new certificate
         // ready.... if not then woops... thats too bad isnt it
         let certs = session
-            .qh_list_certs(&team_id)
+            .qh_list_certs(team_id)
             .await?
             .certificates
             .into_iter()

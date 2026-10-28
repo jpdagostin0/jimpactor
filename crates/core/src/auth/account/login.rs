@@ -75,17 +75,17 @@ impl Account {
             match response {
                 LoginState::NeedsDevice2FA => {
                     response = _self.send_2fa_to_devices().await?;
-                    if trusted_phone_numbers.is_empty() {
-                        if let Ok(extras) = _self.get_auth_extras().await {
-                            trusted_phone_numbers = extras.trusted_phone_numbers;
-                        }
+                    if trusted_phone_numbers.is_empty()
+                        && let Ok(extras) = _self.get_auth_extras().await
+                    {
+                        trusted_phone_numbers = extras.trusted_phone_numbers;
                     }
                 }
                 LoginState::Needs2FAVerification => {
-                    if trusted_phone_numbers.is_empty() {
-                        if let Ok(extras) = _self.get_auth_extras().await {
-                            trusted_phone_numbers = extras.trusted_phone_numbers;
-                        }
+                    if trusted_phone_numbers.is_empty()
+                        && let Ok(extras) = _self.get_auth_extras().await
+                    {
+                        trusted_phone_numbers = extras.trusted_phone_numbers;
                     }
                     let request = TwoFactorRequest {
                         method: TwoFactorMethod::Device,
@@ -103,10 +103,10 @@ impl Account {
                     }
                 }
                 LoginState::NeedsSMS2FA => {
-                    if trusted_phone_numbers.is_empty() {
-                        if let Ok(extras) = _self.get_auth_extras().await {
-                            trusted_phone_numbers = extras.trusted_phone_numbers;
-                        }
+                    if trusted_phone_numbers.is_empty()
+                        && let Ok(extras) = _self.get_auth_extras().await
+                    {
+                        trusted_phone_numbers = extras.trusted_phone_numbers;
                     }
                     let id = trusted_phone_numbers.first().map(|p| p.id).unwrap_or(1);
                     response = _self.send_sms_2fa_to_devices(id).await?;

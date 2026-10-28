@@ -53,7 +53,7 @@ pub enum Error {
     #[error("Plist error: {0}")]
     Plist(#[from] plist::Error),
     #[error("Codesign error: {0}")]
-    Codesign(#[from] apple_codesign::AppleCodesignError),
+    Codesign(#[from] Box<apple_codesign::AppleCodesignError>),
     #[error("CodeSignBuilder error: {0}")]
     CodeSignBuilder(#[from] apple_codesign::UniversalMachOError),
     #[error("Certificate PEM error: {0}")]
@@ -82,6 +82,12 @@ pub enum Error {
     Slice(#[from] std::array::TryFromSliceError),
     #[error("Invalid key length for AES-GCM: {0}")]
     SHA2(#[from] sha2::digest::InvalidLength),
+}
+
+impl From<apple_codesign::AppleCodesignError> for Error {
+    fn from(error: apple_codesign::AppleCodesignError) -> Self {
+        Self::Codesign(Box::new(error))
+    }
 }
 
 pub fn client() -> Result<reqwest::Client, Error> {

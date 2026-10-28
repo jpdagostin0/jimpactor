@@ -25,7 +25,7 @@ impl Account {
         let sk = spd.get("sk").unwrap().as_data().unwrap();
         let c = spd.get("c").unwrap().as_data().unwrap();
 
-        let checksum = Self::create_checksum(&sk.to_vec(), dsid, app_name);
+        let checksum = Self::create_checksum(sk, dsid, app_name);
 
         let mut gsa_headers = HeaderMap::new();
         gsa_headers.insert(
@@ -130,8 +130,8 @@ impl Account {
         })
     }
 
-    fn create_checksum(session_key: &Vec<u8>, dsid: &str, app_name: &str) -> Vec<u8> {
-        Hmac::<Sha256>::new_from_slice(&session_key)
+    fn create_checksum(session_key: &[u8], dsid: &str, app_name: &str) -> Vec<u8> {
+        Hmac::<Sha256>::new_from_slice(session_key)
             .unwrap()
             .chain_update("apptokens".as_bytes())
             .chain_update(dsid.as_bytes())

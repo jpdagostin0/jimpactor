@@ -8,11 +8,11 @@ use crate::developer::strip_invalid_chars;
 use crate::developer_endpoint;
 
 impl DeveloperSession {
-    pub async fn qh_list_app_groups(&self, team_id: &String) -> Result<AppGroupsResponse, Error> {
+    pub async fn qh_list_app_groups(&self, team_id: &str) -> Result<AppGroupsResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/listApplicationGroups.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: AppGroupsResponse = plist::from_value(&Value::Dictionary(response))?;
@@ -22,16 +22,19 @@ impl DeveloperSession {
 
     pub async fn qh_add_app_group(
         &self,
-        team_id: &String,
-        name: &String,
-        identifier: &String,
+        team_id: &str,
+        name: &str,
+        identifier: &str,
     ) -> Result<AppGroupResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/addApplicationGroup.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
         body.insert("name".to_string(), Value::String(strip_invalid_chars(name)));
-        body.insert("identifier".to_string(), Value::String(identifier.clone()));
+        body.insert(
+            "identifier".to_string(),
+            Value::String(identifier.to_owned()),
+        );
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: AppGroupResponse = plist::from_value(&Value::Dictionary(response))?;
@@ -41,7 +44,7 @@ impl DeveloperSession {
 
     pub async fn qh_get_app_group(
         &self,
-        team_id: &String,
+        team_id: &str,
         app_group_identifier: &String,
     ) -> Result<Option<ApplicationGroup>, Error> {
         let response_data = self.qh_list_app_groups(team_id).await?;
@@ -56,8 +59,8 @@ impl DeveloperSession {
 
     pub async fn qh_ensure_app_group(
         &self,
-        team_id: &String,
-        name: &String,
+        team_id: &str,
+        name: &str,
         identifier: &String,
     ) -> Result<ApplicationGroup, Error> {
         if let Some(app_group) = self.qh_get_app_group(team_id, identifier).await? {
@@ -70,15 +73,15 @@ impl DeveloperSession {
 
     pub async fn qh_assign_app_group(
         &self,
-        team_id: &String,
-        app_id_id: &String,
-        app_group_ids: &Vec<String>,
+        team_id: &str,
+        app_id_id: &str,
+        app_group_ids: &[String],
     ) -> Result<QHResponseMeta, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/assignApplicationGroupToAppId.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
-        body.insert("appIdId".to_string(), Value::String(app_id_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
+        body.insert("appIdId".to_string(), Value::String(app_id_id.to_owned()));
         body.insert(
             "applicationGroups".to_string(),
             Value::Array(

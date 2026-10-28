@@ -60,15 +60,15 @@ pub fn merge_entitlements(
         groups.retain(|g| matches!(g, Value::String(s) if re.is_match(s)));
     }
 
-    if let Some(new_id) = new_team_id {
-        if let Some(Value::Array(groups)) = base.get_mut("keychain-access-groups") {
-            for group in groups.iter_mut() {
-                if let Value::String(s) = group {
-                    let re = regex::Regex::new(TEAM_ID_REGEX).unwrap();
-                    if re.is_match(s) {
-                        *s = format!("{}.{}", new_id, &s[11..]);
-                    }
-                }
+    if let Some(new_id) = new_team_id
+        && let Some(Value::Array(groups)) = base.get_mut("keychain-access-groups")
+    {
+        let re = regex::Regex::new(TEAM_ID_REGEX).unwrap();
+        for group in groups.iter_mut() {
+            if let Value::String(s) = group
+                && re.is_match(s)
+            {
+                *s = format!("{}.{}", new_id, &s[11..]);
             }
         }
     }

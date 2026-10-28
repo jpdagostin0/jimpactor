@@ -8,11 +8,11 @@ use super::{DeveloperSession, QHResponseMeta};
 use crate::developer_endpoint;
 
 impl DeveloperSession {
-    pub async fn qh_list_certs(&self, team_id: &String) -> Result<CertsResponse, Error> {
+    pub async fn qh_list_certs(&self, team_id: &str) -> Result<CertsResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/listAllDevelopmentCerts.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
         let response_data: CertsResponse = plist::from_value(&Value::Dictionary(response))?;
@@ -22,16 +22,16 @@ impl DeveloperSession {
 
     pub async fn qh_revoke_cert(
         &self,
-        team_id: &String,
-        serial_number: &String,
+        team_id: &str,
+        serial_number: &str,
     ) -> Result<QHResponseMeta, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/revokeDevelopmentCert.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
         body.insert(
             "serialNumber".to_string(),
-            Value::String(serial_number.clone()),
+            Value::String(serial_number.to_owned()),
         );
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;
@@ -42,14 +42,14 @@ impl DeveloperSession {
 
     pub async fn qh_submit_cert_csr(
         &self,
-        team_id: &String,
+        team_id: &str,
         csr_data: String,
-        machine_name: &String,
+        machine_name: &str,
     ) -> Result<CsrResponse, Error> {
         let endpoint = developer_endpoint!("/QH65B2/ios/submitDevelopmentCSR.action");
 
         let mut body = Dictionary::new();
-        body.insert("teamId".to_string(), Value::String(team_id.clone()));
+        body.insert("teamId".to_string(), Value::String(team_id.to_owned()));
         body.insert("csrContent".to_string(), Value::String(csr_data));
         body.insert(
             "machineId".to_string(),
@@ -57,7 +57,7 @@ impl DeveloperSession {
         );
         body.insert(
             "machineName".to_string(),
-            Value::String(machine_name.clone()),
+            Value::String(machine_name.to_owned()),
         );
 
         let response = self.qh_send_request(&endpoint, Some(body)).await?;

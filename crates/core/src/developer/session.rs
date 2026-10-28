@@ -153,13 +153,11 @@ impl DeveloperSession {
 
         let mut request_builder = match request_type {
             Some(RequestType::Patch) => self.client.patch(url).headers(headers.clone()),
-            Some(RequestType::Post) | _ if body.is_some() => {
-                self.client.post(url).headers(headers.clone())
-            }
+            _ if body.is_some() => self.client.post(url).headers(headers.clone()),
             _ => self.client.get(url).headers(headers.clone()),
         };
 
-        log::debug!("V1 Request to {}: {:?}", url, &body);
+        log::debug!("V1 Request to {}: {:?}", url, body);
 
         if let Some(body) = body {
             request_builder = request_builder.json(&body);
