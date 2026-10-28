@@ -170,12 +170,12 @@ pub async fn probe_server(address: &str, data_path: &Path) -> Result<ServerInfo,
             if field(&json, "X-Apple-I-MD").is_some()
                 && field(&json, "X-Apple-I-MD-M").is_some() =>
         {
-            return Ok(ServerInfo::from_response(
+            Ok(ServerInfo::from_response(
                 Protocol::V1,
                 &json,
                 software,
                 start.elapsed(),
-            ));
+            ))
         }
         Ok(_) => Err(AnisetteError::InvalidArgument(format!(
             "No supported anisette response. v3: {v3_error}; v1: missing anisette headers"

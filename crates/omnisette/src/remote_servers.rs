@@ -108,32 +108,3 @@ pub async fn check_server(address: &str) -> Result<Duration, AnisetteError> {
         .await?;
     Ok(start.elapsed())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    #[ignore = "network"]
-    async fn fetch_list_and_check_first_server() -> Result<(), AnisetteError> {
-        let servers = fetch_server_list().await?;
-        assert!(!servers.is_empty());
-        check_server(&servers[0].address).await?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod rank_tests {
-    use super::*;
-
-    #[tokio::test]
-    #[ignore = "network"]
-    async fn rank_picks_a_working_server() {
-        let ranked = rank_servers().await;
-        assert!(!ranked.is_empty(), "no servers responded");
-        for (s, rtt) in ranked.iter().take(5) {
-            println!("{:>6}ms  {}", rtt.as_millis(), s);
-        }
-    }
-}

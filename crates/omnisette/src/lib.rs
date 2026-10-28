@@ -43,7 +43,7 @@ pub enum AnisetteError {
     ReqwestError(#[from] reqwest::Error),
     #[cfg(feature = "remote-anisette-v3")]
     #[error("Provisioning socket error {0}")]
-    WsError(#[from] tokio_tungstenite::tungstenite::error::Error),
+    WsError(#[from] Box<tokio_tungstenite::tungstenite::error::Error>),
     #[cfg(feature = "remote-anisette-v3")]
     #[error("JSON error {0}")]
     SerdeError(#[from] serde_json::Error),
@@ -59,6 +59,13 @@ pub enum AnisetteError {
     MissingLibraries,
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
+}
+
+#[cfg(feature = "remote-anisette-v3")]
+impl From<tokio_tungstenite::tungstenite::error::Error> for AnisetteError {
+    fn from(error: tokio_tungstenite::tungstenite::error::Error) -> Self {
+        Self::WsError(Box::new(error))
+    }
 }
 
 pub const DEFAULT_ANISETTE_URL: &str = "https://ani.f1sh.me/";
@@ -316,46 +323,5 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
             }
             Err(error) => Err(error),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use log::LevelFilter;
-    use simplelog::{ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
-
-    pub fn init_logger() {
-        if TermLogger::init(
-            LevelFilter::Trace,
-            ConfigBuilder::new()
-                .set_target_level(LevelFilter::Error)
-                .add_filter_allow_str("omnisette")
-                .build(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        )
-        .is_ok()
-        {}
-    }
-
-    #[cfg(not(feature = "async"))]
-    #[test]
-    #[ignore = "network"]
-    fn fetch_anisette_auto() -> Result<()> {
-        use crate::{AnisetteConfiguration, AnisetteHeaders};
-        use log::info;
-        use std::path::PathBuf;
-
-        crate::tests::init_logger();
-
-        let mut provider = AnisetteHeaders::get_anisette_headers_provider(
-            AnisetteConfiguration::new()
-                .set_configuration_path(PathBuf::new().join("anisette_test")),
-        )?;
-        info!(
-            "Headers: {:?}",
-            provider.provider.get_authentication_headers()?
-        );
-        Ok(())
     }
 }

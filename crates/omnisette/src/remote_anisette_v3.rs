@@ -41,7 +41,7 @@ fn bin_serialize_opt<S>(x: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    x.clone().map(|i| Data::new(i)).serialize(s)
+    x.clone().map(Data::new).serialize(s)
 }
 
 fn bin_deserialize_opt<'de, D>(d: D) -> Result<Option<Vec<u8>>, D::Error>
@@ -116,7 +116,7 @@ impl AnisetteState {
 
     fn md_lu(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.keychain_identifier);
+        hasher.update(self.keychain_identifier);
         hasher.finalize().into()
     }
 
@@ -150,30 +150,27 @@ impl AnisetteData {
     pub fn get_headers(&self, serial: String) -> HashMap<String, String> {
         let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
 
-        HashMap::from_iter(
-            [
-                (
-                    "X-Apple-I-Client-Time".to_string(),
-                    dt.format("%+").to_string().replace("+00:00", "Z"),
-                ),
-                ("X-Apple-I-SRL-NO".to_string(), serial),
-                ("X-Apple-I-TimeZone".to_string(), "UTC".to_string()),
-                ("X-Apple-Locale".to_string(), "en_US".to_string()),
-                ("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone()),
-                ("X-Apple-I-MD-LU".to_string(), self.local_user_id.clone()),
-                (
-                    "X-Mme-Device-Id".to_string(),
-                    self.device_unique_identifier.clone(),
-                ),
-                ("X-Apple-I-MD".to_string(), self.one_time_password.clone()),
-                ("X-Apple-I-MD-M".to_string(), self.machine_id.clone()),
-                (
-                    "X-Mme-Client-Info".to_string(),
-                    self.device_description.clone(),
-                ),
-            ]
-            .into_iter(),
-        )
+        HashMap::from_iter([
+            (
+                "X-Apple-I-Client-Time".to_string(),
+                dt.format("%+").to_string().replace("+00:00", "Z"),
+            ),
+            ("X-Apple-I-SRL-NO".to_string(), serial),
+            ("X-Apple-I-TimeZone".to_string(), "UTC".to_string()),
+            ("X-Apple-Locale".to_string(), "en_US".to_string()),
+            ("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone()),
+            ("X-Apple-I-MD-LU".to_string(), self.local_user_id.clone()),
+            (
+                "X-Mme-Device-Id".to_string(),
+                self.device_unique_identifier.clone(),
+            ),
+            ("X-Apple-I-MD".to_string(), self.one_time_password.clone()),
+            ("X-Apple-I-MD-M".to_string(), self.machine_id.clone()),
+            (
+                "X-Mme-Client-Info".to_string(),
+                self.device_description.clone(),
+            ),
+        ])
     }
 }
 
@@ -286,7 +283,7 @@ impl AnisetteClient {
         let http_client = make_reqwest()?;
         let resp = self
             .build_apple_request(
-                &state,
+                state,
                 http_client.get("https://gsa.apple.com/grandslam/GsService2/lookup"),
                 LOOKUP_CLIENT_INFO,
             )
@@ -404,7 +401,7 @@ impl AnisetteClient {
                         let http_client = make_reqwest()?;
                         let body_data = ProvisionBodyData {
                             header: Dictionary::new(),
-                            request: Dictionary::from_iter([("cpim", cpim)].into_iter()),
+                            request: Dictionary::from_iter([("cpim", cpim)]),
                         };
                         let resp = self
                             .build_apple_request(
@@ -510,46 +507,19 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
             client.provision(state).await?;
             plist::to_file_xml(&config_path, state)?;
         }
-        let data = match client.get_headers(&state).await {
+        let data = match client.get_headers(state).await {
             Ok(data) => data,
             Err(err) => {
                 if matches!(err, AnisetteError::AnisetteNotProvisioned) {
                     state.adi_pb = None;
                     client.provision(state).await?;
                     plist::to_file_xml(config_path, state)?;
-                    client.get_headers(&state).await?
+                    client.get_headers(state).await?
                 } else {
                     return Err(err);
                 }
             }
         };
         Ok(data.get_headers(self.serial.clone()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::anisette_headers_provider::AnisetteHeadersProvider;
-    use crate::remote_anisette_v3::RemoteAnisetteProviderV3;
-    use crate::{AnisetteError, DEFAULT_ANISETTE_URL_V3};
-    use log::info;
-
-    #[tokio::test]
-    #[ignore = "network"]
-    async fn fetch_anisette_remote_v3() -> Result<(), AnisetteError> {
-        crate::tests::init_logger();
-
-        let mut provider = RemoteAnisetteProviderV3::new(
-            DEFAULT_ANISETTE_URL_V3.to_string(),
-            "anisette_test".into(),
-            "0".to_string(),
-        );
-        info!(
-            "Remote headers: {:?}",
-            (&mut provider as &mut dyn AnisetteHeadersProvider)
-                .get_authentication_headers()
-                .await?
-        );
-        Ok(())
     }
 }

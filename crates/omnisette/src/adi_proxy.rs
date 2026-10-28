@@ -310,6 +310,7 @@ impl<ProxyType: ADIProxy + 'static> ADIProxyAnisetteProvider<ProxyType> {
         let identifier_file_path = configuration_path.join("identifier");
         let mut identifier_file = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(identifier_file_path)?;

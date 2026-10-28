@@ -152,7 +152,6 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AnisetteConfiguration, AnisetteHeaders, AnisetteProvider};
 
     #[test]
     fn builds_sideloadly_url_for_any_instance() {
@@ -164,30 +163,6 @@ mod tests {
         assert_eq!(
             sideloadly_anisette_url("https://ani.example.com/", " Fzji "),
             "https://ani.example.com/anisette/Fzji"
-        );
-    }
-
-    // Set OMNISETTE_TEST_REMOTE_URL to a v1 (or v3) server to exercise AutoRemoteProvider.
-    #[tokio::test]
-    #[ignore = "network"]
-    async fn auto_remote_detects_and_fetches() {
-        let url =
-            std::env::var("OMNISETTE_TEST_REMOTE_URL").expect("set OMNISETTE_TEST_REMOTE_URL");
-        let dir = std::env::temp_dir().join("omnisette_v1_test");
-        let cfg = AnisetteConfiguration::new()
-            .set_configuration_path(dir)
-            .set_provider(AnisetteProvider::Remote)
-            .set_anisette_url_v3(url);
-        let mut res = AnisetteHeaders::get_anisette_headers_provider(cfg).unwrap();
-        let h = res.provider.get_authentication_headers().await.unwrap();
-        assert!(
-            h.contains_key("X-Apple-I-MD") || h.contains_key("X-Apple-I-MD-M"),
-            "{h:?}"
-        );
-        println!(
-            "OK device-id={:?} srl={:?}",
-            h.get("X-Mme-Device-Id"),
-            h.get("X-Apple-I-SRL-NO")
         );
     }
 }

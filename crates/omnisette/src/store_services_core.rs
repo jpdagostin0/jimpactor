@@ -14,7 +14,56 @@ use android_loader::sysv64_type;
 use android_loader::{hook_manager, sysv64};
 use std::collections::HashMap;
 use std::ffi::{CString, c_char};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+type AdiSetAndroidId = sysv64_type!(fn(id: *const u8, length: u32) -> i32);
+
+type AdiSetProvisioningPath = sysv64_type!(fn(path: *const u8) -> i32);
+
+type AdiProvisioningErase = sysv64_type!(fn(ds_id: i64) -> i32);
+
+type AdiSynchronize = sysv64_type!(
+    fn(
+        ds_id: i64,
+        sim: *const u8,
+        sim_length: u32,
+        out_mid: *mut *const u8,
+        out_mid_length: *mut u32,
+        out_srm: *mut *const u8,
+        out_srm_length: *mut u32,
+    ) -> i32
+);
+
+type AdiProvisioningDestroy = sysv64_type!(fn(session: u32) -> i32);
+
+type AdiProvisioningEnd = sysv64_type!(
+    fn(session: u32, ptm: *const u8, ptm_length: u32, tk: *const u8, tk_length: u32) -> i32
+);
+
+type AdiProvisioningStart = sysv64_type!(
+    fn(
+        ds_id: i64,
+        spim: *const u8,
+        spim_length: u32,
+        out_cpim: *mut *const u8,
+        out_cpim_length: *mut u32,
+        out_session: *mut u32,
+    ) -> i32
+);
+
+type AdiGetLoginCode = sysv64_type!(fn(ds_id: i64) -> i32);
+
+type AdiDispose = sysv64_type!(fn(ptr: *const u8) -> i32);
+
+type AdiOtpRequest = sysv64_type!(
+    fn(
+        ds_id: i64,
+        out_mid: *mut *const u8,
+        out_mid_size: *mut u32,
+        out_otp: *mut *const u8,
+        out_otp_size: *mut u32,
+    ) -> i32
+);
 
 pub struct StoreServicesCoreADIProxy<'lt> {
     #[allow(dead_code)]
@@ -24,46 +73,17 @@ pub struct StoreServicesCoreADIProxy<'lt> {
     device_identifier: String,
     serial_number: String,
 
-    adi_set_android_id: sysv64_type!(fn(id: *const u8, length: u32) -> i32),
-    adi_set_provisioning_path: sysv64_type!(fn(path: *const u8) -> i32),
+    adi_set_android_id: AdiSetAndroidId,
+    adi_set_provisioning_path: AdiSetProvisioningPath,
 
-    adi_provisioning_erase: sysv64_type!(fn(ds_id: i64) -> i32),
-    adi_synchronize: sysv64_type!(
-        fn(
-            ds_id: i64,
-            sim: *const u8,
-            sim_length: u32,
-            out_mid: *mut *const u8,
-            out_mid_length: *mut u32,
-            out_srm: *mut *const u8,
-            out_srm_length: *mut u32,
-        ) -> i32
-    ),
-    adi_provisioning_destroy: sysv64_type!(fn(session: u32) -> i32),
-    adi_provisioning_end: sysv64_type!(
-        fn(session: u32, ptm: *const u8, ptm_length: u32, tk: *const u8, tk_length: u32) -> i32
-    ),
-    adi_provisioning_start: sysv64_type!(
-        fn(
-            ds_id: i64,
-            spim: *const u8,
-            spim_length: u32,
-            out_cpim: *mut *const u8,
-            out_cpim_length: *mut u32,
-            out_session: *mut u32,
-        ) -> i32
-    ),
-    adi_get_login_code: sysv64_type!(fn(ds_id: i64) -> i32),
-    adi_dispose: sysv64_type!(fn(ptr: *const u8) -> i32),
-    adi_otp_request: sysv64_type!(
-        fn(
-            ds_id: i64,
-            out_mid: *mut *const u8,
-            out_mid_size: *mut u32,
-            out_otp: *mut *const u8,
-            out_otp_size: *mut u32,
-        ) -> i32
-    ),
+    adi_provisioning_erase: AdiProvisioningErase,
+    adi_synchronize: AdiSynchronize,
+    adi_provisioning_destroy: AdiProvisioningDestroy,
+    adi_provisioning_end: AdiProvisioningEnd,
+    adi_provisioning_start: AdiProvisioningStart,
+    adi_get_login_code: AdiGetLoginCode,
+    adi_dispose: AdiDispose,
+    adi_otp_request: AdiOtpRequest,
 }
 
 impl StoreServicesCoreADIProxy<'_> {
@@ -79,7 +99,7 @@ impl StoreServicesCoreADIProxy<'_> {
 
     pub fn with_custom_provisioning_path<'lt>(
         library_path: &PathBuf,
-        provisioning_path: &PathBuf,
+        provisioning_path: &Path,
     ) -> Result<StoreServicesCoreADIProxy<'lt>, AnisetteError> {
         // Should be safe if the library is correct.
         unsafe {
@@ -87,7 +107,7 @@ impl StoreServicesCoreADIProxy<'_> {
 
             if !library_path.exists() {
                 std::fs::create_dir(library_path)?;
-                return Err(AnisetteError::MissingLibraries.into());
+                return Err(AnisetteError::MissingLibraries);
             }
 
             let library_path = library_path.canonicalize()?;
@@ -163,17 +183,31 @@ impl StoreServicesCoreADIProxy<'_> {
                 device_identifier: String::new(),
                 serial_number: "0".to_string(),
 
-                adi_set_android_id: std::mem::transmute(adi_set_android_id),
-                adi_set_provisioning_path: std::mem::transmute(adi_set_provisioning_path),
+                adi_set_android_id: std::mem::transmute::<*const (), AdiSetAndroidId>(
+                    adi_set_android_id,
+                ),
+                adi_set_provisioning_path: std::mem::transmute::<*const (), AdiSetProvisioningPath>(
+                    adi_set_provisioning_path,
+                ),
 
-                adi_provisioning_erase: std::mem::transmute(adi_provisioning_erase),
-                adi_synchronize: std::mem::transmute(adi_synchronize),
-                adi_provisioning_destroy: std::mem::transmute(adi_provisioning_destroy),
-                adi_provisioning_end: std::mem::transmute(adi_provisioning_end),
-                adi_provisioning_start: std::mem::transmute(adi_provisioning_start),
-                adi_get_login_code: std::mem::transmute(adi_get_login_code),
-                adi_dispose: std::mem::transmute(adi_dispose),
-                adi_otp_request: std::mem::transmute(adi_otp_request),
+                adi_provisioning_erase: std::mem::transmute::<*const (), AdiProvisioningErase>(
+                    adi_provisioning_erase,
+                ),
+                adi_synchronize: std::mem::transmute::<*const (), AdiSynchronize>(adi_synchronize),
+                adi_provisioning_destroy: std::mem::transmute::<*const (), AdiProvisioningDestroy>(
+                    adi_provisioning_destroy,
+                ),
+                adi_provisioning_end: std::mem::transmute::<*const (), AdiProvisioningEnd>(
+                    adi_provisioning_end,
+                ),
+                adi_provisioning_start: std::mem::transmute::<*const (), AdiProvisioningStart>(
+                    adi_provisioning_start,
+                ),
+                adi_get_login_code: std::mem::transmute::<*const (), AdiGetLoginCode>(
+                    adi_get_login_code,
+                ),
+                adi_dispose: std::mem::transmute::<*const (), AdiDispose>(adi_dispose),
+                adi_otp_request: std::mem::transmute::<*const (), AdiOtpRequest>(adi_otp_request),
             };
 
             proxy.set_provisioning_path(provisioning_path.to_str().ok_or(AnisetteError::Misc)?)?;
@@ -394,69 +428,30 @@ use posix_windows::*;
 impl LoaderHelpers {
     pub fn setup_hooks() {
         let mut hooks = HashMap::new();
-        hooks.insert("arc4random".to_owned(), arc4random as usize);
-        hooks.insert("chmod".to_owned(), chmod as usize);
+        hooks.insert("arc4random".to_owned(), arc4random as *const () as usize);
+        hooks.insert("chmod".to_owned(), chmod as *const () as usize);
         hooks.insert(
             "__system_property_get".to_owned(),
-            __system_property_get as usize,
+            __system_property_get as *const () as usize,
         );
-        hooks.insert("__errno".to_owned(), __errno_location as usize);
-        hooks.insert("close".to_owned(), close as usize);
-        hooks.insert("free".to_owned(), free as usize);
-        hooks.insert("fstat".to_owned(), fstat as usize);
-        hooks.insert("ftruncate".to_owned(), ftruncate as usize);
-        hooks.insert("gettimeofday".to_owned(), gettimeofday as usize);
-        hooks.insert("lstat".to_owned(), lstat as usize);
-        hooks.insert("malloc".to_owned(), malloc as usize);
-        hooks.insert("mkdir".to_owned(), mkdir as usize);
-        hooks.insert("open".to_owned(), open as usize);
-        hooks.insert("read".to_owned(), read as usize);
-        hooks.insert("strncpy".to_owned(), strncpy as usize);
-        hooks.insert("umask".to_owned(), umask as usize);
-        hooks.insert("write".to_owned(), write as usize);
+        hooks.insert("__errno".to_owned(), __errno_location as *const () as usize);
+        hooks.insert("close".to_owned(), close as *const () as usize);
+        hooks.insert("free".to_owned(), free as *const () as usize);
+        hooks.insert("fstat".to_owned(), fstat as *const () as usize);
+        hooks.insert("ftruncate".to_owned(), ftruncate as *const () as usize);
+        hooks.insert(
+            "gettimeofday".to_owned(),
+            gettimeofday as *const () as usize,
+        );
+        hooks.insert("lstat".to_owned(), lstat as *const () as usize);
+        hooks.insert("malloc".to_owned(), malloc as *const () as usize);
+        hooks.insert("mkdir".to_owned(), mkdir as *const () as usize);
+        hooks.insert("open".to_owned(), open as *const () as usize);
+        hooks.insert("read".to_owned(), read as *const () as usize);
+        hooks.insert("strncpy".to_owned(), strncpy as *const () as usize);
+        hooks.insert("umask".to_owned(), umask as *const () as usize);
+        hooks.insert("write".to_owned(), write as *const () as usize);
 
         hook_manager::add_hooks(hooks);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::AnisetteError;
-    use crate::{AnisetteConfiguration, AnisetteHeaders};
-    use log::info;
-    use std::path::PathBuf;
-
-    #[cfg(not(feature = "async"))]
-    #[test]
-    #[ignore = "network"]
-    fn fetch_anisette_ssc() -> Result<(), AnisetteError> {
-        crate::tests::init_logger();
-
-        let mut provider = AnisetteHeaders::get_ssc_anisette_headers_provider(
-            AnisetteConfiguration::new()
-                .set_configuration_path(PathBuf::new().join("anisette_test")),
-        )?;
-        info!(
-            "Headers: {:?}",
-            provider.provider.get_authentication_headers()?
-        );
-        Ok(())
-    }
-
-    #[cfg(feature = "async")]
-    #[tokio::test]
-    #[ignore = "network"]
-    async fn fetch_anisette_ssc_async() -> Result<(), AnisetteError> {
-        crate::tests::init_logger();
-
-        let mut provider = AnisetteHeaders::get_ssc_anisette_headers_provider(
-            AnisetteConfiguration::new()
-                .set_configuration_path(PathBuf::new().join("anisette_test")),
-        )?;
-        info!(
-            "Headers: {:?}",
-            provider.provider.get_authentication_headers().await?
-        );
-        Ok(())
     }
 }
