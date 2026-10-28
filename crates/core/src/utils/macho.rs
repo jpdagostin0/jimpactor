@@ -4,7 +4,6 @@ use std::path::Path;
 use apple_codesign::{MachFile, MachOBinary, UniversalBinaryBuilder};
 use goblin::mach::{
     MachO as GoblinMachO,
-    cputype::CPU_TYPE_ARM64,
     load_command::{
         CommandVariant, LC_LAZY_LOAD_DYLIB, LC_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB,
         LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB,
@@ -76,6 +75,10 @@ impl MachO {
         self.modify_binaries(|macho| macho.add_dylib_load_path(path))
     }
 
+    pub fn add_rpath(&mut self, path: &str) -> Result<(), Error> {
+        self.modify_binaries(|binary| append_rpath(binary, path))
+    }
+
     pub fn replace_dylib(&mut self, old_path: &str, new_path: &str) -> Result<(), Error> {
         self.modify_binaries(|macho| macho.replace_dylib_load_path(old_path, new_path))
     }
@@ -145,6 +148,9 @@ impl<'a> MachOExt for MachOBinary<'a> {
     // these require rewriting the Mach-O
     fn add_dylib_load_path(&self, path: &str) -> Result<Vec<u8>, Error> {
         let macho = &self.macho;
+        if !macho.little_endian || path.contains('\0') {
+            return Err(Error::Parse);
+        }
 
         let read_u32_le = |data: &[u8], offset: usize| -> u32 {
             u32::from_le_bytes([
@@ -167,7 +173,7 @@ impl<'a> MachOExt for MachOBinary<'a> {
             })
         };
 
-        let is_64 = matches!(macho.header.cputype, CPU_TYPE_ARM64);
+        let is_64 = macho.is_64;
         let dylib_exists = dylib_exists_in_macho(macho, 0);
         let current_sizeofcmds = read_u32_le(self.data, 20);
         let current_ncmds = read_u32_le(self.data, 16);
@@ -220,6 +226,14 @@ impl<'a> MachOExt for MachOBinary<'a> {
             data.len()
         };
 
+        let mut data_start = data_start;
+        for segment in &macho.segments {
+            for (section, _) in segment.sections().map_err(|_| Error::Parse)? {
+                if section.offset > 0 {
+                    data_start = data_start.min(section.offset as usize);
+                }
+            }
+        }
         let available_space = data_start.saturating_sub(load_commands_end);
 
         if dylib_command_size > available_space {
@@ -475,4 +489,63 @@ fn manually_parse_dylib(file_data: &[u8], load_cmd_offset: usize) -> Option<Stri
     ]);
 
     extract_dylib_path(file_data, load_cmd_offset, name_offset_field)
+}
+
+fn append_rpath(binary: &MachOBinary<'_>, path: &str) -> Result<Vec<u8>, Error> {
+    let macho = &binary.macho;
+    if path.is_empty() || path.contains('\0') {
+        return Err(Error::Parse);
+    }
+    if macho.rpaths.contains(&path) {
+        return Ok(binary.data.to_vec());
+    }
+    let header_size: usize = if macho.is_64 { 32 } else { 28 };
+    let offset = header_size
+        .checked_add(macho.header.sizeofcmds as usize)
+        .ok_or(Error::Parse)?;
+    let size = (12 + path.len() + 1).div_ceil(if macho.is_64 { 8 } else { 4 })
+        * if macho.is_64 { 8 } else { 4 };
+    let end = offset.checked_add(size).ok_or(Error::Parse)?;
+    let mut data_start = binary.data.len();
+    for segment in &macho.segments {
+        if segment.fileoff > 0 && segment.filesize > 0 {
+            data_start = data_start.min(segment.fileoff as usize);
+        }
+        for (section, _) in segment.sections().map_err(|_| Error::Parse)? {
+            if section.offset > 0 {
+                data_start = data_start.min(section.offset as usize);
+            }
+        }
+    }
+    if end > data_start
+        || end > binary.data.len()
+        || binary.data[offset..end].iter().any(|byte| *byte != 0)
+    {
+        return Err(apple_codesign::AppleCodesignError::LoadCommandNoRoom.into());
+    }
+    let encode = |value: u32| {
+        if macho.little_endian {
+            value.to_le_bytes()
+        } else {
+            value.to_be_bytes()
+        }
+    };
+    let mut data = binary.data.to_vec();
+    data[offset..offset + 4].copy_from_slice(&encode(goblin::mach::load_command::LC_RPATH));
+    data[offset + 4..offset + 8]
+        .copy_from_slice(&encode(u32::try_from(size).map_err(|_| Error::Parse)?));
+    data[offset + 8..offset + 12].copy_from_slice(&encode(12));
+    data[offset + 12..offset + 12 + path.len()].copy_from_slice(path.as_bytes());
+    data[16..20].copy_from_slice(&encode(
+        u32::try_from(macho.header.ncmds.checked_add(1).ok_or(Error::Parse)?)
+            .map_err(|_| Error::Parse)?,
+    ));
+    data[20..24].copy_from_slice(&encode(
+        macho
+            .header
+            .sizeofcmds
+            .checked_add(size as u32)
+            .ok_or(Error::Parse)?,
+    ));
+    Ok(data)
 }

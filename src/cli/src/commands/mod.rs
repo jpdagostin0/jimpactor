@@ -22,7 +22,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Sign an iOS app bundle with certificate and provisioning profile
-    Sign(sign::SignArgs),
+    Sign(Box<sign::SignArgs>),
     /// Inspect Mach-O binaries
     MachO(macho::MachArgs),
     /// Manage Apple Developer account authentication

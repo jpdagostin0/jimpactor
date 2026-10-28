@@ -9,6 +9,10 @@ pub struct SignerOptions {
     pub custom_identifier: Option<String>,
     /// Custom version override.
     pub custom_version: Option<String>,
+    /// Replacement URL schemes; an empty list removes all registered schemes.
+    pub custom_url_schemes: Option<Vec<String>>,
+    /// Tweak loader and placement settings.
+    pub tweak_injection: TweakInjection,
     pub custom_icon: Option<PathBuf>,
     /// Custom entitlements plist to embed (only used when single_profile is set).
     pub custom_entitlements: Option<PathBuf>,
@@ -34,6 +38,8 @@ impl Default for SignerOptions {
             custom_name: None,
             custom_identifier: None,
             custom_version: None,
+            custom_url_schemes: None,
+            tweak_injection: TweakInjection::default(),
             custom_icon: None,
             custom_entitlements: None,
             features: SignerFeatures::default(),
@@ -104,6 +110,7 @@ pub enum SignerMode {
     #[default]
     Pem,
     Adhoc,
+    ModifyOnly,
     None,
 }
 
@@ -112,6 +119,7 @@ impl std::fmt::Display for SignerMode {
         match self {
             SignerMode::Pem => write!(f, "Apple ID"),
             SignerMode::Adhoc => write!(f, "Adhoc"),
+            SignerMode::ModifyOnly => write!(f, "Modify without signing"),
             SignerMode::None => write!(f, "No Modify"),
         }
     }
@@ -306,5 +314,75 @@ impl SignerApp {
             ],
             _ => &[],
         }
+    }
+}
+
+/// Loader defaults preserve the existing automatic ElleKit behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TweakLoader {
+    #[default]
+    ElleKit,
+    None,
+}
+impl std::fmt::Display for TweakLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ElleKit => "ElleKit",
+            Self::None => "None",
+        })
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TweakLoadPath {
+    #[default]
+    Rpath,
+    ExecutablePath,
+}
+impl std::fmt::Display for TweakLoadPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rpath => "@rpath",
+            Self::ExecutablePath => "@executable_path",
+        })
+    }
+}
+#[derive(Clone, Debug, Default)]
+pub struct TweakInjection {
+    pub loader: TweakLoader,
+    /// None keeps legacy Frameworks placement and @rpath/leaf load strings.
+    pub folder: Option<String>,
+    pub load_path: TweakLoadPath,
+}
+impl TweakInjection {
+    pub fn folder_path(&self) -> Result<std::path::PathBuf, crate::Error> {
+        let Some(folder) = &self.folder else {
+            return Ok("Frameworks".into());
+        };
+        let folder = folder.replace('\\', "/");
+        if folder == "/" || folder.is_empty() {
+            return Ok(std::path::PathBuf::new());
+        }
+        if folder.starts_with('/')
+            || folder
+                .split('/')
+                .any(|part| part == ".." || part.contains(':'))
+        {
+            return Err(crate::Error::Other(
+                "Tweak folder must stay inside the app bundle".into(),
+            ));
+        }
+        Ok(std::path::PathBuf::from(folder))
+    }
+    pub fn library_path(&self, relative: &std::path::Path) -> Result<String, crate::Error> {
+        let relative = if self.folder.is_none() && self.load_path == TweakLoadPath::Rpath {
+            relative.strip_prefix("Frameworks").unwrap_or(relative)
+        } else {
+            relative
+        };
+        let value = relative
+            .to_str()
+            .ok_or(crate::Error::TweakInvalidPath)?
+            .replace('\\', "/");
+        Ok(format!("{}/{value}", self.load_path))
     }
 }

@@ -321,6 +321,9 @@ pub(crate) async fn run_installation(
     use plume_core::{CertificateIdentity, developer::DeveloperSession};
     use plume_utils::{ConfirmRevocation, Signer, SignerInstallMode, SignerMode, XkitSigner};
 
+    if options.mode == SignerMode::ModifyOnly && options.install_mode != SignerInstallMode::Export {
+        return Err("Modify without signing is available for export only. Choose Export.".into());
+    }
     let package_file: Bundle;
     let mut options = options.clone();
     let send = |msg: String, progress: i32| {
@@ -474,7 +477,7 @@ pub(crate) async fn run_installation(
                 package_file = bundle;
             }
         }
-        SignerMode::Adhoc => {
+        SignerMode::Adhoc | SignerMode::ModifyOnly => {
             send("Extracting package...".to_string(), 50);
 
             let mut signer = Signer::new(None, options.clone());

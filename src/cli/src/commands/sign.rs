@@ -45,6 +45,28 @@ pub struct SignArgs {
     /// Custom bundle name to set
     #[arg(long = "custom-name", value_name = "NAME")]
     pub name: Option<String>,
+    /// Replace registered URL schemes (repeat for multiple schemes)
+    #[arg(
+        long = "url-scheme",
+        value_name = "SCHEME",
+        conflicts_with = "remove_url_schemes"
+    )]
+    pub url_schemes: Vec<String>,
+    /// Remove all registered URL schemes
+    #[arg(long)]
+    pub remove_url_schemes: bool,
+    /// Apply modifications without signing (IPA input requires --output)
+    #[arg(long, conflicts_with_all = ["apple_id", "pem_files", "provisioning_files", "register_and_install"])]
+    pub modify_only: bool,
+    /// Loader to bundle for injected tweaks
+    #[arg(long, value_parser = ["ellekit", "none"], default_value = "ellekit")]
+    pub tweak_loader: String,
+    /// App-relative tweak destination; / places libraries beside the executable
+    #[arg(long, value_name = "FOLDER")]
+    pub tweak_inject_folder: Option<String>,
+    /// Prefix used by injected library load commands
+    #[arg(long, value_parser = ["@rpath", "@executable_path"], default_value = "@rpath")]
+    pub tweak_inject_path: String,
     /// Custom bundle version to set
     #[arg(long = "custom-version", value_name = "VERSION")]
     pub version: Option<String>,
@@ -77,10 +99,26 @@ pub async fn execute(args: SignArgs) -> Result<()> {
         custom_identifier: args.bundle_identifier,
         custom_name: args.name,
         custom_version: args.version,
+        custom_url_schemes: (!args.url_schemes.is_empty()).then_some(args.url_schemes),
+        tweak_injection: plume_utils::TweakInjection {
+            loader: if args.tweak_loader == "none" {
+                plume_utils::TweakLoader::None
+            } else {
+                plume_utils::TweakLoader::ElleKit
+            },
+            folder: args.tweak_inject_folder,
+            load_path: if args.tweak_inject_path == "@executable_path" {
+                plume_utils::TweakLoadPath::ExecutablePath
+            } else {
+                plume_utils::TweakLoadPath::Rpath
+            },
+        },
         tweaks: args.tweaks,
         ..Default::default()
     };
 
+    options.features.remove_url_schemes = args.remove_url_schemes;
+    options.tweak_injection.folder_path()?;
     let (bundle, package) = if args.package.is_dir() {
         log::warn!("⚠️  Signing bundle in place: {}", args.package.display());
         if args.output.is_some() {
@@ -138,7 +176,11 @@ pub async fn execute(args: SignArgs) -> Result<()> {
             )
         }
     } else {
-        options.mode = SignerMode::Adhoc;
+        options.mode = if args.modify_only {
+            SignerMode::ModifyOnly
+        } else {
+            SignerMode::Adhoc
+        };
         (Signer::new(None, options), None, None)
     };
 

@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sign(args) => commands::sign::execute(args).await?,
+        Commands::Sign(args) => commands::sign::execute(*args).await?,
         Commands::MachO(args) => commands::macho::execute(args).await?,
         Commands::Account(args) => commands::account::execute(args).await?,
         Commands::Device(args) => commands::device::execute(args).await?,
@@ -42,6 +42,39 @@ pub fn get_data_path() -> PathBuf {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    #[test]
+    fn modification_only_is_explicit_and_cannot_install_or_use_an_account() {
+        let cli = Cli::try_parse_from([
+            "jimpactor-cli",
+            "sign",
+            "--package",
+            "App.ipa",
+            "--output",
+            "Modified.ipa",
+            "--modify-only",
+            "--url-scheme",
+            "duplicate-app",
+            "--tweak-loader",
+            "none",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Commands::Sign(args) if args.modify_only && args.url_schemes == ["duplicate-app"] && args.tweak_loader == "none")
+        );
+        for incompatible in ["--apple-id", "--register-and-install"] {
+            assert!(
+                Cli::try_parse_from([
+                    "jimpactor-cli",
+                    "sign",
+                    "--package",
+                    "App.ipa",
+                    "--modify-only",
+                    incompatible
+                ])
+                .is_err()
+            );
+        }
+    }
     #[test]
     fn command_schema_and_device_udid_are_valid_on_this_platform() {
         Cli::command().debug_assert();

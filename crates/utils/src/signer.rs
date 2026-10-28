@@ -35,7 +35,9 @@ impl Signer {
             return Ok(());
         }
 
-        preflight_macho_layouts(bundle.bundle_dir())?;
+        if self.options.mode != SignerMode::ModifyOnly {
+            preflight_macho_layouts(bundle.bundle_dir())?;
+        }
         let bundles = bundle
             .collect_bundles_sorted()?
             .into_iter()
@@ -49,6 +51,13 @@ impl Signer {
         if let Some(new_version) = self.options.custom_version.as_ref() {
             bundle.set_version(new_version)?;
         }
+
+        if self.options.features.remove_url_schemes {
+            bundle.set_url_schemes(&[])?;
+        } else if let Some(schemes) = &self.options.custom_url_schemes {
+            bundle.set_url_schemes(schemes)?;
+        }
+        self.options.tweak_injection.folder_path()?;
 
         if self.options.features.support_minimum_os_version {
             bundle.set_info_plist_key("MinimumOSVersion", "7.0")?;
@@ -73,7 +82,7 @@ impl Signer {
 
         let identifier = bundle.get_bundle_identifier();
 
-        if self.options.mode != SignerMode::Adhoc
+        if self.options.mode == SignerMode::Pem
             && self.options.custom_identifier.is_none()
             && let (Some(identifier), Some(team_id)) = (identifier.as_ref(), team_id.as_ref())
         {
@@ -188,13 +197,20 @@ impl Signer {
 
         let has_tweaks = self.options.tweaks.as_ref().is_some_and(|t| !t.is_empty());
 
-        if self.options.features.support_ellekit || has_tweaks {
+        if self.options.tweak_injection.loader == crate::TweakLoader::ElleKit
+            && (self.options.features.support_ellekit || has_tweaks)
+        {
             crate::Tweak::install_ellekit(bundle).await?;
         }
 
         if let Some(tweak_files) = self.options.tweaks.as_ref() {
             for tweak_file in tweak_files {
-                let tweak = crate::Tweak::new(tweak_file, bundle).await?;
+                let tweak = crate::Tweak::new_with_options(
+                    tweak_file,
+                    bundle,
+                    self.options.tweak_injection.clone(),
+                )
+                .await?;
                 tweak.apply().await?;
             }
         }
@@ -354,7 +370,7 @@ impl Signer {
     }
 
     pub async fn sign_bundle(&self, bundle: &Bundle) -> Result<(), Error> {
-        if self.options.mode == SignerMode::None {
+        if matches!(self.options.mode, SignerMode::None | SignerMode::ModifyOnly) {
             return Ok(());
         }
 

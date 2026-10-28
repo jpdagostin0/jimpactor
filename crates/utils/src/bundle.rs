@@ -75,6 +75,44 @@ impl Bundle {
         self.set_info_plist_key("CFBundleName", new_name)
     }
 
+    pub fn set_url_schemes(&self, schemes: &[String]) -> Result<(), Error> {
+        for scheme in schemes {
+            let mut chars = scheme.chars();
+            if !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+                || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+            {
+                return Err(Error::Other(format!(
+                    "Invalid URL scheme: {scheme}. Enter the scheme without ://."
+                )));
+            }
+        }
+        let mut value = Value::from_file(&self.info_plist_path)?;
+        let dict = value
+            .as_dictionary_mut()
+            .ok_or(Error::BundleInfoPlistMissing)?;
+        if schemes.is_empty() {
+            dict.remove("CFBundleURLTypes");
+        } else {
+            let mut entry = dict
+                .get("CFBundleURLTypes")
+                .and_then(Value::as_array)
+                .and_then(|entries| entries.first())
+                .and_then(Value::as_dictionary)
+                .cloned()
+                .unwrap_or_default();
+            entry.insert(
+                "CFBundleURLSchemes".into(),
+                Value::Array(schemes.iter().cloned().map(Value::String).collect()),
+            );
+            dict.insert(
+                "CFBundleURLTypes".into(),
+                Value::Array(vec![Value::Dictionary(entry)]),
+            );
+        }
+        value.to_file_xml(&self.info_plist_path)?;
+        Ok(())
+    }
+
     pub fn set_version(&self, new_version: &str) -> Result<(), Error> {
         self.set_info_plist_key("CFBundleShortVersionString", new_version)?;
         self.set_info_plist_key("CFBundleVersion", new_version)

@@ -6,7 +6,9 @@ use std::{
 use plume_core::MachO;
 use uuid::Uuid;
 
-use crate::{Bundle, Error, PlistInfoTrait, copy_dir_recursively};
+use crate::{
+    Bundle, Error, PlistInfoTrait, TweakInjection, TweakLoadPath, TweakLoader, copy_dir_recursively,
+};
 
 const ELLEKIT_BYTES: &[u8] = include_bytes!("./ellekit.deb");
 
@@ -14,6 +16,7 @@ pub struct Tweak {
     path: PathBuf,
     app_bundle: PathBuf,
     stage_dir: PathBuf,
+    options: TweakInjection,
 }
 
 impl Tweak {
@@ -33,6 +36,15 @@ impl Tweak {
     }
 
     pub async fn new<P: AsRef<Path>>(tweak_path: P, app_bundle: &Bundle) -> Result<Self, Error> {
+        Self::new_with_options(tweak_path, app_bundle, TweakInjection::default()).await
+    }
+
+    pub async fn new_with_options<P: AsRef<Path>>(
+        tweak_path: P,
+        app_bundle: &Bundle,
+        options: TweakInjection,
+    ) -> Result<Self, Error> {
+        options.folder_path()?;
         let path = tweak_path.as_ref();
         if !path.exists() {
             return Err(Error::TweakInvalidPath);
@@ -59,6 +71,7 @@ impl Tweak {
             path: path.to_path_buf(),
             app_bundle: app_bundle.bundle_dir().clone(),
             stage_dir,
+            options,
         })
     }
 
@@ -161,7 +174,7 @@ impl Tweak {
     }
 
     async fn install_dylib(&self, dylib_path: &Path) -> Result<(), Error> {
-        let frameworks_dir = self.app_bundle.join("Frameworks");
+        let frameworks_dir = self.app_bundle.join(self.options.folder_path()?);
         tokio::fs::create_dir_all(&frameworks_dir).await?;
 
         let dylib_name = dylib_path.file_name().ok_or(Error::TweakInvalidPath)?;
@@ -169,12 +182,14 @@ impl Tweak {
 
         tokio::fs::copy(dylib_path, &dest).await?;
 
-        Self::patch_cydiasubstrate(&dest);
-        self.inject_dylib(&dest, false).await
+        if self.options.loader == TweakLoader::ElleKit {
+            Self::patch_cydiasubstrate(&dest);
+        }
+        self.inject_dylib(&dest).await
     }
 
     async fn install_framework(&self, framework_path: &Path) -> Result<(), Error> {
-        let frameworks_dir = self.app_bundle.join("Frameworks");
+        let frameworks_dir = self.app_bundle.join(self.options.folder_path()?);
         tokio::fs::create_dir_all(&frameworks_dir).await?;
 
         let framework_name = framework_path.file_name().ok_or(Error::TweakInvalidPath)?;
@@ -187,8 +202,10 @@ impl Tweak {
         {
             let exec_path = dest.join(exec_name);
             if exec_path.exists() {
-                Self::patch_cydiasubstrate(&exec_path);
-                self.inject_dylib(&exec_path, true).await?;
+                if self.options.loader == TweakLoader::ElleKit {
+                    Self::patch_cydiasubstrate(&exec_path);
+                }
+                self.inject_dylib(&exec_path).await?;
             }
         }
 
@@ -212,7 +229,7 @@ impl Tweak {
         copy_dir_recursively(appex_path, &dest).await
     }
 
-    async fn inject_dylib(&self, dylib_path: &Path, is_framework: bool) -> Result<(), Error> {
+    async fn inject_dylib(&self, dylib_path: &Path) -> Result<(), Error> {
         let bundle = Bundle::new(&self.app_bundle)?;
         let executable_name = bundle
             .get_executable()
@@ -223,28 +240,15 @@ impl Tweak {
             return Err(Error::BundleInfoPlistMissing);
         }
 
-        let inject_path = if is_framework {
-            let components: Vec<_> = dylib_path.components().rev().take(2).collect();
-            format!(
-                "@rpath/{}/{}",
-                components[1]
-                    .as_os_str()
-                    .to_str()
-                    .ok_or(Error::TweakInvalidPath)?,
-                components[0]
-                    .as_os_str()
-                    .to_str()
-                    .ok_or(Error::TweakInvalidPath)?
-            )
-        } else {
-            let file_name = dylib_path
-                .file_name()
-                .and_then(|f| f.to_str())
-                .ok_or(Error::TweakInvalidPath)?;
-            format!("@rpath/{}", file_name)
-        };
+        let relative = dylib_path
+            .strip_prefix(&self.app_bundle)
+            .map_err(|_| Error::TweakInvalidPath)?;
+        let inject_path = self.options.library_path(relative)?;
 
         let mut macho = MachO::new(&executable_path)?;
+        if self.options.folder.is_some() && self.options.load_path == TweakLoadPath::Rpath {
+            macho.add_rpath("@executable_path")?;
+        }
         macho.add_dylib(&inject_path)?;
 
         Ok(())

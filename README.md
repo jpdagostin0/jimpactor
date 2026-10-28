@@ -47,6 +47,17 @@ Apple verification errors distinguish an incorrect code from a temporary lockout
 
 Startup errors are written to the `logs` folder in the application data directory below. If Windows exits with a native access violation, include the Event Viewer faulting module and exception code with your report.
 
+## Export and tweak options
+
+Choose **Modify without signing** to apply app customizations and export an IPA without replacing executable signatures. Modified apps generally need signing before installation. **No Modify** keeps its existing behavior and skips customizations.
+
+URL schemes can be replaced with a comma-separated list or removed in the app options. For tweaks, choose **ElleKit** (the default) or **None** for libraries that provide their own hooking. The library folder is relative to the app: leave it blank for the existing `Frameworks` placement, or enter `/` for the app root. Load paths support `@rpath` and `@executable_path`.
+
+```sh
+jimpactor-cli sign --package App.ipa --output Modified.ipa --modify-only --url-scheme duplicate-app
+jimpactor-cli sign --package App.ipa --output Signed.ipa --tweaks Custom.dylib --tweak-loader none --tweak-inject-folder / --tweak-inject-path @executable_path
+```
+
 ## Build
 
 Install Rust, CMake, and the native dependencies listed in the [contributing guide](.github/CONTRIBUTING.md).

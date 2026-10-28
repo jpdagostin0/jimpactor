@@ -2,7 +2,10 @@ use iced::widget::{
     button, checkbox, column, container, image, pick_list, row, scrollable, stack, text, text_input,
 };
 use iced::{Alignment, Center, Element, Fill, Task};
-use plume_utils::{Package, PlistInfoTrait, SignerInstallMode, SignerMode, SignerOptions};
+use plume_utils::{
+    Package, PlistInfoTrait, SignerInstallMode, SignerMode, SignerOptions, TweakLoadPath,
+    TweakLoader,
+};
 use rust_i18n::t;
 use std::path::PathBuf;
 use tiny_skia::{FillRule, Mask, Path, PathBuilder, Transform};
@@ -14,6 +17,11 @@ pub enum Message {
     UpdateCustomName(String),
     UpdateCustomIdentifier(String),
     UpdateCustomVersion(String),
+    UpdateURLSchemes(String),
+    RemoveURLSchemes(bool),
+    UpdateTweakLoader(TweakLoader),
+    UpdateTweakFolder(String),
+    UpdateTweakLoadPath(TweakLoadPath),
     ToggleMinimumOsVersion(bool),
     ToggleFileSharing(bool),
     ToggleIpadFullscreen(bool),
@@ -51,6 +59,7 @@ pub struct PackageScreen {
     pub options: SignerOptions,
     package_icon_handle: Option<image::Handle>,
     custom_icon_path: Option<PathBuf>,
+    url_schemes_input: String,
     custom_icon_handle: Option<image::Handle>,
 }
 
@@ -64,8 +73,14 @@ impl PackageScreen {
         let custom_icon_path = options.custom_icon.clone();
         let custom_icon_handle = custom_icon_path.as_ref().and_then(icon_handle_from_path);
 
+        let url_schemes_input = options
+            .custom_url_schemes
+            .as_ref()
+            .map(|schemes| schemes.join(", "))
+            .unwrap_or_default();
         Self {
             selected_package: package,
+            url_schemes_input,
             options,
             package_icon_handle,
             custom_icon_path,
@@ -75,6 +90,34 @@ impl PackageScreen {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::UpdateURLSchemes(value) => {
+                self.options.custom_url_schemes = (!value.trim().is_empty()).then(|| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                });
+                self.url_schemes_input = value;
+                Task::none()
+            }
+            Message::RemoveURLSchemes(value) => {
+                self.options.features.remove_url_schemes = value;
+                Task::none()
+            }
+            Message::UpdateTweakLoader(value) => {
+                self.options.tweak_injection.loader = value;
+                Task::none()
+            }
+            Message::UpdateTweakFolder(value) => {
+                self.options.tweak_injection.folder = (!value.is_empty()).then_some(value);
+                Task::none()
+            }
+            Message::UpdateTweakLoadPath(value) => {
+                self.options.tweak_injection.load_path = value;
+                Task::none()
+            }
             Message::UpdateCustomName(name) => {
                 let pkg_name = self
                     .selected_package
@@ -155,10 +198,18 @@ impl PackageScreen {
             }
             Message::UpdateSignerMode(mode) => {
                 self.options.mode = mode;
+                if mode == SignerMode::ModifyOnly {
+                    self.options.install_mode = SignerInstallMode::Export;
+                    self.options.refresh = false;
+                }
                 Task::none()
             }
             Message::UpdateInstallMode(mode) => {
-                self.options.install_mode = mode;
+                self.options.install_mode = if self.options.mode == SignerMode::ModifyOnly {
+                    SignerInstallMode::Export
+                } else {
+                    mode
+                };
                 Task::none()
             }
             Message::AddTweak => Task::perform(
@@ -338,6 +389,13 @@ impl PackageScreen {
             )
             .on_input(Message::UpdateCustomVersion)
             .padding(8),
+            text("URL schemes (comma separated; blank keeps existing)").size(12),
+            text_input("myapp, myapp-login", &self.url_schemes_input)
+                .on_input(Message::UpdateURLSchemes)
+                .padding(8),
+            checkbox(self.options.features.remove_url_schemes)
+                .label("Remove all URL schemes")
+                .on_toggle(Message::RemoveURLSchemes),
             text(t!("options_entitlements")).size(12),
             self.view_custom_entitlements(),
             text(t!("options_entitlements_warn")).size(11),
@@ -384,6 +442,28 @@ impl PackageScreen {
             checkbox(self.options.features.support_pro_motion)
                 .label(t!("options_pro_motion"))
                 .on_toggle(Message::ToggleProMotion),
+            text("Tweak loader").size(12),
+            pick_list(
+                &[TweakLoader::ElleKit, TweakLoader::None][..],
+                Some(self.options.tweak_injection.loader),
+                Message::UpdateTweakLoader
+            ),
+            text("Library folder (blank: Frameworks; /: app root)").size(12),
+            text_input(
+                "Frameworks",
+                self.options
+                    .tweak_injection
+                    .folder
+                    .as_deref()
+                    .unwrap_or_default()
+            )
+            .on_input(Message::UpdateTweakFolder)
+            .padding(8),
+            pick_list(
+                &[TweakLoadPath::Rpath, TweakLoadPath::ExecutablePath][..],
+                Some(self.options.tweak_injection.load_path),
+                Message::UpdateTweakLoadPath
+            ),
             text(t!("options_advanced")).size(12),
             checkbox(self.options.embedding.single_profile)
                 .label(t!("options_register_main_bundle"))
@@ -407,7 +487,12 @@ impl PackageScreen {
             .placeholder(t!("options_mode_desc")),
             text(t!("options_signing")).size(12),
             pick_list(
-                &[SignerMode::Pem, SignerMode::Adhoc, SignerMode::None][..],
+                &[
+                    SignerMode::Pem,
+                    SignerMode::Adhoc,
+                    SignerMode::ModifyOnly,
+                    SignerMode::None
+                ][..],
                 Some(self.options.mode),
                 Message::UpdateSignerMode
             )
