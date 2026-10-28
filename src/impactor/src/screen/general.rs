@@ -26,40 +26,37 @@ pub struct GeneralScreen;
 
 impl GeneralScreen {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::OpenFileDialog => {
-                return Task::perform(
-                    async {
-                        rfd::AsyncFileDialog::new()
-                            .add_filter(t!("ipa"), &["ipa", "tipa"])
-                            .set_title(t!("select_ipa"))
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().to_path_buf())
-                    },
-                    Message::FileSelected,
-                );
-            }
+            Message::OpenFileDialog => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .add_filter(t!("ipa"), &["ipa", "tipa"])
+                        .set_title(t!("select_ipa"))
+                        .pick_file()
+                        .await
+                        .map(|file| file.path().to_path_buf())
+                },
+                Message::FileSelected,
+            ),
             Message::FileSelected(path) => {
-                if let Some(path) = path {
-                    if let Ok(package) = Package::new(path) {
-                        return Task::done(Message::NavigateToInstaller(package));
-                    }
+                if let Some(path) = path
+                    && let Ok(package) = Package::new(path)
+                {
+                    return Task::done(Message::NavigateToInstaller(package));
                 }
                 Task::none()
             }
             Message::FilesDropped(paths) => {
                 for path in paths {
-                    if let Some(ext) = path.extension() {
-                        if ext == "ipa" || ext == "tipa" {
-                            if let Ok(package) = Package::new(path) {
-                                return Task::done(Message::NavigateToInstaller(package));
-                            }
-                        }
+                    if let Some(ext) = path.extension()
+                        && (ext == "ipa" || ext == "tipa")
+                        && let Ok(package) = Package::new(path)
+                    {
+                        return Task::done(Message::NavigateToInstaller(package));
                     }
                 }
                 Task::none()

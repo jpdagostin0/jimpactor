@@ -188,12 +188,12 @@ impl PackageScreen {
 
                     SelectionKind::Bundle => {
                         for path in paths {
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                if ["framework", "bundle", "appex"].contains(&ext) {
-                                    match &mut self.options.tweaks {
-                                        Some(tweaks) => tweaks.push(path),
-                                        None => self.options.tweaks = Some(vec![path]),
-                                    }
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str())
+                                && ["framework", "bundle", "appex"].contains(&ext)
+                            {
+                                match &mut self.options.tweaks {
+                                    Some(tweaks) => tweaks.push(path),
+                                    None => self.options.tweaks = Some(vec![path]),
                                 }
                             }
                         }
@@ -217,10 +217,10 @@ impl PackageScreen {
                 Task::none()
             }
             Message::RemoveTweak(index) => {
-                if let Some(tweaks) = &mut self.options.tweaks {
-                    if index < tweaks.len() {
-                        tweaks.remove(index);
-                    }
+                if let Some(tweaks) = &mut self.options.tweaks
+                    && index < tweaks.len()
+                {
+                    tweaks.remove(index);
                 }
                 Task::none()
             }
@@ -585,7 +585,7 @@ fn icon_handle_from_image(image: ::image::DynamicImage) -> Option<image::Handle>
         Transform::identity(),
     );
 
-    for (pixel, coverage) in pixels.chunks_exact_mut(4).zip(mask.data()) {
+    for (pixel, coverage) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(mask.data()) {
         pixel[3] = ((u16::from(pixel[3]) * u16::from(*coverage) + 127) / 255) as u8;
     }
 

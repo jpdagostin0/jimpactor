@@ -315,7 +315,7 @@ impl UtilitiesScreen {
                     row![
                         text(format!(
                             "{} ({})",
-                            app.app.to_string(),
+                            app.app,
                             app.bundle_id.clone().unwrap_or("???".to_string())
                         ))
                         .size(14)

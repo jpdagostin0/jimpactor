@@ -74,10 +74,10 @@ impl Log for AppLogger {
             message: record.args().to_string(),
         };
 
-        if let Ok(mut file) = self.file.lock() {
-            if let Some(file) = file.as_mut() {
-                let _ = writeln!(file, "{} {}", entry.time.format("%Y-%m-%d"), entry);
-            }
+        if let Ok(mut file) = self.file.lock()
+            && let Some(file) = file.as_mut()
+        {
+            let _ = writeln!(file, "{} {}", entry.time.format("%Y-%m-%d"), entry);
         }
 
         if let Ok(mut entries) = self.entries.lock() {
@@ -89,10 +89,10 @@ impl Log for AppLogger {
     }
 
     fn flush(&self) {
-        if let Ok(mut file) = self.file.lock() {
-            if let Some(file) = file.as_mut() {
-                let _ = file.flush();
-            }
+        if let Ok(mut file) = self.file.lock()
+            && let Some(file) = file.as_mut()
+        {
+            let _ = file.flush();
         }
     }
 }

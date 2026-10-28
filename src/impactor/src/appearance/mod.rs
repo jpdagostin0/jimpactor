@@ -19,15 +19,16 @@ pub(crate) const THEME_ICON_SIZE: f32 = 12.0;
 
 pub(crate) fn p_font() -> iced::Font {
     iced::Font {
-        family: iced::font::Family::Name("Hack".into()),
+        family: iced::font::Family::Name("Hack"),
         weight: iced::font::Weight::Normal,
         stretch: iced::font::Stretch::Normal,
         style: iced::font::Style::Normal,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum PlumeTheme {
+    #[default]
     Dark,
     Light,
 }
@@ -58,12 +59,6 @@ impl PlumeTheme {
                 },
             ),
         }
-    }
-}
-
-impl Default for PlumeTheme {
-    fn default() -> Self {
-        Self::Dark
     }
 }
 

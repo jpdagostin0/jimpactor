@@ -92,22 +92,22 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
             .await?;
     }
 
-    if args.pairing {
-        if let Some(pairing_path) = args.pairing_path {
-            log::info!(
-                "Installing pairing record from {:?} to device {}",
-                pairing_path,
-                device.name
-            );
-            let app_identifier = if let Some(identifier) = args.pairing_app_identifier {
-                identifier
-            } else {
-                apps(&device).await?
-            };
-            device
-                .install_pairing_record(&app_identifier, pairing_path.to_str().unwrap())
-                .await?;
-        }
+    if args.pairing
+        && let Some(pairing_path) = args.pairing_path
+    {
+        log::info!(
+            "Installing pairing record from {:?} to device {}",
+            pairing_path,
+            device.name
+        );
+        let app_identifier = if let Some(identifier) = args.pairing_app_identifier {
+            identifier
+        } else {
+            apps(&device).await?
+        };
+        device
+            .install_pairing_record(&app_identifier, pairing_path.to_str().unwrap())
+            .await?;
     }
 
     Ok(())
@@ -127,7 +127,7 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
         ));
     }
 
-    let device_futures: Vec<_> = devices.into_iter().map(|d| Device::new(d)).collect();
+    let device_futures: Vec<_> = devices.into_iter().map(Device::new).collect();
 
     let devices = futures::future::join_all(device_futures).await;
 

@@ -245,10 +245,9 @@ async fn logout() -> Result<()> {
 async fn certificates(args: CertificatesArgs) -> Result<()> {
     let session = get_authenticated_account().await?;
 
-    let team_id = if args.team_id.is_none() {
-        teams(&session).await?
-    } else {
-        args.team_id.unwrap()
+    let team_id = match args.team_id {
+        Some(team_id) => team_id,
+        None => teams(&session).await?,
     };
 
     let p = session.qh_list_certs(&team_id).await?.certificates;
@@ -261,10 +260,9 @@ async fn certificates(args: CertificatesArgs) -> Result<()> {
 async fn devices(args: DevicesArgs) -> Result<()> {
     let session = get_authenticated_account().await?;
 
-    let team_id = if args.team_id.is_none() {
-        teams(&session).await?
-    } else {
-        args.team_id.unwrap()
+    let team_id = match args.team_id {
+        Some(team_id) => team_id,
+        None => teams(&session).await?,
     };
 
     let p = session.qh_list_devices(&team_id).await?.devices;
@@ -277,10 +275,9 @@ async fn devices(args: DevicesArgs) -> Result<()> {
 async fn register_device(args: RegisterDeviceArgs) -> Result<()> {
     let session = get_authenticated_account().await?;
 
-    let team_id = if args.team_id.is_none() {
-        teams(&session).await?
-    } else {
-        args.team_id.unwrap()
+    let team_id = match args.team_id {
+        Some(team_id) => team_id,
+        None => teams(&session).await?,
     };
 
     let p = session
@@ -313,10 +310,9 @@ pub async fn teams(session: &DeveloperSession) -> Result<String> {
 pub async fn app_ids(args: AppIdsArgs) -> Result<()> {
     let session = get_authenticated_account().await?;
 
-    let team_id = if args.team_id.is_none() {
-        teams(&session).await?
-    } else {
-        args.team_id.unwrap()
+    let team_id = match args.team_id {
+        Some(team_id) => team_id,
+        None => teams(&session).await?,
     };
 
     let p = session.v1_list_app_ids(&team_id, None).await?.data;

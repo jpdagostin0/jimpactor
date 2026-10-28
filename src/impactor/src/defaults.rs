@@ -41,7 +41,7 @@ pub(crate) fn default_window_settings() -> window::Settings {
         exit_on_close_request: false,
         resizable: false,
         icon: Some(load_window_icon()),
-        platform_specific: platform_specific,
+        platform_specific,
         ..Default::default()
     }
 }

@@ -32,11 +32,11 @@ pub async fn execute(args: MachArgs) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(replace_paths) = &args.replace_dylib {
-        if replace_paths.len() == 2 {
-            macho.replace_dylib(&replace_paths[0], &replace_paths[1])?;
-            return Ok(());
-        }
+    if let Some(replace_paths) = &args.replace_dylib
+        && replace_paths.len() == 2
+    {
+        macho.replace_dylib(&replace_paths[0], &replace_paths[1])?;
+        return Ok(());
     }
 
     if args.list_dylibs {
@@ -59,13 +59,13 @@ pub async fn execute(args: MachArgs) -> Result<()> {
     }
 
     let entitlements = macho.entitlements();
-    if args.entitlements {
-        if let Some(ent) = entitlements {
-            let mut buf = Vec::new();
-            plist::Value::Dictionary(ent.clone()).to_writer_xml(&mut buf)?;
-            let xml_str = String::from_utf8(buf)?;
-            println!("{}", xml_str);
-        }
+    if args.entitlements
+        && let Some(ent) = entitlements
+    {
+        let mut buf = Vec::new();
+        plist::Value::Dictionary(ent.clone()).to_writer_xml(&mut buf)?;
+        let xml_str = String::from_utf8(buf)?;
+        println!("{}", xml_str);
     }
 
     Ok(())

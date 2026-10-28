@@ -491,16 +491,14 @@ impl SettingsScreen {
                     Ok(servers) if !servers.is_empty() => {
                         self.anisette_servers = servers;
                         self.ensure_selected_server_listed();
-                        if self.remote_provider == RemoteProvider::SideStore {
-                            if let Some(server) = &self.pending_server {
-                                if !self
-                                    .anisette_servers
-                                    .iter()
-                                    .any(|s| s.address == server.address)
-                                {
-                                    self.anisette_servers.insert(0, server.clone());
-                                }
-                            }
+                        if self.remote_provider == RemoteProvider::SideStore
+                            && let Some(server) = &self.pending_server
+                            && !self
+                                .anisette_servers
+                                .iter()
+                                .any(|s| s.address == server.address)
+                        {
+                            self.anisette_servers.insert(0, server.clone());
                         }
                     }
                     Ok(_) => {}

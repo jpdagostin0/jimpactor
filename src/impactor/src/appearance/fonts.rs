@@ -27,7 +27,7 @@ pub(crate) fn icon_text<M: 'static>(
     color: Option<Color>,
 ) -> Element<'static, M> {
     let icon_font = Font {
-        family: iced::font::Family::Name("plume_icons".into()),
+        family: iced::font::Family::Name("plume_icons"),
         weight: iced::font::Weight::Normal,
         stretch: iced::font::Stretch::Normal,
         style: iced::font::Style::Normal,
@@ -55,7 +55,7 @@ pub(crate) fn icon_text<M: 'static>(
 
 pub(crate) fn icon(icon: &'static str) -> Text<'static> {
     let icon_font = Font {
-        family: font::Family::Name("plume_icons".into()),
+        family: font::Family::Name("plume_icons"),
         weight: font::Weight::Normal,
         stretch: font::Stretch::Normal,
         style: font::Style::Normal,
