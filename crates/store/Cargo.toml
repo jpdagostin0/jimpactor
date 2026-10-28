@@ -16,4 +16,4 @@ reqwest.workspace = true
 plume_core = { path = "../core", features = ["tweaks"] }
 log.workspace = true
 rand.workspace = true
-keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "vendored", "crypto-rust"] }

@@ -10,3 +10,18 @@ repository.workspace = true
 
 [dependencies]
 genicons = { path = "../genicons" }
+fstool = { version = "0.5", default-features = false, features = ["hfs-plus"] }
+apple-dmg = "0.5"
+reqwest.workspace = true
+sha2.workspace = true
+hex.workspace = true
+goblin.workspace = true
+plist.workspace = true
+tar = "0.4"
+flate2.workspace = true
+lzma-rust2 = { version = "0.24", default-features = false, features = ["std", "xz"] }
+serde_json.workspace = true
+tempfile = "3"
+
+[dev-dependencies]
+udif = { version = "0.4.2", default-features = false, features = ["extract"] }

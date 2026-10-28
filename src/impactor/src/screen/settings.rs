@@ -1,12 +1,12 @@
+mod account;
 mod developer;
 mod logs;
 mod pairing;
+mod server_info;
 mod source_manager;
 
 pub(crate) use logs::Message as LogsMessage;
 pub(crate) use pairing::Message as PairingMessage;
-
-use std::collections::HashMap;
 
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
@@ -38,13 +38,19 @@ impl std::fmt::Display for Team {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ShowLogin,
-    SelectAccount(usize),
-    RemoveAccount(usize),
+    ShowLogin(Option<String>),
+    SelectAccount(String),
+    RemoveAccount(String),
     ExportP12,
     SelectTeam(String, String),
     FetchTeams(String),
-    TeamsLoaded(String, Vec<Team>),
+    TeamsLoaded(String, u64, Result<Vec<Team>, String>),
+    ProbeRemoteServer,
+    RemoteServerProbed(
+        u64,
+        String,
+        Result<plume_core::remote_probe::ServerInfo, String>,
+    ),
     ToggleAutoStart(bool),
     SelectLocale(Option<String>),
     ResetAnisetteData,
@@ -93,6 +99,7 @@ impl std::fmt::Debug for PatreonLoginInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    Account,
     Pairing,
     Developer,
     Sources,
@@ -100,8 +107,9 @@ pub enum SettingsTab {
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 5] = [
+    const ALL: [SettingsTab; 6] = [
         SettingsTab::General,
+        SettingsTab::Account,
         SettingsTab::Pairing,
         SettingsTab::Developer,
         SettingsTab::Sources,
@@ -111,6 +119,7 @@ impl SettingsTab {
     fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
             SettingsTab::General => t!("settings_tab_general"),
+            SettingsTab::Account => t!("settings_tab_account"),
             SettingsTab::Pairing => t!("settings_tab_pairing"),
             SettingsTab::Developer => t!("settings_tab_developer"),
             SettingsTab::Sources => t!("settings_tab_sources"),
@@ -193,8 +202,8 @@ impl std::fmt::Display for LocaleChoice {
 
 #[derive(Debug)]
 pub struct SettingsScreen {
-    teams: HashMap<String, Vec<Team>>,
-    loading_teams: Option<String>,
+    account: account::AccountTab,
+    server_info: server_info::ServerInfoPanel,
     anisette: AnisetteSettings,
     anisette_servers: Vec<AnisetteServer>,
     loading_anisette_servers: bool,
@@ -215,8 +224,8 @@ impl SettingsScreen {
     pub fn new() -> Self {
         let anisette = AnisetteSettings::load_sync(&crate::defaults::get_data_path());
         let mut screen = Self {
-            teams: HashMap::new(),
-            loading_teams: None,
+            account: account::AccountTab::default(),
+            server_info: server_info::ServerInfoPanel::default(),
             anisette,
             anisette_servers: remote_servers::builtin_servers(),
             loading_anisette_servers: false,
@@ -258,10 +267,15 @@ impl SettingsScreen {
 
     fn select_anisette_server(&mut self, server: AnisetteServer) -> bool {
         log::info!("Selected anisette server {server}");
+        self.server_info.clear();
         self.anisette.remote_server = server;
         self.anisette_status = None;
         self.ensure_selected_server_listed();
         self.save_anisette()
+    }
+
+    pub fn account_changed(&mut self, email: &str) {
+        self.account.forget(email);
     }
 
     pub fn update(&mut self, message: Message, store: Option<&AccountStore>) -> Task<Message> {
@@ -269,6 +283,14 @@ impl SettingsScreen {
             Message::SelectTab(tab) => {
                 self.tab = tab;
                 match tab {
+                    SettingsTab::General => self.update(Message::ProbeRemoteServer, store),
+                    SettingsTab::Account => {
+                        if let Some(account) = store.and_then(|store| store.selected_account()) {
+                            self.account.check(account.email().clone(), store)
+                        } else {
+                            Task::none()
+                        }
+                    }
                     SettingsTab::Pairing => {
                         self.update(Message::Pairing(pairing::Message::Refresh), store)
                     }
@@ -288,13 +310,23 @@ impl SettingsScreen {
             }
             Message::Sources(msg) => self.sources.update(msg).map(Message::Sources),
             Message::Logs(msg) => self.logs.update(msg).map(Message::Logs),
-            Message::FetchTeams(ref email) => {
-                self.loading_teams = Some(email.clone());
+            Message::FetchTeams(email) => self.account.check(email, store),
+            Message::TeamsLoaded(email, request, result) => {
+                self.account.checked(email, request, result);
                 Task::none()
             }
-            Message::TeamsLoaded(email, teams) => {
-                self.teams.insert(email, teams);
-                self.loading_teams = None;
+            Message::ProbeRemoteServer => {
+                if self.anisette.mode == AnisetteMode::Remote
+                    && (self.anisette.remote_provider != RemoteProvider::Sideloadly
+                        || self.anisette.sideloadly_session.is_some())
+                {
+                    self.server_info.probe(&self.anisette.remote_server)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::RemoteServerProbed(request, address, result) => {
+                self.server_info.probed(request, address, result);
                 Task::none()
             }
             Message::ToggleAutoStart(_) => Task::none(),
@@ -319,10 +351,15 @@ impl SettingsScreen {
                 if self.testing_anisette || self.sideloadly_logging_in {
                     return Task::none();
                 }
+                self.server_info.clear();
                 self.anisette.mode = mode;
                 self.anisette_status = None;
-                if self.save_anisette() && mode == AnisetteMode::Local {
-                    return self.update(Message::SetupLocalAnisette, store);
+                if self.save_anisette() {
+                    return match mode {
+                        AnisetteMode::Local => self.update(Message::SetupLocalAnisette, store),
+                        AnisetteMode::Remote => self.update(Message::ProbeRemoteServer, store),
+                        AnisetteMode::Fake => Task::none(),
+                    };
                 }
                 Task::none()
             }
@@ -359,8 +396,14 @@ impl SettingsScreen {
                 Task::none()
             }
             Message::SelectAnisetteServer(server) => {
-                self.select_anisette_server(server);
-                Task::none()
+                if self.testing_anisette || self.sideloadly_logging_in {
+                    return Task::none();
+                }
+                if self.select_anisette_server(server) {
+                    self.update(Message::ProbeRemoteServer, store)
+                } else {
+                    Task::none()
+                }
             }
             Message::FetchAnisetteServers => {
                 if self.loading_anisette_servers {
@@ -397,6 +440,9 @@ impl SettingsScreen {
                 Task::none()
             }
             Message::UseCustomAnisetteServer => {
+                if self.testing_anisette || self.sideloadly_logging_in {
+                    return Task::none();
+                }
                 let input = self.custom_anisette_server.trim();
                 let server = if input.starts_with("https://") || input.starts_with("http://") {
                     AnisetteServer::new(t!("settings_anisette_custom"), input)
@@ -408,8 +454,11 @@ impl SettingsScreen {
                     return Task::none();
                 };
                 self.custom_anisette_server.clear();
-                self.select_anisette_server(server);
-                Task::none()
+                if self.select_anisette_server(server) {
+                    self.update(Message::ProbeRemoteServer, store)
+                } else {
+                    Task::none()
+                }
             }
             Message::TestAnisette => {
                 if self.testing_anisette {
@@ -464,14 +513,15 @@ impl SettingsScreen {
                 self.testing_anisette = false;
                 match server {
                     Some(server) => {
-                        self.anisette_status = Some(
-                            t!(
-                                "settings_anisette_fastest_found",
-                                name = server.name.clone()
-                            )
-                            .to_string(),
-                        );
-                        self.select_anisette_server(server);
+                        let status = t!(
+                            "settings_anisette_fastest_found",
+                            name = server.name.clone()
+                        )
+                        .to_string();
+                        if self.select_anisette_server(server) {
+                            self.anisette_status = Some(status);
+                            return self.update(Message::ProbeRemoteServer, store);
+                        }
                     }
                     None => {
                         self.anisette_status =
@@ -481,9 +531,10 @@ impl SettingsScreen {
                 Task::none()
             }
             Message::SelectRemoteProvider(RemoteProviderChoice(provider)) => {
-                if self.sideloadly_logging_in {
+                if self.testing_anisette || self.sideloadly_logging_in {
                     return Task::none();
                 }
+                self.server_info.clear();
                 self.anisette.remote_provider = provider;
                 self.anisette_status = None;
                 self.save_anisette();
@@ -499,7 +550,7 @@ impl SettingsScreen {
                 {
                     self.select_anisette_server(remote_servers::builtin_servers().remove(0));
                 }
-                Task::none()
+                self.update(Message::ProbeRemoteServer, store)
             }
             Message::SideloadlyLogin => {
                 if self.sideloadly_logging_in {
@@ -549,7 +600,7 @@ impl SettingsScreen {
                         );
                     }
                 }
-                Task::none()
+                self.update(Message::ProbeRemoteServer, store)
             }
             Message::SideloadlyRefreshDeviceToken => {
                 if self.sideloadly_logging_in {
@@ -591,7 +642,7 @@ impl SettingsScreen {
                     }
                     Err(err) => self.anisette_status = Some(err),
                 }
-                Task::none()
+                self.update(Message::ProbeRemoteServer, store)
             }
             Message::SideloadlyPatreonLogin => {
                 if self.sideloadly_logging_in {
@@ -647,7 +698,7 @@ impl SettingsScreen {
                 if self.save_anisette() {
                     self.anisette_status = Some(t!("settings_sideloadly_logged_out").to_string());
                 }
-                Task::none()
+                self.update(Message::ProbeRemoteServer, store)
             }
             Message::SideloadlyAccountStatus => {
                 if self.sideloadly_logging_in {
@@ -687,27 +738,11 @@ impl SettingsScreen {
         selected_device: Option<&'a Device>,
         devices: &'a [Device],
     ) -> Element<'a, Message> {
-        let tabs = SettingsTab::ALL.iter().fold(
-            row![].spacing(appearance::THEME_PADDING / 2.0),
-            |tabs, &tab| {
-                let style = if tab == self.tab {
-                    appearance::p_button
-                } else {
-                    appearance::s_button
-                };
-                tabs.push(
-                    button(text(tab.label()).align_x(Alignment::Center))
-                        .on_press(Message::SelectTab(tab))
-                        .style(style)
-                        .width(Fill),
-                )
-            },
-        );
-
         let remote_pairing = account_store.as_ref().is_some_and(|s| s.remote_pairing());
         let account = account_store.as_ref().and_then(|s| s.selected_account());
         let body = match self.tab {
             SettingsTab::General => self.view_general(account_store, selected_locale),
+            SettingsTab::Account => self.account.view(account_store.as_ref()),
             SettingsTab::Pairing => self
                 .pairing
                 .view(remote_pairing, selected_device, devices)
@@ -717,7 +752,52 @@ impl SettingsScreen {
             SettingsTab::Logs => self.logs.view().map(Message::Logs),
         };
 
-        column![tabs, body]
+        let account_hero = if let Some(account) = account {
+            let name = if account.first_name().is_empty() {
+                account.email()
+            } else {
+                account.first_name()
+            };
+            let mut details = column![
+                text(name).size(appearance::THEME_FONT_SIZE + 2.0),
+                text(account.email()).size(appearance::THEME_FONT_SIZE - 1.0),
+            ]
+            .spacing(appearance::THEME_PADDING / 2.0);
+            if !account.team_id().is_empty() {
+                details = details.push(
+                    text(format!("{} {}", t!("account_team"), account.team_id()))
+                        .size(appearance::THEME_FONT_SIZE - 1.0),
+                );
+            }
+            container(details)
+                .padding(appearance::THEME_PADDING)
+                .style(container::rounded_box)
+                .width(Fill)
+        } else {
+            container(text(t!("account_signed_out")))
+                .padding(appearance::THEME_PADDING)
+                .style(container::rounded_box)
+                .width(Fill)
+        };
+        let mut sidebar = column![account_hero]
+            .spacing(appearance::THEME_PADDING)
+            .width(210);
+        for tab in SettingsTab::ALL {
+            let style = if tab == self.tab {
+                appearance::p_button
+            } else {
+                appearance::s_button
+            };
+            sidebar = sidebar.push(
+                button(text(tab.label()).align_x(Alignment::Start))
+                    .on_press(Message::SelectTab(tab))
+                    .style(style)
+                    .width(Fill),
+            );
+        }
+
+        row![sidebar, container(body).width(Fill).height(Fill)]
+            .height(Fill)
             .spacing(appearance::THEME_PADDING)
             .into()
     }
@@ -734,99 +814,20 @@ impl SettingsScreen {
                 .into();
         };
 
-        let mut accounts: Vec<_> = store.accounts().iter().collect();
-        accounts.sort_by_key(|(email, _)| *email);
-
-        let selected_index = store
-            .selected_account()
-            .and_then(|acc| accounts.iter().position(|(e, _)| *e == acc.email()));
-
         let mut content = column![].spacing(appearance::THEME_PADDING);
-
-        if !accounts.is_empty() {
-            let account_list = accounts.iter().enumerate().fold(
-                column![].spacing(appearance::THEME_PADDING),
-                |content, (index, (email, account))| {
-                    let marker = if Some(index) == selected_index {
-                        "[✓] "
-                    } else {
-                        "[ ] "
-                    };
-                    let style = if Some(index) == selected_index {
-                        appearance::p_button
-                    } else {
-                        appearance::s_button
-                    };
-
-                    let account_button = button(
-                        text(format!("{}{}", marker, account.email()))
-                            .size(appearance::THEME_FONT_SIZE)
-                            .align_x(Alignment::Start),
-                    )
-                    .on_press(Message::SelectAccount(index))
-                    .style(style)
-                    .width(Fill);
-
-                    let mut account_row = row![account_button].spacing(appearance::THEME_PADDING);
-
-                    if Some(index) == selected_index {
-                        let team_id = account.team_id();
-                        let is_loading = self.loading_teams.as_ref() == Some(email);
-                        let teams = self.teams.get(*email).cloned().unwrap_or_default();
-
-                        let current_team = if !team_id.is_empty() {
-                            teams.iter().find(|t| t.id == *team_id).cloned()
-                        } else {
-                            None
-                        };
-
-                        let placeholder = if is_loading {
-                            t!("settings_select_teams").to_string()
-                        } else if !team_id.is_empty() {
-                            team_id.to_string()
-                        } else {
-                            t!("settings_loading_teams").to_string()
-                        };
-
-                        let email_owned = email.to_string();
-
-                        let team_pick = pick_list(teams, current_team, move |selected: Team| {
-                            Message::SelectTeam(email_owned.clone(), selected.id)
-                        })
-                        .placeholder(placeholder)
-                        .on_open(Message::FetchTeams(email.to_string()))
-                        .style(appearance::s_pick_list)
-                        .width(Fill);
-
-                        account_row = account_row.push(team_pick);
-                    }
-
-                    content.push(account_row)
-                },
-            );
-
-            content = content.push(container(scrollable(account_list)).height(Fill).style(
-                |theme: &iced::Theme| container::Style {
-                    border: iced::Border {
-                        width: 1.0,
-                        color: theme.palette().background.scale_alpha(0.5),
-                        radius: appearance::THEME_CORNER_RADIUS.into(),
-                    },
-                    ..Default::default()
-                },
-            ));
-        } else {
-            content = content.push(text(t!("settings_no_accounts_yet")));
-        }
 
         let auto_start_enabled = crate::startup::auto_start_enabled();
         content = content.push(self.view_auto_start_toggle(auto_start_enabled));
         content = content.push(self.view_keyring_toggle(store));
         content = content.push(self.view_appearance_and_language(store, selected_locale));
         content = content.push(self.view_anisette());
-        content = content.push(self.view_account_buttons(selected_index));
-
-        content.into()
+        scrollable(
+            content
+                .padding([0.0, appearance::THEME_PADDING])
+                .width(Fill),
+        )
+        .height(Fill)
+        .into()
     }
 
     fn view_anisette(&self) -> Element<'_, Message> {
@@ -908,7 +909,13 @@ impl SettingsScreen {
             } else {
                 section = section.push(provider_picker);
             }
-            section = section.push(self.view_sideloadly_options());
+            if provider == RemoteProvider::Sideloadly {
+                section = section.push(self.view_sideloadly_options());
+            }
+            if provider != RemoteProvider::Sideloadly || self.anisette.sideloadly_session.is_some()
+            {
+                section = section.push(self.server_info.view(&self.anisette.remote_server));
+            }
         } else {
             let description = if mode == AnisetteMode::Local {
                 t!("settings_anisette_local_desc")
@@ -917,31 +924,50 @@ impl SettingsScreen {
             };
             section = section.push(text(description).size(appearance::THEME_FONT_SIZE - 1.0));
             section = section.push(
-                button(text(t!("settings_anisette_local_setup")))
-                    .on_press_maybe((!self.testing_anisette).then_some(Message::SetupLocalAnisette))
-                    .style(appearance::s_button),
+                button(text(if mode == AnisetteMode::Fake {
+                    t!("settings_anisette_fake_setup")
+                } else {
+                    t!("settings_anisette_local_setup")
+                }))
+                .on_press_maybe((!self.testing_anisette).then_some(Message::SetupLocalAnisette))
+                .style(appearance::s_button),
             );
+        }
+
+        if mode == AnisetteMode::Remote
+            && self.anisette.remote_provider == RemoteProvider::Sideloadly
+            && self.anisette.sideloadly_session.is_none()
+        {
+            if let Some(status) = &self.anisette_status {
+                section = section.push(text(status));
+            }
+            return container(section)
+                .padding(appearance::THEME_PADDING)
+                .style(container::rounded_box)
+                .width(Fill)
+                .into();
         }
 
         let test_button = button(text(t!("settings_anisette_test")))
             .on_press_maybe((!self.testing_anisette).then_some(Message::TestAnisette))
             .style(appearance::s_button);
-        let reset_button = button(appearance::icon_text(
-            appearance::MINUS,
-            t!("settings_reset_adi"),
-            None,
-        ))
-        .on_press_maybe((!self.testing_anisette).then_some(Message::ResetAnisetteData))
-        .style(appearance::s_button);
+        let reset_button = button(text(t!("settings_reset_adi")))
+            .on_press_maybe((!self.testing_anisette).then_some(Message::ResetAnisetteData))
+            .style(appearance::s_button);
 
-        let mut actions = row![test_button, reset_button]
-            .spacing(appearance::THEME_PADDING)
-            .align_y(Alignment::Center);
+        section = section.push(
+            row![test_button, reset_button]
+                .spacing(appearance::THEME_PADDING)
+                .align_y(Alignment::Center),
+        );
         if let Some(status) = &self.anisette_status {
-            actions = actions.push(text(status).size(appearance::THEME_FONT_SIZE - 1.0));
+            section = section.push(text(status).size(appearance::THEME_FONT_SIZE - 1.0));
         }
-
-        section.push(actions).into()
+        container(section)
+            .padding(appearance::THEME_PADDING)
+            .style(container::rounded_box)
+            .width(Fill)
+            .into()
     }
 
     fn view_sideloadly_options(&self) -> Element<'_, Message> {
@@ -953,36 +979,52 @@ impl SettingsScreen {
             None => t!("settings_sideloadly_signed_out"),
         };
         let mut options = column![
-            text(t!("settings_anisette_sideloadly")),
-            text(account).size(appearance::THEME_FONT_SIZE - 1.0),
-            row![
+            text(t!("settings_anisette_sideloadly_desc")).size(appearance::THEME_FONT_SIZE - 1.0),
+            text(account),
+        ]
+        .spacing(appearance::THEME_PADDING);
+        if !signed_in && !self.sideloadly_patreon_pending {
+            options = options.push(
                 button(text(t!("settings_sideloadly_login_anonymously")))
                     .on_press_maybe(idle.then_some(Message::SideloadlyLogin))
-                    .style(appearance::s_button),
-                button(text(t!("settings_sideloadly_refresh_device_token")))
-                    .on_press_maybe(
-                        (idle && signed_in).then_some(Message::SideloadlyRefreshDeviceToken)
-                    )
-                    .style(appearance::s_button),
-            ]
-            .spacing(appearance::THEME_PADDING),
-            row![
+                    .style(appearance::p_button),
+            );
+        }
+        if signed_in {
+            options = options.push(
+                row![
+                    button(text(t!("settings_sideloadly_refresh_device_token")))
+                        .on_press_maybe(idle.then_some(Message::SideloadlyRefreshDeviceToken))
+                        .style(appearance::s_button),
+                    button(text(t!("settings_sideloadly_account_status")))
+                        .on_press_maybe(idle.then_some(Message::SideloadlyAccountStatus))
+                        .style(appearance::s_button),
+                ]
+                .spacing(appearance::THEME_PADDING),
+            );
+        }
+        let mut actions = row![].spacing(appearance::THEME_PADDING);
+        if !self.sideloadly_patreon_pending
+            && !self
+                .anisette
+                .sideloadly_session
+                .as_ref()
+                .is_some_and(|session| session.account == SideloadlyAccount::Patreon)
+        {
+            actions = actions.push(
                 button(text(t!("settings_sideloadly_login_patreon")))
                     .on_press_maybe(idle.then_some(Message::SideloadlyPatreonLogin))
                     .style(appearance::s_button),
+            );
+        }
+        if signed_in {
+            actions = actions.push(
                 button(text(t!("settings_sideloadly_logout")))
-                    .on_press_maybe(
-                        (idle && (signed_in || self.sideloadly_patreon_pending))
-                            .then_some(Message::SideloadlyLogout)
-                    )
+                    .on_press_maybe(idle.then_some(Message::SideloadlyLogout))
                     .style(appearance::s_button),
-                button(text(t!("settings_sideloadly_account_status")))
-                    .on_press_maybe(idle.then_some(Message::SideloadlyAccountStatus))
-                    .style(appearance::s_button),
-            ]
-            .spacing(appearance::THEME_PADDING),
-        ]
-        .spacing(appearance::THEME_PADDING);
+            );
+        }
+        options = options.push(actions);
         if self.sideloadly_patreon_pending {
             options = options.push(text(t!("settings_sideloadly_patreon_instructions")));
             options = options.push(
@@ -1089,43 +1131,6 @@ impl SettingsScreen {
         ]
         .spacing(appearance::THEME_PADDING * 2.0)
         .into()
-    }
-
-    fn view_account_buttons(&self, selected_index: Option<usize>) -> Element<'_, Message> {
-        let mut buttons = row![
-            button(appearance::icon_text(
-                appearance::PLUS,
-                t!("settings_add_account"),
-                None
-            ))
-            .on_press(Message::ShowLogin)
-            .style(appearance::s_button)
-        ]
-        .spacing(appearance::THEME_PADDING);
-
-        if let Some(index) = selected_index {
-            buttons = buttons
-                .push(
-                    button(appearance::icon_text(
-                        appearance::MINUS,
-                        t!("settings_remove_account"),
-                        None,
-                    ))
-                    .on_press(Message::RemoveAccount(index))
-                    .style(appearance::s_button),
-                )
-                .push(
-                    button(appearance::icon_text(
-                        appearance::SHARE,
-                        t!("settings_export_p12"),
-                        None,
-                    ))
-                    .on_press(Message::ExportP12)
-                    .style(appearance::s_button),
-                );
-        }
-
-        buttons.align_y(Alignment::Center).into()
     }
 }
 

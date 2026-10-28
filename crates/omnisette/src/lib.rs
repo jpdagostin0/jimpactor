@@ -20,6 +20,8 @@ pub mod store_services_core;
 #[cfg(feature = "remote-anisette-v3")]
 pub mod remote_anisette_v3;
 #[cfg(feature = "remote-anisette-v3")]
+pub mod remote_probe;
+#[cfg(feature = "remote-anisette-v3")]
 pub mod remote_servers;
 
 #[allow(dead_code)]

@@ -85,6 +85,12 @@ version = "0.7.4"
 [dependencies.bitflags]
 version = "2.6.0"
 
+# apple-xar's bzip2 0.4 backend must build its bundled sources even on hosts
+# where pkg-config can discover a system libbz2.
+[dependencies.bzip2-sys]
+version = "0.1.13"
+features = ["static"]
+
 [dependencies.bytes]
 version = "1.9.0"
 

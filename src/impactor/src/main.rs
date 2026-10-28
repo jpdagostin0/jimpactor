@@ -53,12 +53,6 @@ fn main() -> iced::Result {
         }
     };
 
-    // For tray on linux.
-    #[cfg(target_os = "linux")]
-    {
-        gtk::init().expect("GTK init failed");
-    }
-
     // For notifications on macOS.
     #[cfg(target_os = "macos")]
     {

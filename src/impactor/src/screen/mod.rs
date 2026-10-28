@@ -48,10 +48,10 @@ pub enum Message {
     DeviceDisconnected(u32),
 
     // Tray
-    TrayMenuClicked(tray_icon::menu::MenuId),
+    TrayMenuClicked(crate::tray::TrayAction),
+    ShowTrayMenu(iced::Point),
+    DismissTrayMenu(window::Id),
     TrayIconClicked,
-    #[cfg(target_os = "linux")]
-    GtkTick,
     #[cfg(target_os = "macos")]
     MacOsActivationTick,
 
@@ -70,6 +70,7 @@ pub enum Message {
     RelaunchRequested,
     ShowWindow,
     HideWindow,
+    WindowCloseRequested(window::Id),
     Quit,
 
     // Login window
@@ -325,6 +326,12 @@ impl Impactor {
 
                 self.navigate_to_screen(screen_type.clone());
 
+                if screen_type == ImpactorScreenType::Settings {
+                    return Task::done(Message::SettingsScreen(
+                        settings::Message::ProbeRemoteServer,
+                    ));
+                }
+
                 if screen_type == ImpactorScreenType::Utilities {
                     let rppairing_enabled = match &self.current_screen {
                         ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
@@ -385,36 +392,42 @@ impl Impactor {
                 }
             },
             Message::TrayIconClicked => Task::done(Message::ShowWindow),
-            Message::TrayMenuClicked(id) => {
-                if let Some(tray) = &self.tray {
-                    if let Some(action) = tray.get_action(&id) {
-                        match action {
-                            crate::tray::TrayAction::Show => Task::done(Message::ShowWindow),
-                            crate::tray::TrayAction::Quit => Task::done(Message::Quit),
-                            crate::tray::TrayAction::RefreshApp { udid, app_path } => {
-                                Task::done(Message::RefreshAppNow {
-                                    udid: udid.clone(),
-                                    app_path: app_path.clone(),
-                                })
-                            }
-                            crate::tray::TrayAction::ForgetApp { udid, app_path } => {
-                                Task::done(Message::ForgetApp {
-                                    udid: udid.clone(),
-                                    app_path: app_path.clone(),
-                                })
-                            }
-                        }
-                    } else {
-                        Task::none()
+            Message::ShowTrayMenu(position) => self
+                .tray
+                .as_mut()
+                .map(|tray| tray.open_popup(position))
+                .unwrap_or_else(Task::none),
+            Message::DismissTrayMenu(id) => {
+                if let Some(tray) = &mut self.tray {
+                    if tray.is_popup(id) {
+                        return tray.close_popup();
                     }
-                } else {
-                    Task::none()
                 }
-            }
-            #[cfg(target_os = "linux")]
-            Message::GtkTick => {
-                while gtk::glib::MainContext::default().iteration(false) {}
                 Task::none()
+            }
+            Message::TrayMenuClicked(action) => {
+                let close = self
+                    .tray
+                    .as_mut()
+                    .map(ImpactorTray::close_popup)
+                    .unwrap_or_else(Task::none);
+                let task = match action {
+                    crate::tray::TrayAction::Show => Task::done(Message::ShowWindow),
+                    crate::tray::TrayAction::Quit => Task::done(Message::Quit),
+                    crate::tray::TrayAction::RefreshApp { udid, app_path } => {
+                        Task::done(Message::RefreshAppNow {
+                            udid: udid.clone(),
+                            app_path: app_path.clone(),
+                        })
+                    }
+                    crate::tray::TrayAction::ForgetApp { udid, app_path } => {
+                        Task::done(Message::ForgetApp {
+                            udid: udid.clone(),
+                            app_path: app_path.clone(),
+                        })
+                    }
+                };
+                Task::batch([close, task])
             }
             #[cfg(target_os = "macos")]
             Message::MacOsActivationTick => {
@@ -457,6 +470,23 @@ impl Impactor {
                     open_task.discard()
                 }
             }
+            Message::WindowCloseRequested(id) => {
+                if let Some(tray) = &mut self.tray {
+                    if tray.is_popup(id) {
+                        return tray.close_popup();
+                    }
+                }
+                if self.login_windows.contains_key(&id) {
+                    Task::done(Message::LoginWindowMessage(
+                        id,
+                        login_window::Message::LoginCancel,
+                    ))
+                } else if self.main_window == Some(id) {
+                    Task::done(Message::HideWindow)
+                } else {
+                    Task::none()
+                }
+            }
             Message::HideWindow => {
                 if let Some(id) = self.main_window {
                     self.cancel_pending_certificate_resets();
@@ -472,6 +502,26 @@ impl Impactor {
                 std::process::exit(0);
             }
             Message::LoginWindowMessage(id, msg) => {
+                if !self.login_windows.contains_key(&id) {
+                    return Task::none();
+                }
+                if let login_window::Message::LoginSuccess(account) = &msg {
+                    let mut store = self
+                        .account_store
+                        .clone()
+                        .unwrap_or_else(Self::init_account_store_sync);
+                    if let Err(error) = store.accounts_add_sync(account.clone()) {
+                        return self
+                            .login_windows
+                            .get_mut(&id)
+                            .unwrap()
+                            .update(login_window::Message::LoginFailed(format!(
+                                "Could not save your account: {error}"
+                            )))
+                            .map(move |msg| Message::LoginWindowMessage(id, msg));
+                    }
+                    self.account_store = Some(store);
+                }
                 if let Some(login_window) = self.login_windows.get_mut(&id) {
                     let task = login_window.update(msg.clone());
 
@@ -482,12 +532,23 @@ impl Impactor {
                             | login_window::Message::TwoFactorCancel
                     ) {
                         self.login_windows.remove(&id);
-                        self.account_store = Some(Self::init_account_store_sync());
-
-                        if let ImpactorScreen::Settings(_) = self.current_screen {
-                            self.current_screen =
-                                ImpactorScreen::Settings(settings::SettingsScreen::new());
-                        }
+                        let settings_task =
+                            if let ImpactorScreen::Settings(screen) = &mut self.current_screen {
+                                if let login_window::Message::LoginSuccess(account) = &msg {
+                                    screen.account_changed(account.email());
+                                    screen.tab = settings::SettingsTab::Account;
+                                    screen
+                                        .update(
+                                            settings::Message::FetchTeams(account.email().clone()),
+                                            self.account_store.as_ref(),
+                                        )
+                                        .map(Message::SettingsScreen)
+                                } else {
+                                    Task::none()
+                                }
+                            } else {
+                                Task::none()
+                            };
 
                         if let Some((app, version)) = self.pending_source_install.take() {
                             if matches!(msg, login_window::Message::LoginSuccess(_)) {
@@ -499,8 +560,8 @@ impl Impactor {
                         }
 
                         if self.pending_installation {
+                            self.pending_installation = false;
                             if matches!(msg, login_window::Message::LoginSuccess(_)) {
-                                self.pending_installation = false;
                                 return Task::batch(vec![
                                     window::close(id),
                                     Task::done(Message::InstallerScreen(
@@ -510,7 +571,7 @@ impl Impactor {
                             }
                         }
 
-                        return window::close(id);
+                        return Task::batch([window::close(id), settings_task]);
                     }
 
                     task.map(move |msg| Message::LoginWindowMessage(id, msg))
@@ -567,30 +628,37 @@ impl Impactor {
             Message::SettingsScreen(msg) => {
                 if let ImpactorScreen::Settings(ref mut screen) = self.current_screen {
                     match msg {
-                        settings::Message::ShowLogin => {
-                            let (login_window, task) = login_window::LoginWindow::new();
+                        settings::Message::ShowLogin(email) => {
+                            if let Some(id) = self.login_windows.keys().next().copied() {
+                                return window::gain_focus(id);
+                            }
+                            let (login_window, task) =
+                                login_window::LoginWindow::with_email(email.unwrap_or_default());
                             let id = login_window.window_id().unwrap();
                             self.login_windows.insert(id, login_window);
                             task.map(move |msg| Message::LoginWindowMessage(id, msg))
                         }
-                        settings::Message::SelectAccount(index) => {
+                        settings::Message::SelectAccount(email) => {
                             if let Some(store) = &mut self.account_store {
-                                let mut emails: Vec<_> = store.accounts().keys().cloned().collect();
-                                emails.sort();
-                                if let Some(email) = emails.get(index) {
-                                    let _ = store.account_select_sync(email);
+                                if let Err(error) = store.account_select_sync(&email) {
+                                    log::error!("Failed to select account: {error}");
+                                    return Task::none();
                                 }
                             }
-                            Task::none()
+                            screen
+                                .update(
+                                    settings::Message::FetchTeams(email),
+                                    self.account_store.as_ref(),
+                                )
+                                .map(Message::SettingsScreen)
                         }
-                        settings::Message::RemoveAccount(index) => {
+                        settings::Message::RemoveAccount(email) => {
                             if let Some(store) = &mut self.account_store {
-                                let mut emails: Vec<_> = store.accounts().keys().cloned().collect();
-                                emails.sort();
-                                if let Some(email) = emails.get(index) {
-                                    let _ = store.accounts_remove_sync(email);
+                                if let Err(error) = store.accounts_remove_sync(&email) {
+                                    log::error!("Failed to remove account: {error}");
                                 }
                             }
+                            screen.account_changed(&email);
                             Task::none()
                         }
                         settings::Message::ExportP12 => {
@@ -617,46 +685,6 @@ impl Impactor {
                                 log::error!("Failed to update auto-start: {err}");
                             }
                             Task::none()
-                        }
-                        settings::Message::FetchTeams(ref email) => {
-                            if let Some(account_store) = &self.account_store {
-                                if let Some(account) = account_store.accounts().get(email) {
-                                    let account_clone = account.clone();
-                                    let email_clone = email.clone();
-
-                                    return Task::perform(
-                                        async move {
-                                            let (tx, rx) = std::sync::mpsc::channel();
-
-                                            std::thread::spawn(move || {
-                                                let rt = tokio::runtime::Runtime::new().unwrap();
-                                                let result = rt.block_on(async move {
-                                                    crate::subscriptions::fetch_teams(
-                                                        &account_clone,
-                                                    )
-                                                    .await
-                                                    .unwrap_or_else(|e| {
-                                                        log::error!("Failed to fetch teams: {}", e);
-                                                        Vec::new()
-                                                    })
-                                                });
-                                                let _ = tx.send(result);
-                                            });
-
-                                            rx.recv().unwrap_or_default()
-                                        },
-                                        move |teams| {
-                                            Message::SettingsScreen(settings::Message::TeamsLoaded(
-                                                email_clone,
-                                                teams,
-                                            ))
-                                        },
-                                    );
-                                }
-                            }
-                            screen
-                                .update(msg, self.account_store.as_ref())
-                                .map(Message::SettingsScreen)
                         }
                         settings::Message::SelectTeam(ref email, ref team_id) => {
                             if let Some(store) = &mut self.account_store {
@@ -963,9 +991,19 @@ impl Impactor {
         let certificate_reset_subscription = subscriptions::certificate_reset_subscription();
         let relaunch_subscription = subscriptions::relaunch_subscription();
 
-        let close_subscription = iced::event::listen_with(|event, _status, _id| {
+        let close_subscription = iced::event::listen_with(|event, _status, id| {
             if let iced::Event::Window(window::Event::CloseRequested) = event {
-                return Some(Message::HideWindow);
+                return Some(Message::WindowCloseRequested(id));
+            }
+            if matches!(
+                event,
+                iced::Event::Window(window::Event::Unfocused)
+                    | iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                        key: Key::Named(key::Named::Escape),
+                        ..
+                    })
+            ) {
+                return Some(Message::DismissTrayMenu(id));
             }
             None
         });
@@ -986,6 +1024,11 @@ impl Impactor {
     }
 
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
+        if let Some(tray) = &self.tray {
+            if tray.is_popup(window_id) {
+                return tray.view();
+            }
+        }
         if let Some(login_window) = self.login_windows.get(&window_id) {
             return login_window
                 .view()

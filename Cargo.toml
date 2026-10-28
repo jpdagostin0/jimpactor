@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "src/impactor",
     "src/cli",
-    "crates/decompress",
     "crates/omnisette",
     "crates/core",
     "crates/gestalt",
@@ -33,6 +32,10 @@ panic = "abort"             # reduces binary size by ~50% in combination with -Z
 split-debuginfo = "packed"  # generates a separate *.dwp/*.dSYM so the binary can get stripped
 strip = "symbols"           # See split-debuginfo - allows us to drop the size by ~65%
 incremental = true          # Improves re-compile times
+
+# SDK extraction runs in the development-profile xtask as well as release CI.
+[profile.dev.package.lzma-rust2]
+opt-level = 2
 
 [workspace.dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread"] }

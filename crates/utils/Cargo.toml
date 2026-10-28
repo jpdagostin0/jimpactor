@@ -21,4 +21,10 @@ zip.workspace = true
 flate2.workspace = true
 plume_core = { path = "../core", features = ["tweaks"] }
 plume_store = { path = "../store" }
-decompress = { path = "../decompress" }
+ar = "0.9"
+tar = "0.4"
+bzip2 = "0.6"
+xz2 = { version = "0.1", features = ["static"] }
+
+[dev-dependencies]
+tempfile = "3"

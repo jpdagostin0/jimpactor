@@ -1,14 +1,6 @@
-/dist
-/tests
 /target
-/upload
-/anisette_test
+/dist
 
-/.direnv
-
-*.exe
 *.DS_Store
-state.plist
-.zsign_cache
-__pycache__/
-*.pyc
+
+/.tmp

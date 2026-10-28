@@ -3,7 +3,7 @@ use iced::widget::{button, column, container, row, text, text_input};
 use iced::{Alignment, Element, Fill, Task, window};
 use plume_core::auth::Account;
 use plume_core::auth::{TwoFactorAction, TwoFactorMethod, TwoFactorRequest};
-use plume_store::{AccountStore, GsaAccount};
+use plume_store::GsaAccount;
 use rust_i18n::t;
 use std::sync::mpsc as std_mpsc;
 
@@ -43,6 +43,10 @@ pub struct LoginWindow {
 
 impl LoginWindow {
     pub fn new() -> (Self, Task<Message>) {
+        Self::with_email(String::new())
+    }
+
+    pub fn with_email(email: String) -> (Self, Task<Message>) {
         let (id, task) = window::open(window::Settings {
             size: iced::Size::new(400.0, 360.0),
             position: window::Position::Centered,
@@ -54,7 +58,7 @@ impl LoginWindow {
         (
             Self {
                 window_id: Some(id),
-                email: String::new(),
+                email,
                 password: String::new(),
                 two_factor_code: String::new(),
                 login_error: None,
@@ -84,6 +88,9 @@ impl LoginWindow {
                 Task::none()
             }
             Message::LoginSubmit => {
+                if self.is_logging_in {
+                    return Task::none();
+                }
                 if self.email.trim().is_empty() || self.password.is_empty() {
                     self.login_error = Some("Email and password required".to_string());
                     return Task::none();
@@ -120,34 +127,18 @@ impl LoginWindow {
                     Task::none()
                 }
             }
-            Message::LoginSuccess(account) => {
+            Message::LoginSuccess(_) => {
                 self.login_error = None;
-                let path = crate::defaults::get_data_path().join("accounts.json");
-
-                if let Ok(mut store) = tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(async { AccountStore::load(&Some(path.clone())).await })
-                {
-                    let _ = store.accounts_add_sync(account);
-                }
-
-                if let Some(id) = self.window_id {
-                    self.two_factor_tx = None;
-                    window::close(id)
-                } else {
-                    Task::none()
-                }
+                self.is_logging_in = false;
+                self.two_factor_tx = None;
+                self.window_id.map(window::close).unwrap_or_else(Task::none)
             }
             Message::LoginFailed(error) => {
                 self.is_logging_in = false;
-                if self.show_two_factor {
-                    self.two_factor_error = Some(error);
-                    self.login_error = None;
-                } else {
-                    self.two_factor_code.clear();
-                    self.two_factor_error = None;
-                    self.login_error = Some(error);
-                }
+                self.show_two_factor = false;
+                self.two_factor_code.clear();
+                self.two_factor_error = None;
+                self.login_error = Some(error);
                 self.two_factor_tx = None;
                 Task::none()
             }

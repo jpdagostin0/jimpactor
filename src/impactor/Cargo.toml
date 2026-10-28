@@ -6,6 +6,18 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.bundle]
+name = "Jimpactor"
+identifier = "io.github.jpdagostin0.jimpactor"
+icon = ["package/icon.svg"]
+category = "Utility"
+short_description = "Sign, sideload, and refresh iOS apps"
+copyright = "Copyright © 2026 JP D'Agostino"
+
+[package.metadata.bundle.osx]
+minimum_system_version = "11.0"
+info_plist_exts = ["package/macos/Info.plist.ext"]
+
 [dependencies]
 idevice.workspace = true
 tokio.workspace = true
@@ -22,13 +34,13 @@ serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 tiny-skia = "0.11.4"
+tray = "0.1.2"
 plume_core = { path = "../../crates/core", features = ["tweaks"] }
 plume_utils = { path = "../../crates/utils" }
 plume_store = { path = "../../crates/store" }
 
 iced = { version = "0.14", features = ["image-without-codecs", "advanced"] }
 wgpu = { version = "27.0", default-features = false, features = ["std"] }     # Power references
-tray-icon = { version = "0.21", default-features = false }                    # System tray icon
 rfd = "0.16"                                                                  # File dialogs
 open = "5.3"                                                                  # Opening links (I know, useless)
 notify-rust = "4.11"                                                          # Notifications
@@ -45,6 +57,3 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [build-dependencies]
 winresource = "0.1"
 genicons = { path = "../../tools/genicons" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"                                                                    # System tray icon

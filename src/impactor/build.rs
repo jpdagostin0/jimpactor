@@ -18,8 +18,14 @@ fn main() -> io::Result<()> {
         let mut res = WindowsResource::new();
         match env::var("CARGO_CFG_TARGET_ENV").unwrap().as_str() {
             "gnu" => {
-                res.set_ar_path("x86_64-w64-mingw32-ar")
-                    .set_windres_path("x86_64-w64-mingw32-windres");
+                let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+                let prefix = match arch.as_str() {
+                    "x86" => "i686-w64-mingw32",
+                    "x86_64" => "x86_64-w64-mingw32",
+                    _ => panic!("unsupported Windows GNU architecture: {arch}"),
+                };
+                res.set_ar_path(&format!("{prefix}-ar"))
+                    .set_windres_path(&format!("{prefix}-windres"));
             }
             "msvc" => {}
             _ => panic!("unsupported env"),

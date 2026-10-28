@@ -1,7 +1,7 @@
+use ::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use iced::{Subscription, window};
 use idevice::usbmuxd::{UsbmuxdConnection, UsbmuxdListenEvent};
 use std::sync::Arc;
-use tray_icon::{TrayIconEvent, menu::MenuEvent};
 
 use crate::{
     defaults::get_data_path,
@@ -84,28 +84,28 @@ pub(crate) fn tray_subscription() -> Subscription<Message> {
                 let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
 
                 std::thread::spawn(move || {
-                    let menu_channel = MenuEvent::receiver();
                     let tray_channel = TrayIconEvent::receiver();
                     loop {
-                        if let Ok(event) = menu_channel.try_recv() {
-                            let _ = tx.unbounded_send(Message::TrayMenuClicked(event.id));
-                        }
-
                         if let Ok(event) = tray_channel.try_recv() {
                             match event {
                                 TrayIconEvent::DoubleClick {
-                                    button: tray_icon::MouseButton::Left,
+                                    button: MouseButton::Left,
                                     ..
                                 } => {
                                     let _ = tx.unbounded_send(Message::TrayIconClicked);
                                 }
+                                TrayIconEvent::Click {
+                                    button: MouseButton::Left | MouseButton::Right,
+                                    button_state: MouseButtonState::Up,
+                                    position,
+                                    ..
+                                } => {
+                                    let _ = tx.unbounded_send(Message::ShowTrayMenu(
+                                        iced::Point::new(position.x as f32, position.y as f32),
+                                    ));
+                                }
                                 _ => {}
                             }
-                        }
-
-                        #[cfg(target_os = "linux")]
-                        {
-                            let _ = tx.unbounded_send(Message::GtkTick);
                         }
 
                         #[cfg(target_os = "macos")]

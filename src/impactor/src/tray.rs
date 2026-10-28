@@ -1,32 +1,8 @@
-use std::collections::HashMap;
-use tray_icon::{
-    Icon, TrayIcon, TrayIconBuilder,
-    menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu},
-};
+use ::tray::{Icon, TrayIcon, TrayIconBuilder};
+use iced::widget::{button, column, container, row, rule, scrollable, text};
+use iced::{Element, Point, Size, Task, window};
 
-pub(crate) fn build_tray_icon(menu: &Menu) -> TrayIcon {
-    let icon = load_icon();
-    TrayIconBuilder::new()
-        .with_menu(Box::new(menu.clone()))
-        .with_tooltip(crate::APP_NAME)
-        .with_icon(icon)
-        .with_icon_as_template(true)
-        .build()
-        .expect("Failed to build tray icon")
-}
-
-fn load_icon() -> Icon {
-    // Generated from package/icon.svg by build.rs.
-    #[cfg(target_os = "windows")]
-    let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/icon.png"));
-    #[cfg(not(target_os = "windows"))]
-    let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/tray.png"));
-    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-        .expect("Failed to load icon bytes")
-        .to_rgba8();
-    let (width, height) = image.dimensions();
-    Icon::from_rgba(image.into_raw(), width, height).unwrap()
-}
+use crate::screen::Message;
 
 #[derive(Debug, Clone)]
 pub enum TrayAction {
@@ -36,125 +12,133 @@ pub enum TrayAction {
     ForgetApp { udid: String, app_path: String },
 }
 
+/// The tray crate's iced-popup example supplies the integration pattern:
+/// native icon events open an Iced window, so no GTK/Qt menu backend is needed.
 pub(crate) struct ImpactorTray {
-    icon: Option<TrayIcon>,
-    menu: Menu,
-    show_item_id: MenuId,
-    quit_item_id: MenuId,
-    action_map: HashMap<MenuId, TrayAction>,
+    _icon: TrayIcon,
+    devices: Vec<plume_store::RefreshDevice>,
+    popup: Option<window::Id>,
 }
 
 impl ImpactorTray {
     pub(crate) fn new() -> Self {
-        let tray_menu = Menu::new();
-        let show_item = MenuItem::new("Open", true, None);
-        let quit_item = MenuItem::new(format!("Quit {}", crate::APP_NAME), true, None);
-
-        let show_item_id = show_item.id().clone();
-        let quit_item_id = quit_item.id().clone();
-
-        let mut action_map = HashMap::new();
-        action_map.insert(show_item_id.clone(), TrayAction::Show);
-        action_map.insert(quit_item_id.clone(), TrayAction::Quit);
-
-        let _ = tray_menu.append_items(&[&show_item, &PredefinedMenuItem::separator(), &quit_item]);
-
+        #[cfg(target_os = "windows")]
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/icon.png"));
+        #[cfg(not(target_os = "windows"))]
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/tray.png"));
+        let image = image::load_from_memory(bytes)
+            .expect("generated tray icon is valid")
+            .to_rgba8();
+        let (width, height) = image.dimensions();
+        let icon = TrayIconBuilder::new()
+            .with_tooltip(crate::APP_NAME)
+            .with_icon(Icon::from_rgba(image.into_raw(), width, height).unwrap())
+            .with_icon_as_template(true)
+            .build()
+            .expect("Failed to create tray icon");
         Self {
-            icon: Some(build_tray_icon(&tray_menu)),
-            menu: tray_menu,
-            show_item_id,
-            quit_item_id,
-            action_map,
+            _icon: icon,
+            devices: Vec::new(),
+            popup: None,
         }
     }
 
     pub(crate) fn update_refresh_apps(&mut self, store: &plume_store::AccountStore) {
-        let new_menu = Menu::new();
-        let show_item = MenuItem::new("Open", true, None);
-
-        let mut action_map = HashMap::new();
-        action_map.insert(show_item.id().clone(), TrayAction::Show);
-
-        let _ = new_menu.append(&show_item);
-        let _ = new_menu.append(&PredefinedMenuItem::separator());
-
-        let has_apps = store.refreshes().values().any(|d| !d.apps.is_empty());
-
-        if has_apps {
-            let refresh_submenu = Submenu::new("Auto-Refresh Apps", true);
-
-            for (udid, refresh_device) in store.refreshes() {
-                if refresh_device.apps.is_empty() {
-                    continue;
-                }
-
-                let device_label = MenuItem::with_id(
-                    MenuId::new(format!("header-{}", udid)),
-                    &refresh_device.name,
-                    false,
-                    None,
-                );
-                let _ = refresh_submenu.append(&device_label);
-
-                for app in &refresh_device.apps {
-                    let scheduled = app.scheduled_refresh.format("%H:%M %b %d").to_string();
-
-                    let app_submenu = Submenu::new(
-                        &format!(
-                            "{} (Next: {})",
-                            app.name.clone().unwrap_or("???".to_string()),
-                            scheduled
-                        ),
-                        true,
-                    );
-
-                    let refresh_item = MenuItem::new("Refresh Now", true, None);
-                    let forget_item = MenuItem::new("Forget App", true, None);
-
-                    action_map.insert(
-                        refresh_item.id().clone(),
-                        TrayAction::RefreshApp {
-                            udid: udid.clone(),
-                            app_path: app.path.to_string_lossy().to_string(),
-                        },
-                    );
-                    action_map.insert(
-                        forget_item.id().clone(),
-                        TrayAction::ForgetApp {
-                            udid: udid.clone(),
-                            app_path: app.path.to_string_lossy().to_string(),
-                        },
-                    );
-
-                    let _ = app_submenu.append(&refresh_item);
-                    let _ = app_submenu.append(&forget_item);
-
-                    let _ = refresh_submenu.append(&app_submenu);
-                }
-
-                let _ = refresh_submenu.append(&PredefinedMenuItem::separator());
-            }
-
-            let _ = new_menu.append(&refresh_submenu);
-            let _ = new_menu.append(&PredefinedMenuItem::separator());
-        }
-
-        let quit_item = MenuItem::new(format!("Quit {}", crate::APP_NAME), true, None);
-        action_map.insert(quit_item.id().clone(), TrayAction::Quit);
-        let _ = new_menu.append(&quit_item);
-
-        self.show_item_id = show_item.id().clone();
-        self.quit_item_id = quit_item.id().clone();
-
-        self.menu = new_menu;
-        self.action_map = action_map;
-
-        if let Some(tray_icon) = &mut self.icon {
-            let _ = tray_icon.set_menu(Some(Box::new(self.menu.clone())));
-        }
+        self.devices = store.refreshes().values().cloned().collect();
     }
 
-    pub(crate) fn get_action(&self, id: &MenuId) -> Option<&TrayAction> {
-        self.action_map.get(id)
+    pub(crate) fn open_popup(&mut self, position: Point) -> Task<Message> {
+        let close = self.close_popup();
+        let apps = self
+            .devices
+            .iter()
+            .map(|device| device.apps.len())
+            .sum::<usize>();
+        let height = (100.0 + apps as f32 * 110.0).min(420.0);
+        let (id, open) = window::open(window::Settings {
+            size: Size::new(360.0, height),
+            position: window::Position::Specific(Point::new(
+                (position.x - 360.0).max(0.0),
+                (position.y - height).max(0.0),
+            )),
+            decorations: false,
+            resizable: false,
+            level: window::Level::AlwaysOnTop,
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        self.popup = Some(id);
+        let position_popup = open.then(move |id| {
+            window::scale_factor(id).then(move |scale| {
+                window::move_to(
+                    id,
+                    Point::new(
+                        (position.x / scale - 360.0).max(0.0),
+                        (position.y / scale - height).max(0.0),
+                    ),
+                )
+            })
+        });
+        Task::batch([close, position_popup])
+    }
+
+    pub(crate) fn is_popup(&self, id: window::Id) -> bool {
+        self.popup == Some(id)
+    }
+
+    pub(crate) fn close_popup(&mut self) -> Task<Message> {
+        self.popup
+            .take()
+            .map(window::close)
+            .unwrap_or_else(Task::none)
+    }
+
+    pub(crate) fn view(&self) -> Element<'_, Message> {
+        let mut menu = column![
+            button("Open")
+                .on_press(Message::TrayMenuClicked(TrayAction::Show))
+                .width(iced::Fill),
+            rule::horizontal(1),
+        ]
+        .spacing(8);
+        for device in &self.devices {
+            if device.apps.is_empty() {
+                continue;
+            }
+            menu = menu.push(text(&device.name));
+            for app in &device.apps {
+                let udid = device.udid.clone();
+                let app_path = app.path.to_string_lossy().into_owned();
+                menu = menu.push(
+                    column![
+                        text(format!(
+                            "{} (Next: {})",
+                            app.name.as_deref().unwrap_or("???"),
+                            app.scheduled_refresh.format("%H:%M %b %d")
+                        )),
+                        row![
+                            button("Refresh Now").on_press(Message::TrayMenuClicked(
+                                TrayAction::RefreshApp {
+                                    udid: udid.clone(),
+                                    app_path: app_path.clone()
+                                }
+                            )),
+                            button("Forget App").on_press(Message::TrayMenuClicked(
+                                TrayAction::ForgetApp { udid, app_path }
+                            )),
+                        ]
+                        .spacing(8),
+                    ]
+                    .spacing(4),
+                );
+            }
+            menu = menu.push(rule::horizontal(1));
+        }
+        menu = menu.push(
+            button(text(format!("Quit {}", crate::APP_NAME)))
+                .on_press(Message::TrayMenuClicked(TrayAction::Quit))
+                .width(iced::Fill),
+        );
+        container(scrollable(menu)).padding(12).into()
     }
 }
