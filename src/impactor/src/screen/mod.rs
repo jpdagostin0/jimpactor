@@ -1,3 +1,4 @@
+mod device_lock;
 pub(crate) mod general;
 mod package;
 mod progress;
@@ -12,7 +13,7 @@ use iced::Length::Fill;
 use iced::event::{self, Event, Status};
 use iced::keyboard::{self, Key, key};
 use iced::widget::operation::{focus_next, focus_previous};
-use iced::widget::{button, column, container, pick_list, row, stack, text};
+use iced::widget::{button, checkbox, column, container, pick_list, row, stack, text};
 use iced::window;
 use iced::{Element, Subscription, Task};
 
@@ -44,6 +45,7 @@ pub enum Message {
 
     // Device management
     ComboBoxSelected(String),
+    ToggleDeviceLock(bool),
     DeviceConnected(Device),
     DeviceDisconnected(u32),
 
@@ -98,6 +100,7 @@ pub struct Impactor {
     installer_screen: Option<Box<package::PackageScreen>>,
     devices: Vec<Device>,
     selected_device: Option<Device>,
+    device_lock: Option<device_lock::DeviceLock>,
     tray: Option<ImpactorTray>,
     main_window: Option<window::Id>,
     account_store: Option<AccountStore>,
@@ -156,6 +159,7 @@ impl Impactor {
                 installer_screen: None,
                 devices: Vec::new(),
                 selected_device: None,
+                device_lock: None,
                 tray: Some(tray),
                 main_window,
                 account_store: Some(store),
@@ -233,11 +237,24 @@ impl Impactor {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ToggleDeviceLock(locked) => {
+                self.device_lock = if locked {
+                    self.selected_device
+                        .as_ref()
+                        .map(device_lock::DeviceLock::new)
+                } else {
+                    None
+                };
+                Task::none()
+            }
             Message::ComboBoxSelected(value) => {
                 self.selected_device = self
                     .devices
                     .iter()
-                    .find(|d| d.to_string() == value)
+                    .find(|d| {
+                        d.to_string() == value
+                            && self.device_lock.as_ref().is_none_or(|lock| lock.accepts(d))
+                    })
                     .cloned();
 
                 if let ImpactorScreen::Utilities(_) = self.current_screen {
@@ -272,6 +289,9 @@ impl Impactor {
                     }
                 }
 
+                if let Some(lock) = &self.device_lock {
+                    self.selected_device = lock.select(&self.devices);
+                }
                 if let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get()
                     && let Ok(mut devices) = daemon_devices.lock()
                 {
@@ -305,7 +325,13 @@ impl Impactor {
                         .devices
                         .iter()
                         .find(|device| Some(&device.udid) == udid.as_ref())
-                        .or_else(|| self.devices.first())
+                        .or_else(|| {
+                            self.devices.iter().find(|device| {
+                                self.device_lock
+                                    .as_ref()
+                                    .is_none_or(|lock| lock.accepts(device))
+                            })
+                        })
                         .cloned();
                 }
 
@@ -1026,7 +1052,12 @@ impl Impactor {
                 .map(move |msg| Message::LoginWindow(window_id, msg));
         }
 
-        let has_device = self.selected_device.is_some();
+        let has_device = self
+            .device_lock
+            .as_ref()
+            .map_or(self.selected_device.is_some(), |lock| {
+                lock.can_install(self.selected_device.as_ref())
+            });
         let screen_content = self.view_current_screen(has_device);
         let top_bar = self.view_top_bar();
         let base: Element<'_, Message> =
@@ -1067,9 +1098,25 @@ impl Impactor {
     }
 
     fn view_top_bar(&self) -> Element<'_, Message> {
-        let device_names: Vec<String> = self.devices.iter().map(|d| d.to_string()).collect();
+        let device_names: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|device| {
+                self.device_lock
+                    .as_ref()
+                    .is_none_or(|lock| lock.accepts(device))
+            })
+            .map(|d| d.to_string())
+            .collect();
         let selected_device_name = self.selected_device.as_ref().map(|d| d.to_string());
-        let placeholder_str = selected_device_name.as_deref().unwrap_or("No Device");
+        let waiting = self
+            .device_lock
+            .as_ref()
+            .map(|lock| format!("Waiting for {}", lock.name));
+        let placeholder_str = selected_device_name
+            .as_deref()
+            .or(waiting.as_deref())
+            .unwrap_or("No Device");
 
         let right_button = if matches!(
             self.current_screen,
@@ -1102,6 +1149,12 @@ impl Impactor {
             row![
                 left,
                 container(text("")).width(Fill),
+                checkbox(self.device_lock.is_some())
+                    .label("Lock device")
+                    .on_toggle_maybe(
+                        (self.device_lock.is_some() || self.selected_device.is_some())
+                            .then_some(Message::ToggleDeviceLock)
+                    ),
                 pick_list(
                     device_names,
                     selected_device_name.clone(),
@@ -1230,6 +1283,14 @@ impl Impactor {
         app: crate::sources::SourceApp,
         version: crate::sources::AppVersion,
     ) -> Task<Message> {
+        if self
+            .device_lock
+            .as_ref()
+            .is_some_and(|lock| !lock.can_install(self.selected_device.as_ref()))
+        {
+            return Task::none();
+        }
+
         let device = self.selected_device.clone();
         let account = self
             .account_store
@@ -1271,6 +1332,22 @@ impl Impactor {
     }
 
     fn start_installation_task(&mut self) -> Task<Message> {
+        if self
+            .device_lock
+            .as_ref()
+            .is_some_and(|lock| !lock.can_install(self.selected_device.as_ref()))
+        {
+            let exporting = match &self.current_screen {
+                ImpactorScreen::Installer(screen) => {
+                    screen.options.install_mode == plume_utils::SignerInstallMode::Export
+                }
+                _ => false,
+            };
+            if !exporting {
+                return Task::none();
+            }
+        }
+
         if let ImpactorScreen::Installer(installer) = &self.current_screen {
             let Some(package) = installer.selected_package.clone() else {
                 return Task::none();

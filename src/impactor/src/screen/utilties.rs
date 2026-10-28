@@ -88,7 +88,8 @@ impl UtilitiesScreen {
                 self.status_message = None;
                 self.app_statuses.clear();
                 if let Some(device) = &self.device {
-                    if device.is_mac {
+                    if device.is_mac || !device.is_available() {
+                        self.loading = false;
                         return Task::none();
                     }
 
@@ -315,13 +316,19 @@ impl UtilitiesScreen {
                     row![
                         text(format!(
                             "{} ({})",
-                            app.app,
+                            app.installed_name
+                                .clone()
+                                .unwrap_or_else(|| app.app.to_string()),
                             app.bundle_id.clone().unwrap_or("???".to_string())
                         ))
                         .size(14)
                         .width(iced::Length::Fill),
                         button(text(t!("utilities_install_pairing")).align_x(Center))
-                            .on_press(Message::InstallPairingFile(app.clone()))
+                            .on_press_maybe(
+                                app.app
+                                    .supports_pairing_file_alt()
+                                    .then(|| Message::InstallPairingFile(app.clone()))
+                            )
                             .style(appearance::s_button)
                     ]
                     .spacing(appearance::THEME_PADDING)
@@ -329,6 +336,19 @@ impl UtilitiesScreen {
                 ]
                 .spacing(4);
 
+                let expiration = match app.expiration {
+                    Some(date) => {
+                        let expired =
+                            std::time::SystemTime::from(date) <= std::time::SystemTime::now();
+                        format!(
+                            "{}: {}",
+                            if expired { "Expired" } else { "Expires" },
+                            date.to_xml_format()
+                        )
+                    }
+                    None => "Expiration unavailable".into(),
+                };
+                app_row = app_row.push(text(expiration).size(13));
                 if let Some(status) = self.app_statuses.get(&app_key) {
                     app_row = app_row.push(text(&status.text).size(13).color(status.color()));
                 }

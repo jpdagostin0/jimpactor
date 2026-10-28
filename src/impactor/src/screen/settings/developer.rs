@@ -12,6 +12,7 @@ pub enum Message {
     Loaded(Result<Overview, String>),
     RevokeCertificate(Certificate),
     DeleteAppId(AppId),
+    SetDeviceEnabled(plume_utils::RegisteredDevice, bool),
     ActionDone(Result<bool, String>),
 }
 
@@ -35,6 +36,7 @@ pub struct Overview {
     team_id: String,
     certificates: Vec<Certificate>,
     app_ids: Vec<AppId>,
+    devices: Result<Vec<plume_utils::RegisteredDevice>, String>,
 }
 
 #[derive(Debug, Default)]
@@ -71,11 +73,34 @@ async fn load(account: GsaAccount) -> Result<Overview, String> {
             identifier: a.identifier,
         })
         .collect();
+    let devices = match device_manager(&account, &team_id).await {
+        Ok(manager) => manager
+            .registered_devices()
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error),
+    };
     Ok(Overview {
         team_id,
         certificates,
         app_ids,
+        devices,
     })
+}
+
+async fn device_manager(
+    account: &GsaAccount,
+    team_id: &str,
+) -> Result<plume_utils::XkitSigner, String> {
+    plume_utils::XkitSigner::new(
+        account.adsid(),
+        account.xcode_gs_token(),
+        plume_store::AnisetteSettings::load_configuration(&crate::defaults::get_data_path()),
+        team_id,
+        &crate::defaults::get_data_path(),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 impl DeveloperTab {
@@ -155,6 +180,31 @@ impl DeveloperTab {
                             .await
                             .map_err(|e| e.to_string())?;
                         log::info!("Deleted app ID {}", app_id.identifier);
+                        Ok(true)
+                    }),
+                    Message::ActionDone,
+                )
+            }
+            Message::SetDeviceEnabled(device, enabled) => {
+                let Some(account) = account.cloned() else {
+                    return Task::none();
+                };
+                if self.loading {
+                    return Task::none();
+                }
+                self.loading = true;
+                Task::perform(
+                    run_on_tokio(async move {
+                        let action = if enabled { "Enable" } else { "Disable" };
+                        if !confirm(format!("{action} registered device"), format!("{action} {} ({})? Disabling invalidates profiles that include this device and does not free an annual device slot. Apple requires Account Holder or Admin access.", device.name, device.udid)).await { return Ok(false); }
+                        let (_, team_id) = developer_session(&account).await?;
+                        device_manager(&account, &team_id)
+                            .await?
+                            .set_device_enabled(&device.id, enabled)
+                            .await
+                            .map_err(|error| {
+                                format!("Apple could not {action} this device: {error}")
+                            })?;
                         Ok(true)
                     }),
                     Message::ActionDone,
@@ -244,6 +294,46 @@ impl DeveloperTab {
                 .spacing(appearance::THEME_PADDING)
                 .align_y(Alignment::Center),
             );
+        }
+
+        content = content.push(container(rule::horizontal(1)).padding([appearance::THEME_PADDING / 2.0, 0.0]))
+            .push(text("Registered devices"))
+            .push(text("Devices can be enabled or disabled, not permanently deleted. Disabling invalidates affected profiles and does not free an annual slot. Requires Account Holder or Admin access.").size(small));
+        match &overview.devices {
+            Ok(devices) => {
+                for device in devices {
+                    let target_enabled = device.status == "DISABLED";
+                    let known_status = matches!(device.status.as_str(), "ENABLED" | "DISABLED");
+                    content = content.push(
+                        row![
+                            column![
+                                text(&device.name),
+                                text(format!(
+                                    "{} · {} · {}",
+                                    device.udid, device.platform, device.status
+                                ))
+                                .size(small)
+                            ]
+                            .width(Fill),
+                            button(text(if target_enabled { "Enable" } else { "Disable" }))
+                                .on_press_maybe((enabled && known_status).then(|| {
+                                    Message::SetDeviceEnabled(device.clone(), target_enabled)
+                                }))
+                                .style(appearance::s_button),
+                        ]
+                        .spacing(appearance::THEME_PADDING)
+                        .align_y(Alignment::Center),
+                    );
+                }
+            }
+            Err(error) => {
+                content = content.push(
+                    text(format!(
+                        "Device management unavailable for this account: {error}"
+                    ))
+                    .size(small),
+                );
+            }
         }
 
         content = content

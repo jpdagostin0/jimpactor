@@ -69,6 +69,30 @@ impl XkitSigner {
         })
     }
 
+    pub async fn registered_devices(&self) -> Result<Vec<RegisteredDevice>, Error> {
+        Ok(self
+            .context
+            .developer_api_client
+            .registered_devices()
+            .await?
+            .into_iter()
+            .map(|device| RegisteredDevice {
+                id: device.id.clone(),
+                name: device.attribute("name").unwrap_or("Unnamed device").into(),
+                udid: device.attribute("udid").unwrap_or_default().into(),
+                status: device.attribute("status").unwrap_or("UNKNOWN").into(),
+                platform: device.attribute("platform").unwrap_or_default().into(),
+            })
+            .collect())
+    }
+    pub async fn set_device_enabled(&self, id: &str, enabled: bool) -> Result<(), Error> {
+        self.context
+            .developer_api_client
+            .set_device_enabled(id, enabled)
+            .await?;
+        Ok(())
+    }
+
     /// Ensures a valid development certificate exists, returning whether a new one was issued.
     pub async fn ensure_certificate(&self, confirm: &ConfirmRevocation) -> Result<bool, Error> {
         let before = self.manager.info(&self.team_id)?;
@@ -116,4 +140,13 @@ impl XkitSigner {
             )
             .await?)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct RegisteredDevice {
+    pub id: String,
+    pub name: String,
+    pub udid: String,
+    pub status: String,
+    pub platform: String,
 }

@@ -129,6 +129,8 @@ impl std::fmt::Display for SignerMode {
 pub struct SignerAppReal {
     pub app: SignerApp,
     pub bundle_id: Option<String>,
+    pub installed_name: Option<String>,
+    pub expiration: Option<plist::Date>,
 }
 
 impl SignerAppReal {
@@ -137,6 +139,8 @@ impl SignerAppReal {
         Self {
             app,
             bundle_id: identifier.map(|s| s.to_string()),
+            installed_name: None,
+            expiration: None,
         }
     }
 
@@ -145,6 +149,8 @@ impl SignerAppReal {
         Self {
             app,
             bundle_id: identifier.map(|s| s.to_string()),
+            installed_name: None,
+            expiration: None,
         }
     }
 }

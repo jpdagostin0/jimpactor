@@ -882,3 +882,33 @@ async fn autosigner_provisions_embeds_and_signs_a_real_app_offline() {
     assert_eq!(*stages.lock().unwrap(), vec!["Provisioning", "Signing"]);
     http.done();
 }
+
+#[tokio::test]
+async fn registered_device_controls_use_status_updates_and_preserve_account_errors() {
+    let http = MockHTTP::json(vec![
+        json!({"data":[{"type":"devices","id":"record-1","attributes":{"udid":"test-udid","name":"Phone","status":"ENABLED"}}]}),
+        json!({"data":{"type":"devices","id":"record-1","attributes":{"status":"DISABLED"}}}),
+        json!({"data":{"type":"devices","id":"record-1","attributes":{"status":"ENABLED"}}}),
+        json!({"errors":[{"status":"403","code":"FORBIDDEN","detail":"Account Holder or Admin required"}]}),
+    ]);
+    let api = client(http.clone());
+    assert_eq!(
+        api.registered_devices().await.unwrap()[0].attribute("udid"),
+        Some("test-udid")
+    );
+    api.set_device_enabled("record-1", false).await.unwrap();
+    api.set_device_enabled("record-1", true).await.unwrap();
+    assert!(
+        matches!(api.set_device_enabled("record-1", false).await, Err(Error::DeveloperApi { code, .. }) if code == "FORBIDDEN")
+    );
+    assert!(api.set_device_enabled("../unsafe", false).await.is_err());
+    let requests = http.requests.lock().unwrap();
+    for (request, status) in requests[1..3].iter().zip(["DISABLED", "ENABLED"]) {
+        assert_eq!(request.method, Method::PATCH);
+        let body: Json = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["data"]["id"], "record-1");
+        assert_eq!(body["data"]["attributes"]["status"], status);
+        assert_eq!(body["data"]["attributes"]["teamId"], "TEAM123456");
+    }
+    http.done();
+}

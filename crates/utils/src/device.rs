@@ -118,28 +118,50 @@ impl Device {
         Ok(value.as_string().unwrap_or_default().to_owned())
     }
 
+    pub fn is_available(&self) -> bool {
+        self.network.as_ref().map_or(
+            self.usbmuxd_device.is_some() || self.is_mac,
+            NetworkConnection::is_online,
+        )
+    }
+
     pub async fn installed_apps(&self) -> Result<Vec<SignerAppReal>, Error> {
         self.with_provider(INSTALLATION_LABEL, |provider| async move {
             let mut ic = InstallationProxyClient::connect(provider.as_ref()).await?;
             let apps = ic.get_apps(Some("User"), None).await?;
 
+            let profiles = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut client = MisagentClient::connect(provider.as_ref()).await?;
+                client.copy_all().await
+            })
+            .await
+            {
+                Ok(Ok(data)) => data
+                    .into_iter()
+                    .filter_map(|bytes| MobileProvision::load_with_bytes(bytes).ok())
+                    .collect::<Vec<_>>(),
+                _ => {
+                    log::debug!("Installed profile expiration is unavailable");
+                    Vec::new()
+                }
+            };
             let mut found_apps = Vec::new();
-
             for (bundle_id, info) in apps {
                 let app_name = get_app_name_from_info(&info);
-                let signer_app = SignerAppReal::from_bundle_identifier_and_name(
-                    Some(bundle_id.as_str()),
+                let mut app = SignerAppReal::from_bundle_identifier_and_name(
+                    Some(&bundle_id),
                     app_name.as_deref(),
                 );
-
-                if signer_app.app.supports_pairing_file_alt()
-                    && !found_apps
-                        .iter()
-                        .any(|a: &SignerAppReal| a.bundle_id == signer_app.bundle_id)
-                {
-                    found_apps.push(signer_app);
-                }
+                app.installed_name = app_name;
+                app.expiration = installed_profile_expiration(&bundle_id, &info, &profiles);
+                found_apps.push(app);
             }
+            found_apps.sort_by_key(|app| {
+                app.installed_name
+                    .clone()
+                    .unwrap_or_else(|| app.app.to_string())
+                    .to_lowercase()
+            });
 
             Ok(found_apps)
         })
@@ -252,17 +274,7 @@ impl Device {
             })
             .await?;
 
-        let mut merged = Value::from_reader(std::io::Cursor::new(&lockdown))?
-            .into_dictionary()
-            .ok_or_else(|| Error::Other("Lockdown pair record is not a dictionary".to_string()))?;
-        let rppairing = Value::from_reader(std::io::Cursor::new(&rppairing))?
-            .into_dictionary()
-            .ok_or_else(|| Error::Other("Remote pair record is not a dictionary".to_string()))?;
-        merged.extend(rppairing);
-
-        let mut out = Vec::new();
-        Value::Dictionary(merged).to_writer_xml(&mut out)?;
-        Ok(out)
+        merge_pairing_records(&lockdown, &rppairing)
     }
 
     /// Writes `data` to `path` inside the Documents container of the app `identifier`.
@@ -471,6 +483,61 @@ impl Device {
     }
 }
 
+fn merge_pairing_records(lockdown: &[u8], remote: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut merged = Value::from_reader(std::io::Cursor::new(lockdown))?
+        .into_dictionary()
+        .ok_or_else(|| Error::Other("Lockdown pair record is not a dictionary".into()))?;
+    let remote = Value::from_reader(std::io::Cursor::new(remote))?
+        .into_dictionary()
+        .ok_or_else(|| Error::Other("Remote pair record is not a dictionary".into()))?;
+    merged.extend(remote);
+    let mut out = Vec::new();
+    Value::Dictionary(merged).to_writer_xml(&mut out)?;
+    Ok(out)
+}
+
+fn installed_profile_expiration(
+    bundle_id: &str,
+    info: &Value,
+    profiles: &[MobileProvision],
+) -> Option<plist::Date> {
+    let application_id = info
+        .as_dictionary()
+        .and_then(|info| info.get("Entitlements"))
+        .and_then(Value::as_dictionary)
+        .and_then(|entitlements| entitlements.get("application-identifier"))
+        .and_then(Value::as_string);
+    let candidates = profiles
+        .iter()
+        .filter(|profile| {
+            profile.matches_bundle_id(bundle_id)
+                && application_id.is_none_or(|application_id| {
+                    profile
+                        .entitlements()
+                        .get("application-identifier")
+                        .and_then(Value::as_string)
+                        .is_some_and(|pattern| {
+                            pattern == application_id
+                                || pattern
+                                    .strip_suffix('*')
+                                    .is_some_and(|prefix| application_id.starts_with(prefix))
+                        })
+                })
+        })
+        .collect::<Vec<_>>();
+    let exact = candidates
+        .iter()
+        .copied()
+        .filter(|profile| profile.bundle_id().as_deref() == Some(bundle_id))
+        .collect::<Vec<_>>();
+    let candidates = if exact.is_empty() { candidates } else { exact };
+    let date = *candidates.first()?.expiration_date();
+    candidates
+        .iter()
+        .all(|profile| profile.expiration_date() == &date)
+        .then_some(date)
+}
+
 /// Prefix and suffix of cached remote pairing files, `plume_<UDID>.plist`.
 pub const REMOTE_PAIRING_CACHE_PREFIX: &str = "plume_";
 pub const REMOTE_PAIRING_CACHE_SUFFIX: &str = ".plist";
@@ -587,6 +654,69 @@ pub async fn install_app_mac(_app_path: &PathBuf) -> Result<(), Error> {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    fn profile(pattern: &str, date: &str) -> MobileProvision {
+        let dict = plist::Dictionary::from_iter([
+            (
+                "ExpirationDate",
+                Value::Date(plist::Date::from_xml_format(date).unwrap()),
+            ),
+            (
+                "Entitlements",
+                Value::Dictionary(plist::Dictionary::from_iter([(
+                    "application-identifier",
+                    Value::String(pattern.into()),
+                )])),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        Value::Dictionary(dict).to_writer_xml(&mut bytes).unwrap();
+        MobileProvision::load_with_bytes(bytes).unwrap()
+    }
+    #[test]
+    fn installed_expiration_prefers_exact_identity_and_does_not_guess_ambiguous_profiles() {
+        let profiles = [
+            profile("TEAM123456.com.example.*", "2030-01-01T00:00:00Z"),
+            profile("TEAM123456.com.example.app", "2031-01-01T00:00:00Z"),
+            profile("OTHER12345.com.example.app", "2032-01-01T00:00:00Z"),
+        ];
+        let info = Value::Dictionary(plist::Dictionary::from_iter([(
+            "Entitlements",
+            Value::Dictionary(plist::Dictionary::from_iter([(
+                "application-identifier",
+                Value::String("TEAM123456.com.example.app".into()),
+            )])),
+        )]));
+        assert_eq!(
+            installed_profile_expiration("com.example.app", &info, &profiles),
+            Some(plist::Date::from_xml_format("2031-01-01T00:00:00Z").unwrap())
+        );
+        assert!(
+            installed_profile_expiration(
+                "com.example.app",
+                &Value::Dictionary(Default::default()),
+                &profiles
+            )
+            .is_none()
+        );
+        assert!(installed_profile_expiration("com.other.app", &info, &profiles).is_none());
+        assert!(installed_profile_expiration("com.example.app", &info, &[]).is_none());
+    }
+    #[test]
+    fn hybrid_pairing_roundtrips_through_both_consumers() {
+        let lockdown = crate::network_connection::tests::fixture_pairing();
+        let remote = RpPairingFile::generate("fixture-host");
+        let hybrid =
+            merge_pairing_records(&lockdown.clone().serialize().unwrap(), &remote.to_bytes())
+                .unwrap();
+        let legacy = idevice::pairing_file::PairingFile::from_value(
+            &Value::from_reader(std::io::Cursor::new(&hybrid)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy.host_id, lockdown.host_id);
+        let parsed_remote = RpPairingFile::from_bytes(&hybrid).unwrap();
+        assert_eq!(parsed_remote.public_key_bytes(), remote.public_key_bytes());
+        assert_eq!(parsed_remote.identifier(), remote.identifier());
+    }
     #[test]
     fn udid_selection_survives_reconnect_and_never_matches_mux_numbers() {
         let devices = |id| {

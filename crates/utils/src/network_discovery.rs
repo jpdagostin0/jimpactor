@@ -27,6 +27,7 @@ struct CachedDevice {
     display_id: u32,
     connection_id: u32,
     expires: Option<Instant>,
+    device: Device,
 }
 
 #[derive(Default)]
@@ -44,6 +45,7 @@ impl WifiDeviceCache {
                 display_id: device.device_id,
                 connection_id: device.device_id,
                 expires: None,
+                device: device.clone(),
             });
         self.connections.remove(&cached.connection_id);
         cached.connection_id = device.device_id;
@@ -52,18 +54,22 @@ impl WifiDeviceCache {
             .insert(device.device_id, device.udid.clone());
         // Reuse the list entry and selection even if DNS-SD assigned a new ID.
         device.device_id = cached.display_id;
+        cached.device = device.clone();
         device
     }
 
-    fn disconnected(&mut self, id: u32, now: Instant) {
+    fn disconnected(&mut self, id: u32, now: Instant) -> bool {
         if let Some(udid) = self.connections.get(&id)
             && let Some(cached) = self.devices.get_mut(udid)
         {
             // Repeated failures must not extend an offline device's lifetime.
+            let first_disconnect = cached.expires.is_none();
             cached
                 .expires
                 .get_or_insert(now + WIFI_DEVICE_CACHE_DURATION);
+            return first_disconnect;
         }
+        false
     }
 
     fn next_expiration(&self) -> Option<Instant> {
@@ -103,7 +109,12 @@ async fn forward_cached_devices(
                         return;
                     }
                 }
-                Some(DeviceEvent::Disconnected(id)) => cache.disconnected(id, Instant::now()),
+                Some(DeviceEvent::Disconnected(id)) => {
+                    if cache.disconnected(id, Instant::now()) {
+                        let device = cache.connections.get(&id).and_then(|udid| cache.devices.get(udid)).map(|cached| cached.device.clone());
+                        if let Some(device) = device { let _ = output.send(DeviceEvent::Connected(device)); }
+                    }
+                },
                 None => return,
             },
             _ = async {

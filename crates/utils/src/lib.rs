@@ -36,7 +36,7 @@ pub use options::{
 pub use package::Package; // Package helper
 pub use signer::Signer; // Signer
 pub use tweak::Tweak; // Tweak helper
-pub use xkit_bridge::{ConfirmRevocation, XkitSigner}; // xkit provisioning and signing
+pub use xkit_bridge::{ConfirmRevocation, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
 
 use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]

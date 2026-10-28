@@ -44,6 +44,10 @@ impl NetworkConnection {
         Self(Arc::new(state))
     }
 
+    pub fn is_online(&self) -> bool {
+        self.0.borrow().online
+    }
+
     pub(crate) fn provider(&self, label: &str) -> TcpProvider {
         let state = self.0.borrow();
         clone_provider(&state.provider, label)

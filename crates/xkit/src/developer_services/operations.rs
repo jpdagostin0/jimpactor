@@ -57,6 +57,38 @@ fn resource_path(collection: &str, id: &str) -> Result<String> {
 }
 
 impl DeveloperAPIClient {
+    pub async fn registered_devices(&self) -> Result<Vec<Resource>> {
+        self.collection("v1/devices", &[]).await
+    }
+
+    /// Apple's supported operation is enable/disable, not permanent deletion.
+    pub async fn set_device_enabled(&self, id: &str, enabled: bool) -> Result<Resource> {
+        let path = resource_path("devices", id)?;
+        let response = self
+            .request(
+                Method::PATCH,
+                &path,
+                &[],
+                Some(json!({"data": {
+                    "type": "devices", "id": id,
+                    "attributes": { "status": if enabled { "ENABLED" } else { "DISABLED" } }
+                }})),
+            )
+            .await?;
+        let device: Resource = serde_json::from_value(
+            response
+                .get("data")
+                .cloned()
+                .ok_or_else(|| invalid("Missing updated device"))?,
+        )?;
+        if device.id != id
+            || device.attribute("status") != Some(if enabled { "ENABLED" } else { "DISABLED" })
+        {
+            return Err(invalid("Apple did not confirm the requested device status"));
+        }
+        Ok(device)
+    }
+
     pub async fn register_device(&self, target: Option<&TargetDevice>) -> Result<()> {
         let Some(target) = target else {
             return Ok(());

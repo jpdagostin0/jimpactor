@@ -179,6 +179,9 @@ impl MobileProvision {
             .rposition(|w| w == b"</plist>")
             .ok_or(Error::ProvisioningEntitlementsUnknown)?
             + 8;
+        if end <= start {
+            return Err(Error::ProvisioningEntitlementsUnknown);
+        }
         let plist_data = &data[start..end];
         let plist = plist::Value::from_reader_xml(plist_data)?;
 
@@ -255,6 +258,10 @@ mod tests {
             "OTHERTEAM1".into(),
         );
         assert!(profile.validate_for("com.example.app", None, None).is_err());
+    }
+    #[test]
+    fn malformed_profile_bounds_do_not_panic() {
+        assert!(MobileProvision::load_with_bytes(b"</plist><plist>".to_vec()).is_err());
     }
     #[test]
     fn rejects_expired_profiles() {

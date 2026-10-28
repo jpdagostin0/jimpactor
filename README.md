@@ -58,6 +58,14 @@ jimpactor-cli sign --package App.ipa --output Modified.ipa --modify-only --url-s
 jimpactor-cli sign --package App.ipa --output Signed.ipa --tweaks Custom.dylib --tweak-loader none --tweak-inject-folder / --tweak-inject-path @executable_path
 ```
 
+## Device controls
+
+Enable **Lock device** beside the device picker to keep installations tied to that device's UDID. If it disconnects, installation stays disabled until it returns or you unlock the selection. Export remains available.
+
+**Utilities** lists installed user apps and shows profile expiration dates when available. Missing or ambiguous profile information is shown as **Expiration unavailable**. Pairing actions are available for supported apps.
+
+In **Settings → Developer**, registered devices can be enabled or disabled when your Apple account permits it. Apple does not offer ordinary permanent deletion: disabling requires Account Holder or Admin access, invalidates profiles containing that device, and does not free an annual device slot. See [Apple's device-management rules](https://developer.apple.com/help/account/devices/disable-or-enable-a-device/).
+
 ## Build
 
 Install Rust, CMake, and the native dependencies listed in the [contributing guide](.github/CONTRIBUTING.md).
