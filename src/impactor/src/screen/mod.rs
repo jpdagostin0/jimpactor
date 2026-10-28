@@ -663,17 +663,31 @@ impl Impactor {
                                 .as_ref()
                                 .and_then(|s| s.selected_account().cloned())
                             {
+                                let (tx, rx) = futures::channel::oneshot::channel();
                                 std::thread::spawn(move || {
-                                    let rt = tokio::runtime::Builder::new_current_thread()
+                                    let result = tokio::runtime::Builder::new_current_thread()
                                         .enable_all()
                                         .build()
-                                        .unwrap();
-
-                                    let _ = rt.block_on(async move {
-                                        crate::subscriptions::export_certificate(account).await
-                                    });
+                                        .map_err(|e| e.to_string())
+                                        .and_then(|runtime| {
+                                            runtime.block_on(
+                                                crate::subscriptions::export_certificate(account),
+                                            )
+                                        });
+                                    let _ = tx.send(result);
                                 });
+                                return Task::perform(
+                                    async move {
+                                        rx.await.unwrap_or_else(|_| Err("Certificate export worker stopped unexpectedly".into()))
+                                    },
+                                    |result| {
+                                        Message::SettingsScreen(
+                                            settings::Message::CertificateExported(result),
+                                        )
+                                    },
+                                );
                             }
+
                             Task::none()
                         }
                         settings::Message::ToggleAutoStart(enabled) => {

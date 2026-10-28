@@ -39,7 +39,7 @@ pub enum AnisetteError {
     AnisetteNotProvisioned,
     #[error("Plist serialization error {0}")]
     PlistError(#[from] plist::Error),
-    #[error("Request Error {0}")]
+    #[error("{}", transport_error_detail(.0))]
     ReqwestError(#[from] reqwest::Error),
     #[cfg(feature = "remote-anisette-v3")]
     #[error("Provisioning socket error {0}")]
@@ -292,7 +292,7 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
         }
 
         #[cfg(feature = "remote-anisette-v3")]
-        {
+        let v3_error = {
             let mut v3 = remote_anisette_v3::RemoteAnisetteProviderV3::new(
                 self.url.clone(),
                 self.configuration_path.clone(),
@@ -305,9 +305,10 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
                 }
                 Err(error) => {
                     log::debug!("Remote anisette v3 failed ({error}); trying v1");
+                    error.to_string()
                 }
             }
-        }
+        };
         #[cfg(not(feature = "remote-anisette-v3"))]
         let _ = &self.serial;
 
@@ -321,7 +322,65 @@ impl AnisetteHeadersProvider for AutoRemoteProvider {
                 self.inner = RemoteInner::V1(v1);
                 Ok(headers)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                #[cfg(feature = "remote-anisette-v3")]
+                return Err(AnisetteError::InvalidArgument(format!(
+                    "Anisette failed using both protocols. v3: {v3_error}; v1: {error}. Check the configured server, system proxy and certificate settings."
+                )));
+                #[cfg(not(feature = "remote-anisette-v3"))]
+                Err(error)
+            }
         }
+    }
+}
+
+/// Include the transport's source chain so TLS and proxy failures remain visible.
+/// The origin identifies the endpoint without exposing tokens in URL paths or queries.
+pub fn transport_error_detail(error: &reqwest::Error) -> String {
+    use std::error::Error;
+    let origin = error
+        .url()
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "unknown endpoint".into());
+    let kind = if error.is_timeout() {
+        "Request timed out"
+    } else if error.is_decode() {
+        "Invalid response"
+    } else if error.is_connect() {
+        "Connection failed"
+    } else {
+        "HTTP request failed"
+    };
+    let mut details = format!("{kind} at {origin}");
+    if let Some(status) = error.status() {
+        details.push_str(&format!(" (HTTP {})", status.as_u16()));
+    }
+    let mut source = error.source();
+    while let Some(cause) = source {
+        details.push_str(": ");
+        details.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    details
+}
+
+#[cfg(all(test, feature = "async"))]
+mod transport_tests {
+    use super::*;
+    #[tokio::test]
+    async fn reports_transport_cause_without_url_tokens() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = reqwest::Client::new()
+            .get(format!("http://{address}/private/token?secret=sensitive"))
+            .send()
+            .await
+            .unwrap_err();
+        let message = transport_error_detail(&error);
+        assert!(message.contains(&address.to_string()));
+        assert!(message.contains("Connection failed"));
+        assert!(!message.contains("sensitive"));
+        assert!(!message.contains("private"));
     }
 }

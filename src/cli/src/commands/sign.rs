@@ -10,7 +10,7 @@ use plume_utils::{
 
 use crate::{
     commands::{
-        account::{get_authenticated_account, teams},
+        account::{get_authenticated_account, select_team},
         device::select_device,
     },
     get_data_path,
@@ -28,6 +28,14 @@ pub struct SignArgs {
     /// Use Apple ID credentials for signing
     #[arg(long = "apple-id")]
     pub apple_id: bool,
+    /// Developer team to use for Apple ID signing (required for multiple teams without a terminal)
+    #[arg(
+        long = "team-id",
+        alias = "team",
+        value_name = "TEAM_ID",
+        requires = "apple_id"
+    )]
+    pub team_id: Option<String>,
     /// Provisioning profile files to embed
     #[arg(long = "provision", value_name = "PROVISION")]
     pub provisioning_files: Option<PathBuf>,
@@ -94,7 +102,7 @@ pub async fn execute(args: SignArgs) -> Result<()> {
         (Signer::new(Some(cert_identity), options), None, None)
     } else if args.apple_id {
         let session = get_authenticated_account().await?;
-        let team_id = teams(&session).await?;
+        let team_id = select_team(&session, args.team_id.as_deref()).await?;
 
         options.mode = SignerMode::Pem;
 

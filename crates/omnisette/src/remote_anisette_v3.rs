@@ -142,6 +142,7 @@ pub struct AnisetteData {
     one_time_password: String,
     routing_info: String,
     device_description: String,
+    user_agent: String,
     local_user_id: String,
     device_unique_identifier: String,
 }
@@ -151,6 +152,7 @@ impl AnisetteData {
         let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
 
         HashMap::from_iter([
+            ("User-Agent".into(), self.user_agent.clone()),
             (
                 "X-Apple-I-Client-Time".to_string(),
                 dt.format("%+").to_string().replace("+00:00", "Z"),
@@ -189,6 +191,7 @@ impl AnisetteClient {
             .get(path)
             .send()
             .await?
+            .error_for_status()?
             .json::<AnisetteClientInfo>()
             .await?;
         Ok(AnisetteClient { client_info, url })
@@ -253,6 +256,7 @@ impl AnisetteClient {
             .json(&body)
             .send()
             .await?
+            .error_for_status()?
             .json::<AnisetteHeaders>()
             .await?;
         match headers {
@@ -272,6 +276,7 @@ impl AnisetteClient {
                 one_time_password,
                 routing_info,
                 device_description: self.client_info.client_info.clone(),
+                user_agent: self.client_info.user_agent.clone(),
                 local_user_id: encode_hex(&state.md_lu()),
                 device_unique_identifier: state.device_id(),
             }),
@@ -289,7 +294,7 @@ impl AnisetteClient {
             )
             .send()
             .await?;
-        let text = resp.text().await?;
+        let text = resp.error_for_status()?.text().await?;
 
         let protocol_val = plist::Value::from_reader(Cursor::new(text.as_str()))?;
         let urls = protocol_val
@@ -370,7 +375,7 @@ impl AnisetteClient {
                             .body(plist_to_string(&body_data)?)
                             .send()
                             .await?;
-                        let text = resp.text().await?;
+                        let text = resp.error_for_status()?.text().await?;
 
                         let protocol_val = plist::Value::from_reader(Cursor::new(text.as_str()))?;
                         let spim = protocol_val
@@ -412,7 +417,7 @@ impl AnisetteClient {
                             .body(plist_to_string(&body_data)?)
                             .send()
                             .await?;
-                        let text = resp.text().await?;
+                        let text = resp.error_for_status()?.text().await?;
 
                         let protocol_val = plist::Value::from_reader(Cursor::new(text.as_str()))?;
                         let response = protocol_val
@@ -521,5 +526,40 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
             }
         };
         Ok(data.get_headers(self.serial.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn reports_http_failure_before_attempting_to_decode_html() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            drop(reader);
+            stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\nContent-Length: 6\r\nConnection: close\r\n\r\n<html>").unwrap();
+        });
+        let error = match AnisetteClient::new(format!("http://{address}")).await {
+            Ok(_) => panic!("expected HTTP error"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, AnisetteError::ReqwestError(ref error) if error.status().map(|status| status.as_u16()) == Some(503))
+        );
+        server.join().unwrap();
     }
 }

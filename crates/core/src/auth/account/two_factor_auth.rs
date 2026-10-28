@@ -8,7 +8,7 @@ use crate::auth::{Account, AuthenticationExtras, LoginState, PhoneNumber, Verify
 
 impl Account {
     pub async fn send_2fa_to_devices(&self) -> Result<LoginState, Error> {
-        let headers = self.build_2fa_headers(false).await;
+        let headers = self.build_2fa_headers(false).await?;
 
         let res = self
             .client
@@ -30,7 +30,7 @@ impl Account {
     }
 
     pub async fn send_sms_2fa_to_devices(&self, phone_id: u32) -> Result<LoginState, Error> {
-        let headers = self.build_2fa_headers(true).await;
+        let headers = self.build_2fa_headers(true).await?;
 
         let body = VerifyBody {
             phone_number: PhoneNumber { id: phone_id },
@@ -64,23 +64,13 @@ impl Account {
         let req = self
             .client
             .get("https://gsa.apple.com/auth")
-            .headers(headers.await)
+            .headers(headers.await?)
             .header("Accept", "application/json")
             .send()
             .await?;
         let status = req.status().as_u16();
-        let mut new_state = req.json::<AuthenticationExtras>().await?;
-        if status == 201 {
-            new_state.new_state = Some(LoginState::NeedsSMS2FAVerification(VerifyBody {
-                phone_number: PhoneNumber {
-                    id: new_state.trusted_phone_numbers.first().unwrap().id,
-                },
-                mode: "sms".to_string(),
-                security_code: None,
-            }));
-        }
-
-        Ok(new_state)
+        let req = req.error_for_status()?;
+        parse_auth_extras(status, req.json::<serde_json::Value>().await?)
     }
 
     pub async fn verify_2fa(&self, code: String) -> Result<LoginState, Error> {
@@ -88,15 +78,16 @@ impl Account {
         let res = self
             .client
             .get("https://gsa.apple.com/grandslam/GsService2/validate")
-            .headers(headers.await)
+            .headers(headers.await?)
             .header(
                 HeaderName::from_str("security-code").unwrap(),
-                HeaderValue::from_str(&code).unwrap(),
+                HeaderValue::from_str(code.trim()).map_err(|_| Error::Bad2faCode)?,
             )
             .send()
             .await?;
 
-        let res: plist::Dictionary = plist::from_bytes(res.text().await?.as_bytes())?;
+        check_verification_status(res.status().as_u16())?;
+        let res: plist::Dictionary = plist::from_bytes(&res.bytes().await?)?;
 
         super::check_error(&res)?;
 
@@ -108,7 +99,7 @@ impl Account {
         code: String,
         mut body: VerifyBody,
     ) -> Result<LoginState, Error> {
-        let headers = self.build_2fa_headers(true).await;
+        let headers = self.build_2fa_headers(true).await?;
         body.security_code = Some(VerifyCode { code });
         let res = self
             .client
@@ -120,28 +111,37 @@ impl Account {
 
         let status_code = res.status();
 
-        // TODO: 423 http code may occur, in this case we to ask for sending
-        // last code sent (unlikely it would even work), or try again later
-        if !status_code.is_success() {
-            return Err(Error::Bad2faCode);
-        }
+        check_verification_status(status_code.as_u16())?;
 
         Ok(LoginState::NeedsLogin)
     }
 
-    async fn build_2fa_headers(&self, sms: bool) -> HeaderMap {
-        let spd = self.spd.as_ref().unwrap();
-        let dsid = spd.get("adsid").unwrap().as_string().unwrap();
-        let token = spd.get("GsIdmsToken").unwrap().as_string().unwrap();
+    async fn build_2fa_headers(&self, sms: bool) -> Result<HeaderMap, Error> {
+        let spd = self
+            .spd
+            .as_ref()
+            .ok_or_else(|| Error::AuthenticationResponse("Missing 2FA session".into()))?;
+        let dsid = spd
+            .get("adsid")
+            .and_then(plist::Value::as_string)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing 2FA account ID".into()))?;
+        let token = spd
+            .get("GsIdmsToken")
+            .and_then(plist::Value::as_string)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing 2FA token".into()))?;
 
         let identity_token = general_purpose::STANDARD.encode(format!("{}:{}", dsid, token));
 
         let mut headers = HeaderMap::new();
-        let valid_anisette = self.get_anisette().await;
+        let valid_anisette = self.get_anisette().await?;
         for (k, v) in valid_anisette.generate_headers(false, true, true) {
             headers.insert(
-                HeaderName::from_bytes(k.as_bytes()).unwrap(),
-                HeaderValue::from_str(&v).unwrap(),
+                HeaderName::from_bytes(k.as_bytes()).map_err(|_| {
+                    Error::AuthenticationResponse("Invalid anisette header name".into())
+                })?,
+                HeaderValue::from_str(&v).map_err(|_| {
+                    Error::AuthenticationResponse("Invalid anisette header value".into())
+                })?,
             );
         }
         if !sms {
@@ -151,7 +151,11 @@ impl Account {
             headers.insert("Content-Type", HeaderValue::from_static("application/json"));
             headers.insert("Accept", HeaderValue::from_static("application/json"));
         }
-        headers.insert("User-Agent", HeaderValue::from_static("Xcode"));
+        headers.insert(
+            "User-Agent",
+            HeaderValue::from_str(valid_anisette.user_agent())
+                .map_err(|_| Error::AuthenticationResponse("Invalid anisette user agent".into()))?,
+        );
         headers.insert("Accept-Language", HeaderValue::from_static("en-us"));
         headers.append(
             "X-Apple-Identity-Token",
@@ -159,9 +163,129 @@ impl Account {
         );
 
         if let Ok(locale) = valid_anisette.get_header("x-apple-locale") {
-            headers.insert("Loc", HeaderValue::from_str(&locale).unwrap());
+            headers.insert(
+                "Loc",
+                HeaderValue::from_str(&locale)
+                    .map_err(|_| Error::AuthenticationResponse("Invalid anisette locale".into()))?,
+            );
         }
 
-        headers
+        Ok(headers)
+    }
+}
+
+fn parse_auth_extras(status: u16, value: serde_json::Value) -> Result<AuthenticationExtras, Error> {
+    let flag = |name| {
+        value
+            .get("securityCode")
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_bool())
+            == Some(true)
+    };
+    if flag("securityCodeLocked")
+        || (status != 201 && (flag("securityCodeCooldown") || flag("tooManyCodesSent")))
+    {
+        return Err(Error::AuthSrpWithMessage(
+            423,
+            "Apple has locked verification or limited code delivery. Wait before trying again."
+                .into(),
+        ));
+    }
+    let mut extras: AuthenticationExtras = serde_json::from_value(value.clone())?;
+    if status == 201 {
+        let selected = value
+            .get("phoneNumber")
+            .or_else(|| value.get("trustedPhoneNumber"));
+        let id = match selected {
+            Some(number) => number
+                .get("id")
+                .and_then(|id| id.as_u64())
+                .and_then(|id| u32::try_from(id).ok()),
+            None => match extras.trusted_phone_numbers.as_slice() {
+                [phone] => Some(phone.id),
+                _ => None,
+            },
+        }
+        .ok_or_else(|| {
+            Error::AuthenticationResponse(
+                "Missing or ambiguous selected SMS challenge number".into(),
+            )
+        })?;
+        if value
+            .get("mode")
+            .and_then(|m| m.as_str())
+            .is_some_and(|m| m != "sms")
+        {
+            return Err(Error::AuthenticationResponse(
+                "Apple returned an unsupported verification method".into(),
+            ));
+        }
+        extras.new_state = Some(LoginState::NeedsSMS2FAVerification(VerifyBody {
+            phone_number: PhoneNumber { id },
+            mode: "sms".into(),
+            security_code: None,
+        }));
+    }
+    Ok(extras)
+}
+
+fn check_verification_status(status: u16) -> Result<(), Error> {
+    match status {
+        200..=299 => Ok(()),
+        400 | 401 => Err(Error::Bad2faCode),
+        423 | 429 => Err(Error::AuthSrpWithMessage(status.into(), "Apple temporarily locked verification or limited requests. Wait before requesting another code.".into())),
+        _ => Err(Error::AuthSrpWithMessage(status.into(), "Apple could not verify this challenge. Retry later or sign in again; check the anisette provider if this persists.".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_sms_preserves_selected_phone_without_requesting_another_code() {
+        let extras = parse_auth_extras(
+            201,
+            serde_json::json!({"phoneNumber":{"id":7}, "trustedPhoneNumbers":[]}),
+        )
+        .unwrap();
+        let Some(LoginState::NeedsSMS2FAVerification(body)) = extras.new_state else {
+            panic!("expected SMS verification")
+        };
+        assert_eq!(body.phone_number.id, 7);
+        assert!(body.security_code.is_none());
+        assert!(parse_auth_extras(201, serde_json::json!({})).is_err());
+        assert!(
+            parse_auth_extras(200, serde_json::json!({}))
+                .unwrap()
+                .trusted_phone_numbers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn malformed_or_locked_challenges_do_not_guess_a_phone_number() {
+        for value in [
+            serde_json::json!({"phoneNumber":{"id":"invalid"}}),
+            serde_json::json!({"phoneNumber":{"id":7}, "mode":"voice"}),
+            serde_json::json!({"phoneNumber":{"id":7}, "securityCode":{"securityCodeLocked":true}}),
+        ] {
+            assert!(parse_auth_extras(201, value).is_err());
+        }
+        assert!(parse_auth_extras(201, serde_json::json!({"phoneNumber":{"id":7}, "securityCode":{"securityCodeCooldown":true}})).unwrap().new_state.is_some());
+    }
+
+    #[test]
+    fn verification_preserves_lockout_and_service_failures() {
+        assert!(matches!(
+            check_verification_status(401),
+            Err(Error::Bad2faCode)
+        ));
+        for status in [403, 423, 429, 500] {
+            assert!(
+                matches!(check_verification_status(status), Err(Error::AuthSrpWithMessage(code, _)) if code == i64::from(status))
+            );
+        }
+        assert!(check_verification_status(204).is_ok());
     }
 }

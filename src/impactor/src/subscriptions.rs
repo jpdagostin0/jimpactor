@@ -364,6 +364,11 @@ pub(crate) async fn run_installation(
             }
 
             let team_id = if team_id.is_empty() {
+                if teams_response.teams.len() != 1 {
+                    return Err(
+                        "Choose a developer team in Settings > Accounts before signing.".into(),
+                    );
+                }
                 &teams_response.teams[0].team_id
             } else {
                 team_id
@@ -634,15 +639,10 @@ pub(crate) async fn run_installation(
                             is_mac: dev.is_mac,
                         });
 
-                    if let Some(existing_app) = refresh_device
-                        .apps
-                        .iter_mut()
-                        .find(|a| a.bundle_id == refresh_app.bundle_id)
-                    {
-                        *existing_app = refresh_app;
-                    } else {
-                        refresh_device.apps.push(refresh_app);
-                    }
+                    refresh_device.name = dev.name.clone();
+                    refresh_device.is_mac = dev.is_mac;
+
+                    refresh_device.record_install(account.email().clone(), refresh_app);
 
                     store
                         .add_or_update_refresh_device_sync(refresh_device)
@@ -691,6 +691,12 @@ pub(crate) async fn export_certificate(account: plume_store::GsaAccount) -> Resu
     }
 
     let team_id = if team_id.is_empty() {
+        if teams_response.teams.len() != 1 {
+            return Err(
+                "Choose a developer team in Settings > Accounts before exporting a certificate."
+                    .into(),
+            );
+        }
         &teams_response.teams[0].team_id
     } else {
         team_id
@@ -712,27 +718,21 @@ pub(crate) async fn export_certificate(account: plume_store::GsaAccount) -> Resu
         return Err("Missing p12 data".to_string());
     };
 
-    let archive_path =
-        crate::defaults::get_data_path().join(format!("{}_certificate.p12", team_id));
-    tokio::fs::write(&archive_path, p12_data)
-        .await
-        .map_err(|e| e.to_string())?;
-
     let file = rfd::AsyncFileDialog::new()
         .set_title("Save Certificate As")
-        .set_file_name(
-            archive_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("certificate.p12"),
-        )
+        .set_file_name(format!("{team_id}_certificate.p12"))
         .save_file()
         .await;
 
     if let Some(save_path) = file {
-        tokio::fs::copy(&archive_path, &save_path.path())
+        tokio::fs::write(save_path.path(), p12_data)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| {
+                format!(
+                    "Could not save certificate to {}: {error}",
+                    save_path.path().display()
+                )
+            })?;
     }
 
     Ok(())
@@ -838,18 +838,18 @@ pub(crate) async fn developer_session(
     .await
     .map_err(|e| e.to_string())?;
 
-    let team_id = if account.team_id().is_empty() {
-        session
-            .qh_list_teams()
-            .await
-            .map_err(|e| e.to_string())?
-            .teams
-            .into_iter()
-            .next()
-            .map(|t| t.team_id)
-            .ok_or_else(|| "No teams available for this account".to_string())?
+    let teams = session
+        .qh_list_teams()
+        .await
+        .map_err(|e| e.to_string())?
+        .teams;
+    let team_id = account.team_id();
+    let team_id = if team_id.is_empty() && teams.len() == 1 {
+        teams[0].team_id.clone()
+    } else if teams.iter().any(|team| &team.team_id == team_id) {
+        team_id.clone()
     } else {
-        account.team_id().clone()
+        return Err("Choose an available developer team in Settings > Accounts.".into());
     };
 
     Ok((session, team_id))

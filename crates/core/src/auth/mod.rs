@@ -176,6 +176,7 @@ pub enum TwoFactorAction {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationExtras {
+    #[serde(default)]
     pub trusted_phone_numbers: Vec<TrustedPhoneNumber>,
     pub recovery_url: Option<String>,
     pub cant_use_phone_number_url: Option<String>,

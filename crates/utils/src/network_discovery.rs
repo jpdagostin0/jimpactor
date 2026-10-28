@@ -398,26 +398,22 @@ async fn pairing_candidates() -> Vec<PairingFile> {
         UsbmuxdAddr::from_env_var().unwrap_or_default().connect(0),
     )
     .await
-    {
-        if let Ok(Ok(devices)) =
+        && let Ok(Ok(devices)) =
             tokio::time::timeout(Duration::from_secs(2), muxer.get_devices()).await
-        {
-            for device in devices {
-                if pairings
-                    .iter()
-                    .any(|pairing| pairing.udid.as_deref() == Some(&device.udid))
-                {
-                    continue;
-                }
-                if let Ok(Ok(mut pairing)) = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    muxer.get_pair_record(&device.udid),
-                )
-                .await
-                {
-                    pairing.udid = Some(device.udid);
-                    pairings.push(pairing);
-                }
+    {
+        for device in devices {
+            if pairings
+                .iter()
+                .any(|pairing| pairing.udid.as_deref() == Some(&device.udid))
+            {
+                continue;
+            }
+            if let Ok(Ok(mut pairing)) =
+                tokio::time::timeout(Duration::from_secs(2), muxer.get_pair_record(&device.udid))
+                    .await
+            {
+                pairing.udid = Some(device.udid);
+                pairings.push(pairing);
             }
         }
     }

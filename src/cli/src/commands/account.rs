@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Ok, Result};
@@ -291,20 +291,58 @@ async fn register_device(args: RegisterDeviceArgs) -> Result<()> {
 }
 
 pub async fn teams(session: &DeveloperSession) -> Result<String> {
+    select_team(session, None).await
+}
+
+pub async fn select_team(session: &DeveloperSession, requested: Option<&str>) -> Result<String> {
     let teams = session.qh_list_teams().await?.teams;
-
-    if teams.len() == 1 {
-        return Ok(teams[0].team_id.clone());
-    }
-
-    let team_names: Vec<String> = teams
+    let ids = teams
         .iter()
-        .map(|t| format!("{} ({})", t.name, t.team_id))
-        .collect();
-
-    let selection = Select::new().items(&team_names).default(0).interact()?;
+        .map(|team| team.team_id.as_str())
+        .collect::<Vec<_>>();
+    if let Some(index) = resolve_team_choice(&ids, requested, std::io::stdin().is_terminal())? {
+        return Ok(teams[index].team_id.clone());
+    }
+    let team_names = teams
+        .iter()
+        .map(|team| format!("{} ({})", team.name, team.team_id))
+        .collect::<Vec<_>>();
+    let selection = Select::new()
+        .with_prompt("Developer team")
+        .items(&team_names)
+        .default(0)
+        .interact()?;
 
     Ok(teams[selection].team_id.clone())
+}
+
+fn resolve_team_choice(
+    ids: &[&str],
+    requested: Option<&str>,
+    interactive: bool,
+) -> Result<Option<usize>> {
+    anyhow::ensure!(
+        !ids.is_empty(),
+        "No developer teams are available for this account"
+    );
+    if let Some(id) = requested {
+        return ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .map(Some)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Developer team {id} is not available for this account")
+            });
+    }
+    if ids.len() == 1 {
+        return Ok(Some(0));
+    }
+    anyhow::ensure!(
+        interactive,
+        "Multiple developer teams are available. Pass --team-id when signing, or --team for account commands: {}",
+        ids.join(", ")
+    );
+    Ok(None)
 }
 
 pub async fn app_ids(args: AppIdsArgs) -> Result<()> {
@@ -365,4 +403,30 @@ async fn switch_account(args: SwitchArgs) -> Result<()> {
     log::info!("Switched to account: {}", args.email);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod team_tests {
+    use super::*;
+    #[test]
+    fn automation_requires_an_explicit_team_for_multi_team_accounts() {
+        let ids = ["PERSONAL", "COMPANY"];
+        assert!(
+            resolve_team_choice(&ids, None, false)
+                .unwrap_err()
+                .to_string()
+                .contains("--team-id")
+        );
+        assert_eq!(
+            resolve_team_choice(&ids, Some("COMPANY"), false).unwrap(),
+            Some(1)
+        );
+        assert!(resolve_team_choice(&ids, Some("MISSING"), false).is_err());
+        assert_eq!(resolve_team_choice(&ids, None, true).unwrap(), None);
+        assert_eq!(
+            resolve_team_choice(&ids[..1], None, false).unwrap(),
+            Some(0)
+        );
+        assert!(resolve_team_choice(&[], None, false).is_err());
+    }
 }

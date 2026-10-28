@@ -25,6 +25,12 @@ pub const APP_NAME_VERSIONED: &str = concat!("Jimpactor", " - Version ", env!("C
 
 fn main() -> iced::Result {
     logging::init();
+    log::info!(
+        "Starting {} on {} ({})",
+        APP_NAME_VERSIONED,
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -69,7 +75,17 @@ fn main() -> iced::Result {
     #[cfg(target_os = "linux")]
     check_gpu();
 
-    run_daemon()
+    let result = run_daemon();
+    if let Err(error) = &result {
+        log::error!("Application startup failed: {error}");
+        log::logger().flush();
+        rfd::MessageDialog::new()
+            .set_title("Jimpactor could not start")
+            .set_description(format!("{error}\n\nLogs: {}", logging::log_dir().display()))
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+    }
+    result
 }
 
 #[cfg(target_os = "linux")]

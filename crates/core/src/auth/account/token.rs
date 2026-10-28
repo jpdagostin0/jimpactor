@@ -16,14 +16,29 @@ use crate::auth::{
 
 impl Account {
     pub async fn get_app_token(&self, app_name: &str) -> Result<AppToken, Error> {
-        let spd = self.spd.as_ref().unwrap();
-        let dsid = spd.get("adsid").unwrap().as_string().unwrap();
-        let auth_token = spd.get("GsIdmsToken").unwrap().as_string().unwrap();
+        let spd = self
+            .spd
+            .as_ref()
+            .ok_or_else(|| Error::AuthenticationResponse("Missing authenticated session".into()))?;
+        let dsid = spd
+            .get("adsid")
+            .and_then(plist::Value::as_string)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing account ID".into()))?;
+        let auth_token = spd
+            .get("GsIdmsToken")
+            .and_then(plist::Value::as_string)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing session token".into()))?;
 
-        let valid_anisette = self.get_anisette().await;
+        let valid_anisette = self.get_anisette().await?;
 
-        let sk = spd.get("sk").unwrap().as_data().unwrap();
-        let c = spd.get("c").unwrap().as_data().unwrap();
+        let sk = spd
+            .get("sk")
+            .and_then(plist::Value::as_data)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing session key".into()))?;
+        let c = spd
+            .get("c")
+            .and_then(plist::Value::as_data)
+            .ok_or_else(|| Error::AuthenticationResponse("Missing session challenge".into()))?;
 
         let checksum = Self::create_checksum(sk, dsid, app_name);
 
@@ -35,11 +50,14 @@ impl Account {
         gsa_headers.insert("Accept", HeaderValue::from_str("*/*").unwrap());
         gsa_headers.insert(
             "User-Agent",
-            HeaderValue::from_str("akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0").unwrap(),
+            HeaderValue::from_str(valid_anisette.user_agent())
+                .map_err(|_| Error::AuthenticationResponse("Invalid anisette user agent".into()))?,
         );
         gsa_headers.insert(
             "X-MMe-Client-Info",
-            HeaderValue::from_str(&valid_anisette.get_header("x-mme-client-info")?).unwrap(),
+            HeaderValue::from_str(&valid_anisette.get_header("x-mme-client-info")?).map_err(
+                |_| Error::AuthenticationResponse("Invalid anisette client info".into()),
+            )?,
         );
 
         let header = RequestHeader {
@@ -72,10 +90,7 @@ impl Account {
             .send()
             .await;
         let res = parse_response(res).await?;
-        let err_check = check_error(&res);
-        if err_check.is_err() {
-            return Err(err_check.err().unwrap());
-        }
+        check_error(&res)?;
 
         let encrypted_token = res
             .get("et")

@@ -37,3 +37,18 @@ pub fn get_data_path() -> PathBuf {
 
     dir
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+    #[test]
+    fn command_schema_and_device_udid_are_valid_on_this_platform() {
+        Cli::command().debug_assert();
+        let cli =
+            Cli::try_parse_from(["jimpactor-cli", "device", "--udid", "test-device"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Device(args) if args.udid.as_deref() == Some("test-device"))
+        );
+    }
+}

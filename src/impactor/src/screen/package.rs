@@ -163,19 +163,30 @@ impl PackageScreen {
             }
             Message::AddTweak => Task::perform(
                 async {
-                    rfd::FileDialog::new()
+                    rfd::AsyncFileDialog::new()
                         .add_filter("Tweak files", &["deb", "dylib"])
                         .set_title("Select Tweak File(s)")
                         .pick_files()
+                        .await
+                        .map(|files| {
+                            files
+                                .into_iter()
+                                .map(|file| file.path().to_owned())
+                                .collect()
+                        })
                 },
                 |paths| Message::SelectedPaths(SelectionKind::Tweak, paths.unwrap_or_default()),
             ),
             Message::AddBundle => Task::perform(
                 async {
-                    rfd::FileDialog::new()
+                    rfd::AsyncFileDialog::new()
                         .set_title("Select Bundle Folder(s)")
                         .pick_folders()
+                        .await
                         .unwrap_or_default()
+                        .into_iter()
+                        .map(|file| file.path().to_owned())
+                        .collect::<Vec<_>>()
                 },
                 |paths| Message::SelectedPaths(SelectionKind::Bundle, paths),
             ),
@@ -226,10 +237,12 @@ impl PackageScreen {
             }
             Message::SetCustomIcon => Task::perform(
                 async {
-                    rfd::FileDialog::new()
+                    rfd::AsyncFileDialog::new()
                         .add_filter("Image files", &["png", "jpg", "jpeg"])
                         .set_title("Select App Icon")
                         .pick_file()
+                        .await
+                        .map(|file| file.path().to_owned())
                 },
                 |path| Message::SelectedPaths(SelectionKind::Image, path.into_iter().collect()),
             ),
@@ -241,10 +254,12 @@ impl PackageScreen {
             }
             Message::SetCustomEntitlements => Task::perform(
                 async {
-                    rfd::FileDialog::new()
+                    rfd::AsyncFileDialog::new()
                         .add_filter("Entitlements plist", &["plist", "xml", "entitlements"])
                         .set_title("Select Entitlements File")
                         .pick_file()
+                        .await
+                        .map(|file| file.path().to_owned())
                 },
                 |path| {
                     Message::SelectedPaths(SelectionKind::Entitlements, path.into_iter().collect())

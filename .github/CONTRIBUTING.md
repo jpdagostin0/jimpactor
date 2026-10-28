@@ -25,7 +25,7 @@ Install [Rust](https://rustup.rs/), [CMake](https://cmake.org/download/), and a 
 
 ```sh
 cargo run --locked --bin jimpactor
-cargo run --locked --bin jimpactor-cli -- --help
+cargo run --locked -p jimpactor-cli -- --help
 cargo check --workspace --all-targets --locked
 cargo test --workspace --locked
 ```
@@ -119,4 +119,4 @@ See [release.yml](workflows/release.yml) for the Linux release builders. Manual 
 
 ## Changes
 
-Use a separate branch, keep changes focused, and explain how they were checked. Commit messages must contain a single subject line, with no body or trailers. Do not commit build outputs, credentials, pairing records, or local application state.
+Use a separate branch, keep changes focused, and explain how they were checked. Before each commit, bump `[workspace.package].version` in the root `Cargo.toml` and refresh `Cargo.lock`. Commit messages must contain a single subject line, with no body or trailers. Do not commit build outputs, credentials, pairing records, or local application state.

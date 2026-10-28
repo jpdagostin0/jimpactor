@@ -37,12 +37,12 @@ impl AnisetteData {
     }
 
     pub fn needs_refresh(&self) -> bool {
-        let elapsed = self.generated_at.elapsed().unwrap();
+        let elapsed = self.generated_at.elapsed().unwrap_or_default();
         elapsed.as_secs() > 60
     }
 
     pub fn is_valid(&self) -> bool {
-        let elapsed = self.generated_at.elapsed().unwrap();
+        let elapsed = self.generated_at.elapsed().unwrap_or_default();
         elapsed.as_secs() < 90
     }
 
@@ -61,24 +61,10 @@ impl AnisetteData {
         }
 
         let mut headers = self.base_headers.clone();
-        let old_client_info = headers.remove("X-Mme-Client-Info");
-
-        if client_info {
-            let client_info = match old_client_info {
-                Some(v) => {
-                    let temp = v.as_str();
-
-                    temp.replace(
-                        temp.split('<').nth(3).unwrap().split('>').nth(0).unwrap(),
-                        "com.apple.AuthKit/1 (com.apple.akd/1.0)",
-                    )
-                }
-                None => {
-                    return headers;
-                }
-            };
-            headers.insert("X-Mme-Client-Info".to_owned(), client_info.to_owned());
+        if !client_info {
+            headers.retain(|key, _| !key.eq_ignore_ascii_case("x-mme-client-info"));
         }
+        headers.retain(|key, _| !key.eq_ignore_ascii_case("user-agent"));
 
         if app_info {
             headers.insert(
@@ -109,16 +95,49 @@ impl AnisetteData {
         plist
     }
 
+    pub fn user_agent(&self) -> &str {
+        self.base_headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("user-agent"))
+            .map(|(_, value)| value.as_str())
+            .unwrap_or("akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0")
+    }
+
     pub fn get_header(&self, header: &str) -> Result<String, Error> {
         let headers = self
             .generate_headers(true, true, true)
             .iter()
-            .map(|(k, v)| (k.to_lowercase(), v.to_lowercase()))
+            .map(|(k, v)| (k.to_lowercase(), v.clone()))
             .collect::<HashMap<String, String>>();
 
         match headers.get(&header.to_lowercase()) {
             Some(v) => Ok(v.to_string()),
             None => Err(Error::DeveloperSessionRequestFailed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_lookup_preserves_identity_values_and_accepts_short_client_info() {
+        let data = AnisetteData {
+            base_headers: HashMap::from([
+                (
+                    "X-Mme-Client-Info".into(),
+                    "<MacBookPro> <macOS;14.0>".into(),
+                ),
+                ("X-Apple-I-MD".into(), "AbC+/Identity==".into()),
+            ]),
+            generated_at: SystemTime::now(),
+            config: AnisetteConfiguration::new(),
+        };
+        assert_eq!(data.get_header("X-APPLE-I-MD").unwrap(), "AbC+/Identity==");
+        assert_eq!(
+            data.get_header("x-mme-client-info").unwrap(),
+            "<MacBookPro> <macOS;14.0>"
+        );
     }
 }

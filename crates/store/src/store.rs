@@ -276,7 +276,7 @@ impl AccountStore {
         let adsid = s.adsid().clone();
         let xcode_gs_token = s.xcode_gs_token().clone();
 
-        let team_id = if teams_response.teams.is_empty() {
+        let team_id = if teams_response.teams.len() != 1 {
             "".to_string()
         } else {
             teams_response.teams[0].team_id.clone()

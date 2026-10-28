@@ -74,11 +74,15 @@ impl Account {
         loop {
             match response {
                 LoginState::NeedsDevice2FA => {
-                    response = _self.send_2fa_to_devices().await?;
-                    if trusted_phone_numbers.is_empty()
-                        && let Ok(extras) = _self.get_auth_extras().await
-                    {
+                    let extras = _self.get_auth_extras().await.ok();
+                    if let Some(extras) = extras {
                         trusted_phone_numbers = extras.trusted_phone_numbers;
+                        response = match extras.new_state {
+                            Some(state) => state,
+                            None => _self.send_2fa_to_devices().await?,
+                        };
+                    } else {
+                        response = _self.send_2fa_to_devices().await?;
                     }
                 }
                 LoginState::Needs2FAVerification => {
@@ -86,6 +90,10 @@ impl Account {
                         && let Ok(extras) = _self.get_auth_extras().await
                     {
                         trusted_phone_numbers = extras.trusted_phone_numbers;
+                        if let Some(state) = extras.new_state {
+                            response = state;
+                            continue;
+                        }
                     }
                     let request = TwoFactorRequest {
                         method: TwoFactorMethod::Device,
@@ -103,13 +111,15 @@ impl Account {
                     }
                 }
                 LoginState::NeedsSMS2FA => {
-                    if trusted_phone_numbers.is_empty()
-                        && let Ok(extras) = _self.get_auth_extras().await
-                    {
-                        trusted_phone_numbers = extras.trusted_phone_numbers;
-                    }
-                    let id = trusted_phone_numbers.first().map(|p| p.id).unwrap_or(1);
-                    response = _self.send_sms_2fa_to_devices(id).await?;
+                    let extras = _self.get_auth_extras().await?;
+                    trusted_phone_numbers = extras.trusted_phone_numbers;
+                    response = match extras.new_state {
+                        Some(state) => state,
+                        None => match trusted_phone_numbers.first() {
+                            Some(phone) => _self.send_sms_2fa_to_devices(phone.id).await?,
+                            None => _self.send_2fa_to_devices().await?,
+                        },
+                    };
                 }
                 LoginState::NeedsSMS2FAVerification(body) => {
                     let request = TwoFactorRequest {
@@ -152,7 +162,7 @@ impl Account {
         let a: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         let a_pub = srp_client.compute_public_ephemeral(&a);
 
-        let anisette = self.get_anisette().await;
+        let anisette = self.get_anisette().await?;
 
         let mut gsa_headers = HeaderMap::new();
         gsa_headers.insert(
@@ -162,11 +172,14 @@ impl Account {
         gsa_headers.insert("Accept", HeaderValue::from_str("*/*").unwrap());
         gsa_headers.insert(
             "User-Agent",
-            HeaderValue::from_str("akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0").unwrap(),
+            HeaderValue::from_str(anisette.user_agent())
+                .map_err(|_| Error::AuthenticationResponse("Invalid anisette user agent".into()))?,
         );
         gsa_headers.insert(
             "X-MMe-Client-Info",
-            HeaderValue::from_str(&anisette.get_header("x-mme-client-info")?).unwrap(),
+            HeaderValue::from_str(&anisette.get_header("x-mme-client-info")?).map_err(|_| {
+                Error::AuthenticationResponse("Invalid anisette client-info header".into())
+            })?,
         );
 
         let header = RequestHeader {
@@ -199,10 +212,23 @@ impl Account {
         let res = parse_response(res).await?;
         check_error(&res)?;
 
-        let salt = res.get("s").unwrap().as_data().unwrap();
-        let b_pub = res.get("B").unwrap().as_data().unwrap();
-        let iters = res.get("i").unwrap().as_signed_integer().unwrap();
-        let c = res.get("c").unwrap().as_string().unwrap();
+        let salt = res
+            .get("s")
+            .and_then(Value::as_data)
+            .ok_or_else(|| missing("s"))?;
+        let b_pub = res
+            .get("B")
+            .and_then(Value::as_data)
+            .ok_or_else(|| missing("B"))?;
+        let iters = res
+            .get("i")
+            .and_then(Value::as_signed_integer)
+            .filter(|i| (1..=10_000_000).contains(i))
+            .ok_or_else(|| missing("i"))?;
+        let c = res
+            .get("c")
+            .and_then(Value::as_string)
+            .ok_or_else(|| missing("c"))?;
 
         let hashed_password = Sha256::digest(password.as_bytes());
 
@@ -216,7 +242,7 @@ impl Account {
 
         let verifier = srp_client
             .process_reply(&a, username_for_spd.as_bytes(), &password_buf, salt, b_pub)
-            .unwrap();
+            .map_err(|_| Error::AuthenticationResponse("Invalid SRP server challenge".into()))?;
 
         let challenge_body = ChallengeRequestBody {
             m: plist::Value::Data(verifier.proof().to_vec()),
@@ -247,12 +273,20 @@ impl Account {
         let res = parse_response(res).await?;
         check_error(&res)?;
 
-        let m2 = res.get("M2").unwrap().as_data().unwrap();
-        verifier.verify_server(m2).unwrap();
+        let m2 = res
+            .get("M2")
+            .and_then(Value::as_data)
+            .ok_or_else(|| missing("M2"))?;
+        verifier
+            .verify_server(m2)
+            .map_err(|_| Error::AuthenticationResponse("SRP server verification failed".into()))?;
 
-        let spd_encrypted = res.get("spd").unwrap().as_data().unwrap();
-        let spd_decrypted = super::decrypt_cbc(&verifier, spd_encrypted);
-        let mut spd: Dictionary = plist::from_bytes(&spd_decrypted).unwrap();
+        let spd_encrypted = res
+            .get("spd")
+            .and_then(Value::as_data)
+            .ok_or_else(|| missing("spd"))?;
+        let spd_decrypted = super::decrypt_cbc(&verifier, spd_encrypted)?;
+        let mut spd: Dictionary = plist::from_bytes(&spd_decrypted)?;
 
         if !spd.contains_key("appleId") {
             spd.insert(
@@ -263,7 +297,10 @@ impl Account {
 
         self.spd = Some(spd);
 
-        let status = res.get("Status").unwrap().as_dictionary().unwrap();
+        let status = res
+            .get("Status")
+            .and_then(Value::as_dictionary)
+            .ok_or_else(|| missing("Status"))?;
         if let Some(Value::String(auth_type)) = status.get("au") {
             return match auth_type.as_str() {
                 "trustedDeviceSecondaryAuth" => Ok(LoginState::NeedsDevice2FA),
@@ -280,22 +317,38 @@ impl Account {
     }
 
     pub fn get_pet(&self) -> Option<String> {
-        let base = self.spd.as_ref().unwrap();
-        let token = base.get("t")?.as_dictionary()?;
-
-        Some(plist_get_string!(token, "com.apple.gs.idms.pet", "token"))
+        self.spd
+            .as_ref()?
+            .get("t")?
+            .as_dictionary()?
+            .get("com.apple.gs.idms.pet")?
+            .as_dictionary()?
+            .get("token")?
+            .as_string()
+            .map(str::to_owned)
     }
 
     pub fn get_name(&self) -> (String, String) {
-        let base = self.spd.as_ref().unwrap();
-        (plist_get_string!(base, "fn"), plist_get_string!(base, "ln"))
+        let name = |key| {
+            self.spd
+                .as_ref()
+                .and_then(|d| d.get(key))
+                .and_then(Value::as_string)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        (name("fn"), name("ln"))
     }
 
-    pub async fn get_anisette(&self) -> AnisetteData {
+    pub async fn get_anisette(&self) -> Result<AnisetteData, Error> {
         let mut locked = self.anisette.lock().await;
         if locked.needs_refresh() {
-            *locked = locked.refresh().await.unwrap();
+            *locked = locked.refresh().await?;
         }
-        locked.clone()
+        Ok(locked.clone())
     }
+}
+
+fn missing(field: &str) -> Error {
+    Error::AuthenticationResponse(format!("Missing or invalid {field} in SRP response"))
 }

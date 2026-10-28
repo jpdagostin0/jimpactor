@@ -106,6 +106,10 @@ impl Signer {
                 "RSA PRIVATE KEY" => InMemoryPrivateKey::from_pkcs1_der(pem.contents())?,
                 _ => return Err(invalid("Expected a PEM private key")),
             };
+            plume_core::CertificateIdentity::validate_signing_identity(
+                info.certificate.raw(),
+                &key,
+            )?;
             settings.set_signing_key(&key, info.certificate.raw().clone());
             settings.chain_apple_certificates();
             settings.set_team_id_from_signing_certificate();

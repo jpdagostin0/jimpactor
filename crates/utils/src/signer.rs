@@ -35,6 +35,7 @@ impl Signer {
             return Ok(());
         }
 
+        preflight_macho_layouts(bundle.bundle_dir())?;
         let bundles = bundle
             .collect_bundles_sorted()?
             .into_iter()
@@ -407,19 +408,24 @@ impl Signer {
             && bundle.bundle_type().should_have_entitlements()
             && !provisioning_files.is_empty()
         {
-            let mut matched_prov = None;
-
-            for prov in provisioning_files {
-                if let (Some(bundle_id), Some(team_id)) =
-                    (bundle.get_bundle_identifier(), prov.bundle_id())
-                    && team_id == bundle_id
-                {
-                    matched_prov = Some(prov);
-                    break;
-                }
-            }
-
-            if let Some(prov) = matched_prov.or_else(|| provisioning_files.first()) {
+            let bundle_id = bundle
+                .get_bundle_identifier()
+                .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
+            let prov = provisioning_files.iter().find(|prov| prov.bundle_id().as_deref() == Some(&bundle_id))
+                .or_else(|| provisioning_files.iter().find(|prov| prov.matches_bundle_id(&bundle_id)))
+                .ok_or_else(|| Error::Other(format!(
+                    "No provisioning profile matches {bundle_id}. Re-sign with a profile for this app and team (0xe8008015)."
+                )))?;
+            {
+                let bundle_id = bundle
+                    .get_bundle_identifier()
+                    .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
+                let cert = self
+                    .certificate
+                    .as_ref()
+                    .and_then(|identity| identity.cert.as_ref())
+                    .map(|cert| cert.constructed_data());
+                prov.validate_for(&bundle_id, None, cert)?;
                 let mut prov = prov.clone();
 
                 if let Some(bundle_executable) = bundle.get_executable()
@@ -468,5 +474,81 @@ impl Signer {
         settings.set_shallow(true);
 
         Ok(settings)
+    }
+}
+
+/// Check every Mach-O before modifying or provisioning the app, including nested dylibs.
+fn preflight_macho_layouts(directory: &std::path::Path) -> Result<(), Error> {
+    use std::io::Read;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            preflight_macho_layouts(&entry.path())?;
+        } else if kind.is_file() {
+            let mut magic = [0; 4];
+            if std::fs::File::open(entry.path())?
+                .read_exact(&mut magic)
+                .is_err()
+            {
+                continue;
+            }
+            if matches!(
+                u32::from_be_bytes(magic),
+                0xfeedface | 0xfeedfacf | 0xcefaedfe | 0xcffaedfe | 0xcafebabe | 0xbebafeca
+            ) {
+                let macho = plume_core::MachO::new(entry.path())?;
+                for binary in macho.macho_file().iter_macho() {
+                    binary.check_signing_capability().map_err(|error| Error::Other(format!(
+                        "Cannot re-sign {}: {error}. This Mach-O layout is unsupported. Use an original decrypted IPA without an existing CoreTrust patch.", entry.path().display()
+                    )))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    #[test]
+    fn preflight_identifies_data_after_signature_before_modifying_the_app() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("TestBinary");
+        std::fs::write(
+            &path,
+            include_bytes!("../../xkit/tests/fixtures/minimal-arm64.macho"),
+        )
+        .unwrap();
+        UnifiedSigner::new(SigningSettings::default())
+            .sign_path_in_place(&path)
+            .unwrap();
+        preflight_macho_layouts(temp.path()).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap();
+        let commands = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        let mut offset = 32;
+        for _ in 0..commands {
+            let cmd = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let size =
+                u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if cmd == 0x19 && &bytes[offset + 8..offset + 18] == b"__LINKEDIT" {
+                let length =
+                    u64::from_le_bytes(bytes[offset + 48..offset + 56].try_into().unwrap());
+                bytes[offset + 48..offset + 56].copy_from_slice(&(length + 8).to_le_bytes());
+            }
+            offset += size;
+        }
+        bytes.extend_from_slice(b"trailing");
+        std::fs::write(&path, &bytes).unwrap();
+        let error = preflight_macho_layouts(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("TestBinary"), "{error}");
+        assert!(error.contains("CoreTrust"), "{error}");
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 }

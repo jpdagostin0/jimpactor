@@ -14,7 +14,7 @@ use idevice::{IdeviceService, RemoteXpcClient};
 use plume_core::MobileProvision;
 
 use crate::options::{SignerApp, SignerAppReal};
-use crate::{Error, NetworkConnection};
+use crate::{Bundle, Error, NetworkConnection, PlistInfoTrait};
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
 use idevice::usbmuxd::UsbmuxdConnection;
@@ -100,6 +100,9 @@ impl Device {
             Error::Idevice(idevice::IdeviceError::Socket(source)) if self.network.is_some() => {
                 log::warn!("Wi-Fi operation failed for {}: {source:?}", self.name);
                 Error::Other(format!("Wi-Fi connection to {} failed: {source}. Wake and unlock the iPhone and retry.", self.name))
+            }
+            Error::Idevice(idevice::IdeviceError::UnexpectedResponse(message)) if message.contains("PairRecordData") => {
+                Error::Other(format!("No usable pairing record was returned by the Apple device service: {message}. Connect the iPhone over USB, unlock it, accept Trust This Computer, and retry pairing."))
             }
             error => error,
         })
@@ -194,7 +197,9 @@ impl Device {
         pairing_file.udid = Some(self.udid.clone());
         let pairing_file = pairing_file.serialize()?;
 
-        usbmuxd.save_pair_record(&self.udid, pairing_file).await?;
+        usbmuxd.save_pair_record(&self.udid, pairing_file).await.map_err(|error| Error::Other(format!(
+            "The Apple device service could not save the pairing record: {error}. Unlock the iPhone, accept Trust This Computer, and retry pairing. If it persists, restart the Apple device service and reconnect USB."
+        )))?;
 
         Ok(())
     }
@@ -407,14 +412,40 @@ impl Device {
 
     pub async fn install_app<F, Fut>(
         &self,
-        app_path: &PathBuf,
+        app_path: &Path,
         progress_callback: F,
     ) -> Result<(), Error>
     where
         F: FnMut(i32) -> Fut + Send + Clone + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
-        let app_path = app_path.clone();
+        let bundle = Bundle::new(app_path.to_path_buf())?;
+        for bundle in bundle.collect_bundles_sorted()? {
+            if !bundle.bundle_type().should_have_entitlements() {
+                continue;
+            }
+            let executable = bundle.get_executable().ok_or_else(|| {
+                Error::Other(format!(
+                    "Missing CFBundleExecutable in {}",
+                    bundle.bundle_dir().display()
+                ))
+            })?;
+            if !bundle.bundle_dir().join(&executable).is_file() {
+                return Err(Error::Other(format!(
+                    "App executable {executable} is missing from {}",
+                    bundle.bundle_dir().display()
+                )));
+            }
+            let path = bundle.bundle_dir().join("embedded.mobileprovision");
+            if path.exists() {
+                let profile = MobileProvision::load_with_path(path)?;
+                let bundle_id = bundle
+                    .get_bundle_identifier()
+                    .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
+                profile.validate_for(&bundle_id, Some(&self.udid), None)?;
+            }
+        }
+        let app_path = app_path.to_path_buf();
         self.with_provider(INSTALLATION_LABEL, move |provider| async move {
             let callback = move |(progress, _): (u64, ())| {
                 let mut cb = progress_callback.clone();
@@ -482,16 +513,18 @@ impl fmt::Display for Device {
     }
 }
 
-pub async fn get_device_for_id(device_id: &str) -> Result<Device, Error> {
+pub async fn get_device_for_id(udid: &str) -> Result<Device, Error> {
     let mut usbmuxd = UsbmuxdConnection::default().await?;
-    let usbmuxd_device = usbmuxd
-        .get_devices()
-        .await?
-        .into_iter()
-        .find(|d| d.device_id.to_string() == device_id)
-        .ok_or_else(|| Error::Other(format!("Device ID {device_id} not found")))?;
+    let usbmuxd_device = select_device_by_udid(usbmuxd.get_devices().await?, udid)?;
 
     Ok(Device::new(usbmuxd_device).await)
+}
+
+fn select_device_by_udid(devices: Vec<UsbmuxdDevice>, udid: &str) -> Result<UsbmuxdDevice, Error> {
+    devices
+        .into_iter()
+        .find(|device| device.udid == udid)
+        .ok_or_else(|| Error::Other(format!("Device with UDID {udid} not found")))
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -549,4 +582,39 @@ pub async fn install_app_mac(app_path: &PathBuf) -> Result<(), Error> {
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub async fn install_app_mac(_app_path: &PathBuf) -> Result<(), Error> {
     Ok(())
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn udid_selection_survives_reconnect_and_never_matches_mux_numbers() {
+        let devices = |id| {
+            vec![
+                UsbmuxdDevice {
+                    connection_type: Connection::Usb,
+                    udid: "target-phone".into(),
+                    device_id: id,
+                },
+                UsbmuxdDevice {
+                    connection_type: Connection::Usb,
+                    udid: "other-phone".into(),
+                    device_id: 1,
+                },
+            ]
+        };
+        assert_eq!(
+            select_device_by_udid(devices(7), "target-phone")
+                .unwrap()
+                .device_id,
+            7
+        );
+        assert_eq!(
+            select_device_by_udid(devices(23), "target-phone")
+                .unwrap()
+                .device_id,
+            23
+        );
+        assert!(select_device_by_udid(devices(7), "1").is_err());
+    }
 }

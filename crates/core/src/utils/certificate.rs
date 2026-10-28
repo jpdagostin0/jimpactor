@@ -152,10 +152,7 @@ impl CertificateIdentity {
             [cert_pem.into_bytes(), key_pem.into_bytes()]
         };
 
-        // TODO: this may be horrendious
-        if let Some(p12_data) = identity.create_pkcs12(&key_pair, is_export) {
-            identity.p12_data = Some(p12_data);
-        }
+        identity.p12_data = Some(identity.create_pkcs12(&key_pair, is_export)?);
 
         for pem in key_pair {
             identity.resolve_certificate_from_contents(pem)?;
@@ -186,11 +183,12 @@ impl CertificateIdentity {
     // just another unnecessary dependency, but the p12 crate that applecodesign-rs
     // uses has no support for modern encryption, hopefully this doesn't add that
     // much more bloat
-    pub fn create_pkcs12(&self, data: &[Vec<u8>; 2], is_export: bool) -> Option<Vec<u8>> {
-        let cert_der = pem::parse(&data[0]).ok()?.contents().to_vec();
-        let key_der = pem::parse(&data[1]).ok()?.contents().to_vec();
+    pub fn create_pkcs12(&self, data: &[Vec<u8>; 2], is_export: bool) -> Result<Vec<u8>, Error> {
+        let cert_der = pem::parse(&data[0])?.contents().to_vec();
+        let key_der = pem::parse(&data[1])?.contents().to_vec();
 
-        let cert = p12_keystore::Certificate::from_der(&cert_der).ok()?;
+        let cert = p12_keystore::Certificate::from_der(&cert_der)
+            .map_err(|e| Error::Certificate(format!("Cannot export certificate: {e}")))?;
 
         let local_key_id = {
             use sha1::{Digest, Sha1};
@@ -218,7 +216,9 @@ impl CertificateIdentity {
         };
 
         let writer = keystore.writer(&password);
-        writer.write().ok()
+        writer
+            .write()
+            .map_err(|e| Error::Certificate(format!("Cannot create PKCS#12 archive: {e}")))
     }
 
     // applecodesign-rs needs our contents as strings to sign
@@ -257,6 +257,8 @@ impl CertificateIdentity {
 
         for cert in certs {
             if cert.machine_name.as_deref() == Some(machine_name)
+                && std::time::SystemTime::from(cert.expiration_date) > std::time::SystemTime::now()
+                && !cert.status.to_ascii_lowercase().contains("revoked")
                 && let Some(cert_content) = &cert.cert_content
             {
                 let parsed_cert = X509Certificate::from_der(cert_content)?;
@@ -387,10 +389,83 @@ impl CertificateIdentity {
         let signing_cert = self.cert.clone().ok_or(Error::CertificatePemMissing)?;
         let signing_key = self.key.as_ref().ok_or(Error::CertificatePemMissing)?;
 
+        Self::validate_signing_identity(&signing_cert, signing_key.as_ref())?;
         settings.set_signing_key(signing_key.as_key_info_signer(), signing_cert);
         settings.chain_apple_certificates();
         settings.set_team_id_from_signing_certificate();
 
         Ok(())
+    }
+
+    pub fn validate_signing_identity(
+        signing_cert: &CapturedX509Certificate,
+        signing_key: &dyn PrivateKey,
+    ) -> Result<(), Error> {
+        let now = chrono::Utc::now();
+        if now < signing_cert.validity_not_before() || now >= signing_cert.validity_not_after() {
+            return Err(Error::Certificate("Signing certificate is expired or not yet valid. Choose a valid certificate and re-sign (0xe8008018).".into()));
+        }
+        if signing_key.public_key_data().as_ref() != signing_cert.public_key_data().as_ref() {
+            return Err(Error::Certificate("Signing certificate does not match the private key. Import the matching key and re-sign (0xe8008018).".into()));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_identity() -> CertificateIdentity {
+        CertificateIdentity {
+            cert: None,
+            key: None,
+            machine_id: None,
+            serial_number: None,
+            p12_data: None,
+            new: false,
+        }
+    }
+    #[test]
+    fn exported_pkcs12_contains_both_private_key_and_certificate() {
+        let certificate =
+            rcgen::Certificate::from_params(rcgen::CertificateParams::default()).unwrap();
+        let cert_pem = certificate.serialize_pem().unwrap().into_bytes();
+        let expected_der = pem::parse(&cert_pem).unwrap().contents().to_vec();
+        let key_pem = certificate.serialize_private_key_pem().into_bytes();
+        let data = empty_identity()
+            .create_pkcs12(&[cert_pem, key_pem], true)
+            .unwrap();
+        let store = p12_keystore::KeyStore::from_pkcs12(&data, "").unwrap();
+        let Some(p12_keystore::KeyStoreEntry::PrivateKeyChain(chain)) = store.entry("plume") else {
+            panic!("missing signing identity")
+        };
+        assert_eq!(chain.key(), certificate.serialize_private_key_der());
+        assert_eq!(chain.chain().len(), 1);
+        assert_eq!(chain.chain()[0].as_der(), expected_der);
+        assert!(
+            empty_identity()
+                .create_pkcs12(&[vec![], vec![]], true)
+                .is_err()
+        );
+    }
+    #[test]
+    fn rejects_mismatched_certificate_and_private_key() {
+        let certificate =
+            rcgen::Certificate::from_params(rcgen::CertificateParams::default()).unwrap();
+        let different =
+            rcgen::Certificate::from_params(rcgen::CertificateParams::default()).unwrap();
+        let cert = CapturedX509Certificate::from_der(certificate.serialize_der().unwrap()).unwrap();
+        let key =
+            InMemoryPrivateKey::from_pkcs8_der(certificate.serialize_private_key_der()).unwrap();
+        assert!(CertificateIdentity::validate_signing_identity(&cert, &key).is_ok());
+        let key =
+            InMemoryPrivateKey::from_pkcs8_der(different.serialize_private_key_der()).unwrap();
+        assert!(
+            CertificateIdentity::validate_signing_identity(&cert, &key)
+                .unwrap_err()
+                .to_string()
+                .contains("does not match")
+        );
     }
 }

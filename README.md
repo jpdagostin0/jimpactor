@@ -31,6 +31,22 @@ Pair your iPhone or iPad with this computer over USB first and accept **Trust Th
 
 Wi-Fi devices stay in the list for five minutes after disconnecting. Jimpactor reconnects automatically when a device returns, preserving your selection. Before starting a device operation, it waits briefly for a cached device to reconnect. If the device is unavailable, wake and unlock it, check its Wi-Fi connection, and retry.
 
+## Signing and troubleshooting
+
+For Apple IDs with multiple developer teams, choose a team in **Settings → Account** before signing or exporting a certificate. In CLI scripts, pass the team explicitly:
+
+```sh
+jimpactor-cli sign --apple-id --team-id TEAM_ID --package App.ipa --output Signed.ipa
+```
+
+Use the device's full UDID with `--udid`; the number assigned to a USB connection changes when it reconnects. Reinstalling an app with another account updates its device's Auto Refresh account after installation succeeds.
+
+Jimpactor checks provisioning profiles against the app and destination device before installation. If a profile or certificate has expired, does not match, or has been revoked, re-sign with a valid identity and a profile that includes your device. A CoreTrust-patched executable with data after its signature cannot be re-signed; use an original decrypted IPA.
+
+Apple verification errors distinguish an incorrect code from a temporary lockout or service failure. Wait before retrying a locked challenge. For anisette connection errors, check the selected server in Settings and your system's proxy and certificate settings.
+
+Startup errors are written to the `logs` folder in the application data directory below. If Windows exits with a native access violation, include the Event Viewer faulting module and exception code with your report.
+
 ## Build
 
 Install Rust, CMake, and the native dependencies listed in the [contributing guide](.github/CONTRIBUTING.md).
@@ -40,7 +56,7 @@ Install Rust, CMake, and the native dependencies listed in the [contributing gui
 cargo run --locked --bin jimpactor
 
 # CLI
-cargo run --locked --bin jimpactor-cli -- --help
+cargo run --locked -p jimpactor-cli -- --help
 
 # Release binaries and platform packages in dist/
 cargo xtask dist

@@ -12,12 +12,7 @@ use plume_utils::{Device, Package, get_device_for_id};
 #[command(arg_required_else_help = true)]
 pub struct DeviceArgs {
     /// Device UDID to target (optional, will prompt if not provided)
-    #[arg(
-        short = 'u',
-        long = "udid",
-        value_name = "UDID",
-        conflicts_with = "mac"
-    )]
+    #[arg(short = 'u', long = "udid", value_name = "UDID")]
     pub udid: Option<String>,
     /// Install app at specified path to device (.ipa, .app)
     #[arg(short = 'i', long = "install", value_name = "PATH")]
@@ -27,7 +22,6 @@ pub struct DeviceArgs {
         short = 'p',
         long = "pairing",
         value_name = "MAC",
-        conflicts_with = "mac",
         requires = "pairing_path"
     )]
     pub pairing: bool,
@@ -39,7 +33,7 @@ pub struct DeviceArgs {
     pub pairing_app_identifier: Option<String>,
     /// Install to connected Mac (arm64 only)
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with = "udid")]
+    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with_all = ["udid", "pairing"])]
     pub mac: bool,
 }
 
@@ -122,7 +116,7 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
 
     if devices.is_empty() {
         return Err(anyhow::anyhow!(
-            "No devices connected. Please connect a device or specify a UDID with --device-udid"
+            "No devices connected. Please connect a device or specify a UDID with --udid"
         ));
     }
 

@@ -44,6 +44,8 @@ pub enum Error {
     AuthSrpWithMessage(i64, String),
     #[error("Authentication extra step required: {0}")]
     ExtraStep(String),
+    #[error("Apple authentication response: {0}")]
+    AuthenticationResponse(String),
     #[error("Bad 2FA code")]
     Bad2faCode,
     #[error("Failed to parse")]
@@ -60,7 +62,7 @@ pub enum Error {
     Pem(#[from] pem::PemError),
     #[error("X509 certificate error: {0}")]
     X509(#[from] x509_certificate::X509CertificateError),
-    #[error("Reqwest error: {0}")]
+    #[error("{}", omnisette::transport_error_detail(.0))]
     Reqwest(#[from] reqwest::Error),
     #[error("Anisette error: {0}")]
     Anisette(#[from] omnisette::AnisetteError),

@@ -41,7 +41,9 @@ pub enum Message {
     ShowLogin(Option<String>),
     SelectAccount(String),
     RemoveAccount(String),
+    Noop,
     ExportP12,
+    CertificateExported(Result<(), String>),
     SelectTeam(String, String),
     FetchTeams(String),
     TeamsLoaded(String, u64, Result<Vec<Team>, String>),
@@ -321,6 +323,23 @@ impl SettingsScreen {
 
     pub fn update(&mut self, message: Message, store: Option<&AccountStore>) -> Task<Message> {
         match message {
+            Message::CertificateExported(result) => {
+                if let Err(error) = result {
+                    log::error!("Certificate export failed: {error}");
+                    return Task::perform(
+                        async move {
+                            rfd::AsyncMessageDialog::new()
+                                .set_title("Certificate export failed")
+                                .set_description(&error)
+                                .set_level(rfd::MessageLevel::Error)
+                                .show()
+                                .await;
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+                Task::none()
+            }
             Message::SelectTab(tab) => {
                 self.tab = tab;
                 match tab {

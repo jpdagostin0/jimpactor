@@ -25,32 +25,49 @@ pub async fn parse_response(
         });
     }
 
-    let text = res.text().await?;
-    let res: plist::Dictionary = plist::from_bytes(text.as_bytes())?;
-    let res: plist::Value = res.get("Response").unwrap().to_owned();
-    match res {
-        plist::Value::Dictionary(dict) => Ok(dict),
-        _ => Err(crate::Error::Parse),
-    }
+    let url = res.url().to_string();
+    let bytes = res.bytes().await?;
+    parse_auth_response(&bytes, &url)
+}
+
+fn parse_auth_response(bytes: &[u8], url: &str) -> Result<plist::Dictionary, Error> {
+    let outer: plist::Dictionary = plist::from_bytes(bytes).map_err(|_| {
+        Error::AuthenticationResponse(format!("Expected an Apple authentication plist from {url}. Check the anisette provider and any proxy or sign-in portal."))
+    })?;
+    outer
+        .get("Response")
+        .and_then(plist::Value::as_dictionary)
+        .cloned()
+        .ok_or_else(|| Error::AuthenticationResponse("Missing Response dictionary".into()))
 }
 
 pub fn check_error(res: &plist::Dictionary) -> Result<(), Error> {
-    let res = match res.get("Status") {
+    let status = match res.get("Status") {
         Some(plist::Value::Dictionary(d)) => d,
-        _ => res,
+        Some(_) => {
+            return Err(Error::AuthenticationResponse(
+                "Invalid Status dictionary".into(),
+            ));
+        }
+        None => res,
     };
-
-    if res.get("ec").unwrap().as_signed_integer().unwrap() != 0 {
-        return Err(Error::AuthSrpWithMessage(
-            res.get("ec").unwrap().as_signed_integer().unwrap(),
-            res.get("em").unwrap().as_string().unwrap().to_owned(),
-        ));
+    let code = status
+        .get("ec")
+        .and_then(plist::Value::as_signed_integer)
+        .ok_or_else(|| {
+            Error::AuthenticationResponse("Missing authentication status code".into())
+        })?;
+    if code != 0 {
+        let message = status
+            .get("em")
+            .and_then(plist::Value::as_string)
+            .unwrap_or("Apple rejected authentication");
+        return Err(Error::AuthSrpWithMessage(code, message.to_owned()));
     }
-
     Ok(())
 }
 
-pub fn decrypt_cbc(usr: &ClientVerifier<Sha256>, data: &[u8]) -> Vec<u8> {
+pub fn decrypt_cbc(usr: &ClientVerifier<Sha256>, data: &[u8]) -> Result<Vec<u8>, Error> {
     let extra_data_key = create_session_key(usr, "extra data key:");
     let extra_data_iv = create_session_key(usr, "extra data iv:");
     let extra_data_iv = &extra_data_iv[..16];
@@ -58,7 +75,7 @@ pub fn decrypt_cbc(usr: &ClientVerifier<Sha256>, data: &[u8]) -> Vec<u8> {
     cbc::Decryptor::<aes::Aes256>::new_from_slices(&extra_data_key, extra_data_iv)
         .unwrap()
         .decrypt_padded_vec::<Pkcs7>(data)
-        .unwrap()
+        .map_err(|_| Error::AuthenticationResponse("Invalid encrypted session data".into()))
 }
 
 pub fn create_session_key(usr: &ClientVerifier<Sha256>, name: &str) -> Vec<u8> {
@@ -68,4 +85,36 @@ pub fn create_session_key(usr: &ClientVerifier<Sha256>, name: &str) -> Vec<u8> {
         .finalize()
         .into_bytes()
         .to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_html_and_incomplete_responses_without_panicking() {
+        assert!(
+            parse_auth_response(b"<html>Service unavailable</html>", "https://gsa.apple.com")
+                .unwrap_err()
+                .to_string()
+                .contains("anisette")
+        );
+        assert!(
+            parse_auth_response(
+                b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>",
+                "test"
+            )
+            .is_err()
+        );
+        assert!(check_error(&plist::Dictionary::new()).is_err());
+    }
+
+    #[test]
+    fn preserves_apple_error_code_when_message_is_missing() {
+        let status = plist::Dictionary::from_iter([("ec", plist::Value::from(-22406i64))]);
+        assert!(matches!(
+            check_error(&status),
+            Err(Error::AuthSrpWithMessage(-22406, _))
+        ));
+    }
 }

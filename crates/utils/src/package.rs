@@ -29,7 +29,8 @@ impl Package {
         fs::copy(&package_file, &out_package_file)?;
 
         let file = fs::File::open(&out_package_file)?;
-        let mut archive = ZipArchive::new(file)?;
+        let archive = ZipArchive::new(file)?;
+        let mut archive = normalize_archive_names(archive, &out_package_file)?;
         let archive_entries = (0..archive.len())
             .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
             .collect::<Vec<_>>();
@@ -286,5 +287,89 @@ impl Package {
 
         let new_settings = SignerOptions::new_for_app(app);
         *settings = new_settings;
+    }
+}
+
+// Some IPA producers write UTF-8 names without the ZIP language flag. Re-encode
+// those names once in the staged copy, retaining compressed contents and metadata.
+fn normalize_archive_names(
+    mut archive: ZipArchive<fs::File>,
+    path: &Path,
+) -> Result<ZipArchive<fs::File>, Error> {
+    let mut names = Vec::with_capacity(archive.len());
+    let mut changed = false;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        let name = std::str::from_utf8(entry.name_raw())
+            .unwrap_or(entry.name())
+            .to_owned();
+        changed |= name != entry.name();
+        names.push(name);
+    }
+    if !changed {
+        return Ok(archive);
+    }
+    let corrected = path.with_extension("utf8.ipa");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&corrected)?);
+    for (index, name) in names.into_iter().enumerate() {
+        writer.raw_copy_file_rename(archive.by_index(index)?, name)?;
+    }
+    drop(writer.finish()?);
+    drop(archive);
+    // The source is only our private staged copy, never the user's IPA.
+    fs::remove_file(path)?;
+    fs::rename(corrected, path)?;
+    Ok(ZipArchive::new(fs::File::open(path)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn unicode_paths_survive_missing_utf8_flags_extraction_and_repacking() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("input.ipa");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("Payload/日本語.app/Info.plist", options)
+            .unwrap();
+        writer.write_all(b"<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>test.unicode</string></dict></plist>").unwrap();
+        writer
+            .start_file("Payload/日本語.app/中文.txt", options)
+            .unwrap();
+        writer.write_all(b"preserved content").unwrap();
+        drop(writer.finish().unwrap());
+        let mut bytes = fs::read(&path).unwrap();
+        for index in 0..bytes.len().saturating_sub(10) {
+            let flag = match &bytes[index..index + 4] {
+                b"PK\x03\x04" => Some(index + 6),
+                b"PK\x01\x02" => Some(index + 8),
+                _ => None,
+            };
+            if let Some(flag) = flag {
+                bytes[flag + 1] &= !8;
+            }
+        }
+        fs::write(&path, &bytes).unwrap();
+        let package = Package::new(path.clone()).unwrap();
+        assert_eq!(
+            package.get_bundle_identifier().as_deref(),
+            Some("test.unicode")
+        );
+        let bundle = package.get_package_bundle().unwrap();
+        assert_eq!(
+            fs::read(bundle.bundle_dir().join("中文.txt")).unwrap(),
+            b"preserved content"
+        );
+        let repacked = package
+            .get_archive_based_on_path(bundle.bundle_dir())
+            .unwrap();
+        let mut archive = ZipArchive::new(fs::File::open(repacked).unwrap()).unwrap();
+        assert!(archive.by_name("Payload/日本語.app/中文.txt").is_ok());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        package.remove_package_stage();
     }
 }
