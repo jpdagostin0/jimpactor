@@ -2,11 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing tag to build and release (for example, v0.1.0)
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -20,13 +15,58 @@ defaults:
     shell: bash
 
 jobs:
+  prepare:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Read release version from Cargo.toml
+        id: version
+        run: |
+          version="$(python3 - <<'PY'
+          import tomllib
+          with open('Cargo.toml', 'rb') as manifest:
+              print(tomllib.load(manifest)['workspace']['package']['version'])
+          PY
+          )"
+          tag="v$version"
+          git check-ref-format "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Create release tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          tag_ref="refs/tags/$RELEASE_TAG"
+          remote_ref="$(git ls-remote --tags origin "$tag_ref")"
+          if [[ -n "$remote_ref" ]]; then
+            git fetch --no-tags --depth=1 origin "$tag_ref"
+            tagged_commit="$(git rev-parse 'FETCH_HEAD^{commit}')"
+            if [[ "$tagged_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "::error::Tag $RELEASE_TAG already points to another commit. Bump workspace.package.version in Cargo.toml."
+              exit 1
+            fi
+            echo "Reusing $RELEASE_TAG at $RELEASE_COMMIT"
+          else
+            git tag "$RELEASE_TAG" "$RELEASE_COMMIT"
+            git push origin "$tag_ref"
+          fi
+
   sources:
-    # Warm the shared source cache for this manually selected release tag.
+    # Warm the shared source cache for the tagged release commit.
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: sources
@@ -40,9 +80,9 @@ jobs:
         run: cargo fetch --locked
 
   linux:
-    needs: sources
+    needs: [prepare, sources]
     # Source cache warming is optional; its failure must not block builds.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ${{ matrix.runner }}
     env:
       # Also applies to linuxdeploy's nested AppImage plugin; no FUSE mount.
@@ -63,7 +103,7 @@ jobs:
             build-essential cmake nasm pkg-config file desktop-file-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -90,8 +130,8 @@ jobs:
 
   windows:
     # Build the MSVC ABI with LLVM and xwin's Windows SDK/CRT on Linux.
-    needs: sources
-    if: ${{ !cancelled() }}
+    needs: [prepare, sources]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -113,10 +153,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake nasm pkg-config clang llvm lld ninja-build nsis
+            build-essential cmake nasm pkg-config clang-19 llvm-19 lld-19 ninja-build nsis
+          # Clang 18's ARM64 __prefetch builtin conflicts with the Windows SDK.
+          # Select LLVM 19 for cargo-xwin and native dependency build scripts.
+          llvm_bin="$RUNNER_TEMP/llvm-19-bin"
+          mkdir -p "$llvm_bin"
+          for tool in clang++ lld lld-link llvm-ar llvm-lib llvm-rc llvm-mt; do
+            ln -s "/usr/bin/$tool-19" "$llvm_bin/$tool"
+          done
+          # cargo-xwin's clang driver puts MSVC intrinsic headers on -I paths.
+          # AWS-LC needs Clang's NEON vector types, so search its headers first.
+          resource_dir="$(clang-19 -print-resource-dir)"
+          printf '#!/bin/sh\nexec /usr/bin/clang-19 -nobuiltininc -I"%s/include" "$@"\n' \
+            "$resource_dir" > "$llvm_bin/clang"
+          chmod +x "$llvm_bin/clang"
+          ln -s /usr/bin/clang-19 "$llvm_bin/clang-cl"
+          echo "$llvm_bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -129,7 +184,7 @@ jobs:
           enableCrossOsArchive: true
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          key: ubuntu-24.04-windows-${{ matrix.target }}-${{ matrix.compiler }}-xwin-0.23.1
+          key: ubuntu-24.04-windows-${{ matrix.target }}-${{ matrix.compiler }}-llvm-19-xwin-0.23.1
           cache-bin: false
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: tools
@@ -152,9 +207,13 @@ jobs:
           if-no-files-found: error
 
   macos:
-    needs: sources
-    if: ${{ !cancelled() }}
+    needs: [prepare, sources]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-24.04
+    env:
+      # Universal builds otherwise run multiple memory-heavy full-LTO links.
+      CARGO_BUILD_JOBS: '1'
+      CARGO_PROFILE_RELEASE_LTO: thin
     steps:
       - name: Install build dependencies
         run: |
@@ -163,7 +222,7 @@ jobs:
             build-essential cmake nasm pkg-config xz-utils libssl-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -180,7 +239,7 @@ jobs:
           enableCrossOsArchive: true
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
-          key: ubuntu-24.04-macos-zig-0.17.0-sdk-26.1
+          key: ubuntu-24.04-macos-thin-lto-zig-0.17.0-sdk-26.1
           cache-bin: false
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         id: tools
@@ -197,7 +256,19 @@ jobs:
       - name: Test disk image packaging
         run: cargo test --locked -p xtask
       - name: Build, bundle and verify universal macOS release
-        run: cargo xtask dist --target universal2-apple-darwin
+        run: |
+          # Linking can be quiet for minutes; report CPU and memory while it runs.
+          (
+            while sleep 30; do
+              echo '::group::macOS build resources'
+              free -h
+              ps -eo pid,ppid,pcpu,pmem,rss,comm --sort=-rss | sed -n '1,12p'
+              echo '::endgroup::'
+            done
+          ) &
+          monitor_pid=$!
+          trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
+          /usr/bin/time -v cargo xtask dist --target universal2-apple-darwin
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -216,8 +287,8 @@ jobs:
       contents: write
     runs-on: ubuntu-24.04
     # Publish successful matrix artifacts even when another build fails.
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
-    needs: [linux, windows, macos]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && github.event_name == 'workflow_dispatch' }}
+    needs: [prepare, linux, windows, macos]
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # 8.0.1
         with:
@@ -239,8 +310,8 @@ jobs:
         if: steps.distributions.outputs.available == 'true'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3.0.2
         with:
-          name: ${{ inputs.tag }}
-          tag_name: ${{ inputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
           files: |
             upload/*
           generate_release_notes: true
