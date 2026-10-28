@@ -312,29 +312,27 @@ impl UtilitiesScreen {
 
             for app in &self.installed_apps {
                 let app_key = Self::app_key(app);
-                let mut app_row = column![
-                    row![
-                        text(format!(
-                            "{} ({})",
-                            app.installed_name
-                                .clone()
-                                .unwrap_or_else(|| app.app.to_string()),
-                            app.bundle_id.clone().unwrap_or("???".to_string())
-                        ))
-                        .size(14)
-                        .width(iced::Length::Fill),
-                        button(text(t!("utilities_install_pairing")).align_x(Center))
-                            .on_press_maybe(
-                                app.app
-                                    .supports_pairing_file_alt()
-                                    .then(|| Message::InstallPairingFile(app.clone()))
-                            )
-                            .style(appearance::s_button)
-                    ]
-                    .spacing(appearance::THEME_PADDING)
-                    .align_y(Center)
+                let mut header = row![
+                    text(format!(
+                        "{} ({})",
+                        app.installed_name
+                            .clone()
+                            .unwrap_or_else(|| app.app.to_string()),
+                        app.bundle_id.as_deref().unwrap_or("???")
+                    ))
+                    .size(14)
+                    .width(iced::Length::Fill)
                 ]
-                .spacing(4);
+                .spacing(appearance::THEME_PADDING)
+                .align_y(Center);
+                if app.app.supports_pairing_file_alt() {
+                    header = header.push(
+                        button(text(t!("utilities_install_pairing")).align_x(Center))
+                            .on_press(Message::InstallPairingFile(app.clone()))
+                            .style(appearance::s_button),
+                    );
+                }
+                let mut app_row = column![header].spacing(4);
 
                 let expiration = match app.expiration {
                     Some(date) => {

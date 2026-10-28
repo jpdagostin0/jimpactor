@@ -66,6 +66,12 @@ Enable **Lock device** beside the device picker to keep installations tied to th
 
 In **Settings → Developer**, registered devices can be enabled or disabled when your Apple account permits it. Apple does not offer ordinary permanent deletion: disabling requires Account Holder or Admin access, invalidates profiles containing that device, and does not free an annual device slot. See [Apple's device-management rules](https://developer.apple.com/help/account/devices/disable-or-enable-a-device/).
 
+## Running another version
+
+When another Jimpactor version is already running, launching a different version shows both versions and lets you restart into the newly launched executable, continue using the running version, or cancel. Finish installations and refreshes first; an active operation prevents restart.
+
+Older builds cannot report their version or accept a restart request. For the first upgrade from one of those builds, quit Jimpactor from its tray menu and open the new executable again.
+
 ## Build
 
 Install Rust, CMake, and the native dependencies listed in the [contributing guide](.github/CONTRIBUTING.md).

@@ -215,8 +215,11 @@ pub(crate) fn relaunch_subscription() -> Subscription<Message> {
 
                 if let Err(err) = crate::relaunch::start_listener({
                     let tx = tx.clone();
-                    move || {
-                        let _ = tx.unbounded_send(Message::RelaunchRequested);
+                    move |action| {
+                        let _ = tx.unbounded_send(match action {
+                            crate::relaunch::RelaunchAction::Show => Message::RelaunchRequested,
+                            crate::relaunch::RelaunchAction::Restart => Message::RestartRequested,
+                        });
                     }
                 }) {
                     log::warn!("Failed to start relaunch listener: {err}");

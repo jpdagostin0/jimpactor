@@ -14,6 +14,11 @@ use crate::defaults::get_data_path;
 
 pub type ConnectedDevices = Arc<Mutex<HashMap<String, Device>>>;
 
+static ACTIVE_REFRESHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) fn has_active_refreshes() -> bool {
+    ACTIVE_REFRESHES.load(std::sync::atomic::Ordering::SeqCst) != 0
+}
+
 struct RefreshGuard {
     udid: String,
     tasks: Arc<Mutex<HashSet<String>>>,
@@ -21,6 +26,7 @@ struct RefreshGuard {
 
 impl Drop for RefreshGuard {
     fn drop(&mut self) {
+        ACTIVE_REFRESHES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut tasks) = self.tasks.lock() {
             tasks.remove(&self.udid);
             log::debug!("Released lock for device {}", self.udid);
@@ -150,6 +156,7 @@ impl RefreshDaemon {
         }
 
         // lock is released when this function returns
+        ACTIVE_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let _guard = RefreshGuard {
             udid: device.udid.clone(),
             tasks: self.active_tasks.clone(),

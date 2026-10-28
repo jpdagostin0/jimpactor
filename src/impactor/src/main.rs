@@ -4,9 +4,6 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 
 use crate::refresh::spawn_refresh_daemon;
 
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-use single_instance::SingleInstance;
-
 mod appearance;
 mod certificate_reset;
 mod defaults;
@@ -42,20 +39,17 @@ fn main() -> iced::Result {
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-    let _single_instance = match SingleInstance::new(&crate::relaunch::single_instance_key()) {
-        Ok(instance) => {
-            if !instance.is_single() {
-                if let Err(err) = crate::relaunch::notify_running_instance() {
-                    log::warn!("Failed to signal existing instance: {err}");
-                }
-                log::info!("Another instance is already running; exiting.");
-                return Ok(());
-            }
-            Some(instance)
-        }
-        Err(err) => {
-            log::warn!("Failed to acquire single-instance lock: {err}");
-            None
+    let _single_instance = match crate::relaunch::acquire_or_notify() {
+        Ok(Some(instance)) => instance,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            log::error!("Could not select the running Jimpactor version: {error}");
+            rfd::MessageDialog::new()
+                .set_title("Could not start Jimpactor")
+                .set_description(&error)
+                .set_level(rfd::MessageLevel::Error)
+                .show();
+            return Ok(());
         }
     };
 

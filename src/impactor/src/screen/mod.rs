@@ -69,6 +69,7 @@ pub enum Message {
 
     // Window management
     RelaunchRequested,
+    RestartRequested,
     ShowWindow,
     HideWindow,
     WindowCloseRequested(window::Id),
@@ -465,6 +466,15 @@ impl Impactor {
                     Task::done(Message::RelaunchRequested)
                 } else {
                     Task::none()
+                }
+            }
+            Message::RestartRequested => {
+                let installing = matches!(&self.current_screen, ImpactorScreen::Progress(screen) if screen.is_installing);
+                if installing || crate::refresh::has_active_refreshes() {
+                    log::warn!("Finish the current installation or refresh before restarting");
+                    Task::done(Message::RelaunchRequested)
+                } else {
+                    Task::done(Message::Quit)
                 }
             }
             Message::RelaunchRequested => {
@@ -1108,7 +1118,11 @@ impl Impactor {
             })
             .map(|d| d.to_string())
             .collect();
-        let selected_device_name = self.selected_device.as_ref().map(|d| d.to_string());
+        let selected_device_name = self
+            .selected_device
+            .as_ref()
+            .filter(|device| self.device_lock.is_none() || device.is_available())
+            .map(|d| d.to_string());
         let waiting = self
             .device_lock
             .as_ref()
