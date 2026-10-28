@@ -37,6 +37,9 @@ cargo run --locked --bin jimpactor-cli -- --help
 
 # Release binaries and platform packages in dist/
 cargo xtask dist
+
+# Cross-compile and package macOS on Linux or Windows (requires Zig and Cargo tools)
+cargo xtask dist --target universal2-apple-darwin
 ```
 
 The workspace contains the GUI in `src/impactor`, the CLI in `src/cli`, shared libraries in `crates`, and build tools in `tools`. All platform icons are generated from `package/icon.svg`.
