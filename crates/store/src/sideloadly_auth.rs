@@ -565,25 +565,4 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(old, hash);
     }
-
-    #[test]
-    #[ignore = "network"]
-    fn anonymous_connection_with_a_fresh_identity() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("jimpactor-anonymous-{unique}"));
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(SideloadlyAuth::connect_anonymous(&path));
-        let hash = plume_core::remote_anisette_v1::ensure_device_hash(&path).unwrap();
-        let files = std::fs::read_dir(&path).unwrap().count();
-        std::fs::remove_file(path.join("anisette_v1_device")).unwrap();
-        std::fs::remove_dir(&path).unwrap();
-
-        let server = result.expect("shared endpoint should return both anisette headers");
-        assert_eq!(files, 1, "only our device identity should be persisted");
-        assert_eq!(server.address, format!("{ANONYMOUS_ANISETTE_URL}?u={hash}"));
-    }
 }

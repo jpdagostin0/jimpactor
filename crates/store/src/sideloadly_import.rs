@@ -87,10 +87,10 @@ pub fn parse_sessions(text: &str) -> Vec<AnisetteServer> {
         if url.is_empty() {
             continue;
         }
-        if let Some(hash) = session.userhash.as_deref().filter(|h| !h.is_empty()) {
-            if !url.contains("u=") {
-                url = format!("{url}?u={hash}");
-            }
+        if let Some(hash) = session.userhash.as_deref().filter(|h| !h.is_empty())
+            && !url.contains("u=")
+        {
+            url = format!("{url}?u={hash}");
         }
         if !seen.insert(url.clone()) {
             continue;
