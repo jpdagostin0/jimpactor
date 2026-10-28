@@ -63,17 +63,17 @@ cargo xtask dist --target <triple>
 
 Artifacts are written to `dist/`. Linux packaging downloads linuxdeploy to create an AppImage. Windows packaging requires NSIS (`makensis`) on `PATH`.
 
-The [release workflow](workflows/release.yml) builds distributions with `cargo xtask dist` on pushes to `main`, `v*` tags, and manual dispatches. Successful builds upload distributions as workflow artifacts. Tag pushes create a draft GitHub release from the available artifacts even if another platform or architecture fails. If no distributions succeed, release creation is skipped. Build failures remain visible in the workflow results, and cancelling the workflow prevents release creation.
+The [release workflow](workflows/release.yml) runs only through **Actions → Release → Run workflow**. Select the workflow branch and enter an existing release tag (for example, `v0.1.0`). Every builder checks out that tag and runs `cargo xtask dist`; pushes to branches or tags do not start a release. Successful builds upload distributions as workflow artifacts, and the workflow creates a draft GitHub release for the supplied tag from the available artifacts even if another platform or architecture fails. If no distributions succeed, release creation is skipped. Build failures remain visible in the workflow results, and cancelling the workflow prevents release creation.
 
 | Distribution | Build environment |
 | --- | --- |
 | Linux x86_64 and aarch64 AppImages and binaries | Native architecture, Ubuntu 24.04 runner |
-| Windows x86_64, i686 and ARM64 installers and binaries | LLVM/cargo-xwin cross-compilation to MSVC targets and NSIS, Ubuntu 24.04 runner |
+| Windows x86_64 and ARM64 installers and binaries | LLVM/cargo-xwin cross-compilation to MSVC targets and NSIS, Ubuntu 24.04 runner |
 | macOS universal app archive, DMG, and binaries | Zig cross-compilation, Ubuntu 24.04 runner |
 
 Builds run directly on GitHub's Ubuntu runners. Build tools and packaging dependencies are installed with `--no-install-recommends`. AppImage tools run with `APPIMAGE_EXTRACT_AND_RUN=1` so packaging does not require FUSE. The macOS builder installs OpenSSL development files for the host-side `cargo-bundle` tool.
 
-Every distribution builds on a Linux runner. Cargo downloads are shared across jobs. Source cache warming is optional: if it fails, the builds fetch their own dependencies. Compiled-output and host-tool caches identify the Ubuntu environment. Each Windows builder caches its Cargo tool and downloads only its target architecture's Windows SDK/CRT libraries, with a separate SDK cache. Missing distribution artifacts fail that build without blocking release of other successful artifacts.
+Every distribution builds on a Linux runner. Cargo downloads are shared across jobs. Source cache warming is optional: if it fails, the builds fetch their own dependencies. Compiled-output and host-tool caches identify the Ubuntu environment. Each Windows builder caches its Cargo tool and SDK/CRT, with compiler-specific build and SDK caches. Missing distribution artifacts fail that build without blocking release of other successful artifacts.
 
 ### Windows cross-compilation and packaging
 
@@ -81,14 +81,13 @@ On Debian/Ubuntu, install LLVM, CMake, Ninja and NSIS, then install the Rust tar
 
 ```sh
 sudo apt-get install build-essential clang llvm lld cmake ninja-build nasm pkg-config nsis
-rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc aarch64-pc-windows-msvc
+rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
 cargo install --locked cargo-xwin@0.23.1
-XWIN_ARCH=x86_64 cargo xtask dist --target x86_64-pc-windows-msvc
-XWIN_ARCH=x86 cargo xtask dist --target i686-pc-windows-msvc
-XWIN_ARCH=aarch64 cargo xtask dist --target aarch64-pc-windows-msvc
+XWIN_ARCH=x86_64 XWIN_CROSS_COMPILER=clang-cl cargo xtask dist --target x86_64-pc-windows-msvc
+XWIN_ARCH=aarch64 XWIN_CROSS_COMPILER=clang cargo xtask dist --target aarch64-pc-windows-msvc
 ```
 
-When targeting Windows MSVC from a non-Windows host, xtask invokes `cargo xwin build`. Cargo-xwin supplies the Windows SDK/CRT and configures clang-cl, lld-link and native dependency builds; winresource uses llvm-rc for the executable's resources. NSIS creates the installer on Linux. A Windows host, Visual Studio installation and Wine are not needed for building or packaging. Running the resulting Windows application is a separate validation step.
+When targeting Windows MSVC from a non-Windows host, xtask invokes `cargo xwin build`. Cargo-xwin supplies the Windows SDK/CRT and configures the compiler, lld-link and native dependency builds; winresource uses llvm-rc for the executable's resources. x86_64 uses clang-cl. ARM64 uses clang and its matching sysroot/flags because `ring` selects the clang driver for that target; clang-cl's `/imsvc` flags fail with clang. Windows distributions support 64-bit x86_64 and ARM64 only. NSIS creates the installer on Linux. A Windows host, Visual Studio installation and Wine are not needed for building or packaging. Running the resulting Windows application is a separate validation step.
 
 ### macOS cross-compilation and packaging
 
@@ -115,7 +114,7 @@ The xtask uses `SDKROOT` when supplied, or the installed Xcode SDK on a Mac. Oth
 
 The universal output is `dist/Jimpactor.app`, `dist/jimpactor-macos-universal.dmg`, the GUI/CLI binaries, and an `.app.tar.gz` archive that preserves Unix permissions when downloaded through CI artifacts. Per-architecture app bundles live under `dist/macos-aarch64/` or `dist/macos-x86_64/`, with correspondingly named DMGs and binaries. Packaging checks the Mach-O architectures, app metadata and every file inside the DMG before succeeding.
 
-See [release.yml](workflows/release.yml) for the Linux release builders. Default-branch builds populate shared Cargo download caches; compiled outputs remain specific to the host/compiler/target. Nix is not required.
+See [release.yml](workflows/release.yml) for the Linux release builders. Manual release runs populate shared Cargo download caches; compiled outputs remain specific to the host/compiler/target. Nix is not required.
 
 ## Changes
 
