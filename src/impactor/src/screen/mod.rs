@@ -49,8 +49,7 @@ pub enum Message {
 
     // Tray
     TrayMenuClicked(crate::tray::TrayAction),
-    ShowTrayMenu(iced::Point),
-    DismissTrayMenu(window::Id),
+    TrayMenuSelected(tray_icon::menu::MenuId),
     TrayIconClicked,
     #[cfg(target_os = "macos")]
     MacOsActivationTick,
@@ -74,7 +73,7 @@ pub enum Message {
     Quit,
 
     // Login window
-    LoginWindowMessage(window::Id, login_window::Message),
+    LoginWindow(window::Id, login_window::Message),
 
     // Screen-specific messages
     MainScreen(general::Message),
@@ -96,7 +95,7 @@ pub enum Message {
 pub struct Impactor {
     current_screen: ImpactorScreen,
     previous_screen: Option<Box<ImpactorScreen>>,
-    installer_screen: Option<package::PackageScreen>,
+    installer_screen: Option<Box<package::PackageScreen>>,
     devices: Vec<Device>,
     selected_device: Option<Device>,
     tray: Option<ImpactorTray>,
@@ -123,8 +122,8 @@ pub enum ImpactorScreenType {
 enum ImpactorScreen {
     Main(general::GeneralScreen),
     Utilities(utilties::UtilitiesScreen),
-    Settings(settings::SettingsScreen),
-    Installer(package::PackageScreen),
+    Settings(Box<settings::SettingsScreen>),
+    Installer(Box<package::PackageScreen>),
     Progress(progress::ProgressScreen),
 }
 
@@ -209,10 +208,10 @@ impl Impactor {
     }
 
     fn set_remote_pairing(&mut self, enabled: bool) {
-        if let Some(store) = &mut self.account_store {
-            if let Err(err) = store.set_remote_pairing_sync(enabled) {
-                log::error!("Failed to save remote pairing setting: {err}");
-            }
+        if let Some(store) = &mut self.account_store
+            && let Err(err) = store.set_remote_pairing_sync(enabled)
+        {
+            log::error!("Failed to save remote pairing setting: {err}");
         }
     }
 
@@ -263,10 +262,10 @@ impl Impactor {
                     }
                 }
 
-                if let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get() {
-                    if let Ok(mut devices) = daemon_devices.lock() {
-                        devices.insert(device.udid.clone(), device.clone());
-                    }
+                if let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get()
+                    && let Ok(mut devices) = daemon_devices.lock()
+                {
+                    devices.insert(device.udid.clone(), device.clone());
                 }
 
                 if let ImpactorScreen::Utilities(_) = self.current_screen {
@@ -295,10 +294,10 @@ impl Impactor {
                     self.selected_device = self.devices.first().cloned();
                 }
 
-                if let (Some(udid), Some(daemon_devices)) = (udid, REFRESH_DAEMON_DEVICES.get()) {
-                    if let Ok(mut devices) = daemon_devices.lock() {
-                        devices.remove(&udid);
-                    }
+                if let (Some(udid), Some(daemon_devices)) = (udid, REFRESH_DAEMON_DEVICES.get())
+                    && let Ok(mut devices) = daemon_devices.lock()
+                {
+                    devices.remove(&udid);
                 }
 
                 if let ImpactorScreen::Utilities(_) = self.current_screen {
@@ -315,13 +314,13 @@ impl Impactor {
                 Task::none()
             }
             Message::NavigateToScreen(screen_type) => {
-                if screen_type == ImpactorScreenType::Settings {
-                    if !matches!(self.current_screen, ImpactorScreen::Progress(_)) {
-                        self.previous_screen = Some(Box::new(std::mem::replace(
-                            &mut self.current_screen,
-                            ImpactorScreen::Main(general::GeneralScreen::new()),
-                        )));
-                    }
+                if screen_type == ImpactorScreenType::Settings
+                    && !matches!(self.current_screen, ImpactorScreen::Progress(_))
+                {
+                    self.previous_screen = Some(Box::new(std::mem::replace(
+                        &mut self.current_screen,
+                        ImpactorScreen::Main(general::GeneralScreen::new()),
+                    )));
                 }
 
                 self.navigate_to_screen(screen_type.clone());
@@ -392,43 +391,28 @@ impl Impactor {
                 }
             },
             Message::TrayIconClicked => Task::done(Message::ShowWindow),
-            Message::ShowTrayMenu(position) => self
+            Message::TrayMenuSelected(id) => self
                 .tray
-                .as_mut()
-                .map(|tray| tray.open_popup(position))
+                .as_ref()
+                .and_then(|tray| tray.action(&id))
+                .map(|action| Task::done(Message::TrayMenuClicked(action)))
                 .unwrap_or_else(Task::none),
-            Message::DismissTrayMenu(id) => {
-                if let Some(tray) = &mut self.tray {
-                    if tray.is_popup(id) {
-                        return tray.close_popup();
-                    }
+            Message::TrayMenuClicked(action) => match action {
+                crate::tray::TrayAction::Show => Task::done(Message::ShowWindow),
+                crate::tray::TrayAction::Quit => Task::done(Message::Quit),
+                crate::tray::TrayAction::RefreshApp { udid, app_path } => {
+                    Task::done(Message::RefreshAppNow {
+                        udid: udid.clone(),
+                        app_path: app_path.clone(),
+                    })
                 }
-                Task::none()
-            }
-            Message::TrayMenuClicked(action) => {
-                let close = self
-                    .tray
-                    .as_mut()
-                    .map(ImpactorTray::close_popup)
-                    .unwrap_or_else(Task::none);
-                let task = match action {
-                    crate::tray::TrayAction::Show => Task::done(Message::ShowWindow),
-                    crate::tray::TrayAction::Quit => Task::done(Message::Quit),
-                    crate::tray::TrayAction::RefreshApp { udid, app_path } => {
-                        Task::done(Message::RefreshAppNow {
-                            udid: udid.clone(),
-                            app_path: app_path.clone(),
-                        })
-                    }
-                    crate::tray::TrayAction::ForgetApp { udid, app_path } => {
-                        Task::done(Message::ForgetApp {
-                            udid: udid.clone(),
-                            app_path: app_path.clone(),
-                        })
-                    }
-                };
-                Task::batch([close, task])
-            }
+                crate::tray::TrayAction::ForgetApp { udid, app_path } => {
+                    Task::done(Message::ForgetApp {
+                        udid: udid.clone(),
+                        app_path: app_path.clone(),
+                    })
+                }
+            },
             #[cfg(target_os = "macos")]
             Message::MacOsActivationTick => {
                 if self.main_window.is_none() && crate::macos_app::activation_reopen_requested() {
@@ -471,16 +455,8 @@ impl Impactor {
                 }
             }
             Message::WindowCloseRequested(id) => {
-                if let Some(tray) = &mut self.tray {
-                    if tray.is_popup(id) {
-                        return tray.close_popup();
-                    }
-                }
                 if self.login_windows.contains_key(&id) {
-                    Task::done(Message::LoginWindowMessage(
-                        id,
-                        login_window::Message::LoginCancel,
-                    ))
+                    Task::done(Message::LoginWindow(id, login_window::Message::LoginCancel))
                 } else if self.main_window == Some(id) {
                     Task::done(Message::HideWindow)
                 } else {
@@ -501,7 +477,7 @@ impl Impactor {
                 self.tray.take();
                 std::process::exit(0);
             }
-            Message::LoginWindowMessage(id, msg) => {
+            Message::LoginWindow(id, msg) => {
                 if !self.login_windows.contains_key(&id) {
                     return Task::none();
                 }
@@ -518,7 +494,7 @@ impl Impactor {
                             .update(login_window::Message::LoginFailed(format!(
                                 "Could not save your account: {error}"
                             )))
-                            .map(move |msg| Message::LoginWindowMessage(id, msg));
+                            .map(move |msg| Message::LoginWindow(id, msg));
                     }
                     self.account_store = Some(store);
                 }
@@ -550,13 +526,13 @@ impl Impactor {
                                 Task::none()
                             };
 
-                        if let Some((app, version)) = self.pending_source_install.take() {
-                            if matches!(msg, login_window::Message::LoginSuccess(_)) {
-                                return Task::batch([
-                                    window::close(id),
-                                    self.start_source_install(app, version),
-                                ]);
-                            }
+                        if let Some((app, version)) = self.pending_source_install.take()
+                            && matches!(msg, login_window::Message::LoginSuccess(_))
+                        {
+                            return Task::batch([
+                                window::close(id),
+                                self.start_source_install(app, version),
+                            ]);
                         }
 
                         if self.pending_installation {
@@ -574,7 +550,7 @@ impl Impactor {
                         return Task::batch([window::close(id), settings_task]);
                     }
 
-                    task.map(move |msg| Message::LoginWindowMessage(id, msg))
+                    task.map(move |msg| Message::LoginWindow(id, msg))
                 } else {
                     Task::none()
                 }
@@ -595,9 +571,9 @@ impl Impactor {
                     if let general::Message::NavigateToInstaller(package) = msg {
                         let mut options = SignerOptions::default();
                         package.load_into_signer_options(&mut options);
-                        self.current_screen = ImpactorScreen::Installer(
+                        self.current_screen = ImpactorScreen::Installer(Box::new(
                             package::PackageScreen::new(Some(package), options),
-                        );
+                        ));
                     } else if let general::Message::NavigateToUtilities = msg {
                         let rppairing_enabled = match &self.current_screen {
                             ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
@@ -636,14 +612,14 @@ impl Impactor {
                                 login_window::LoginWindow::with_email(email.unwrap_or_default());
                             let id = login_window.window_id().unwrap();
                             self.login_windows.insert(id, login_window);
-                            task.map(move |msg| Message::LoginWindowMessage(id, msg))
+                            task.map(move |msg| Message::LoginWindow(id, msg))
                         }
                         settings::Message::SelectAccount(email) => {
-                            if let Some(store) = &mut self.account_store {
-                                if let Err(error) = store.account_select_sync(&email) {
-                                    log::error!("Failed to select account: {error}");
-                                    return Task::none();
-                                }
+                            if let Some(store) = &mut self.account_store
+                                && let Err(error) = store.account_select_sync(&email)
+                            {
+                                log::error!("Failed to select account: {error}");
+                                return Task::none();
                             }
                             screen
                                 .update(
@@ -653,10 +629,10 @@ impl Impactor {
                                 .map(Message::SettingsScreen)
                         }
                         settings::Message::RemoveAccount(email) => {
-                            if let Some(store) = &mut self.account_store {
-                                if let Err(error) = store.accounts_remove_sync(&email) {
-                                    log::error!("Failed to remove account: {error}");
-                                }
+                            if let Some(store) = &mut self.account_store
+                                && let Err(error) = store.accounts_remove_sync(&email)
+                            {
+                                log::error!("Failed to remove account: {error}");
                             }
                             screen.account_changed(&email);
                             Task::none()
@@ -701,18 +677,18 @@ impl Impactor {
                                 .map(Message::SettingsScreen)
                         }
                         settings::Message::SelectAppearance(settings::AppearanceChoice(mode)) => {
-                            if let Some(store) = &mut self.account_store {
-                                if let Err(err) = store.set_appearance_sync(mode) {
-                                    log::error!("Failed to save appearance: {err}");
-                                }
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_appearance_sync(mode)
+                            {
+                                log::error!("Failed to save appearance: {err}");
                             }
                             Task::none()
                         }
                         settings::Message::ToggleKeyring(enabled) => {
-                            if let Some(store) = &mut self.account_store {
-                                if let Err(err) = store.set_use_keyring_sync(enabled) {
-                                    log::error!("Failed to update keyring setting: {err}");
-                                }
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_use_keyring_sync(enabled)
+                            {
+                                log::error!("Failed to update keyring setting: {err}");
                             }
                             Task::none()
                         }
@@ -740,10 +716,10 @@ impl Impactor {
                                 .or_else(|| current_locale::current_locale().ok())
                                 .unwrap_or_else(|| "en".to_string());
                             rust_i18n::set_locale(&effective);
-                            if let Some(store) = &mut self.account_store {
-                                if let Err(err) = store.set_locale_sync(choice) {
-                                    log::error!("Failed to persist locale: {err}");
-                                }
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_locale_sync(choice)
+                            {
+                                log::error!("Failed to persist locale: {err}");
                             }
                             Task::none()
                         }
@@ -765,21 +741,19 @@ impl Impactor {
                             }
 
                             use plume_utils::SignerMode;
-                            if matches!(screen.options.mode, SignerMode::Pem) {
-                                if self
+                            if matches!(screen.options.mode, SignerMode::Pem)
+                                && self
                                     .account_store
                                     .as_ref()
                                     .and_then(|s| s.selected_account())
                                     .is_none()
-                                {
-                                    self.pending_installation = true;
+                            {
+                                self.pending_installation = true;
 
-                                    let (login_window, task) = login_window::LoginWindow::new();
-                                    let id = login_window.window_id().unwrap();
-                                    self.login_windows.insert(id, login_window);
-                                    return task
-                                        .map(move |msg| Message::LoginWindowMessage(id, msg));
-                                }
+                                let (login_window, task) = login_window::LoginWindow::new();
+                                let id = login_window.window_id().unwrap();
+                                self.login_windows.insert(id, login_window);
+                                return task.map(move |msg| Message::LoginWindow(id, msg));
                             }
 
                             self.start_installation_task()
@@ -815,60 +789,58 @@ impl Impactor {
                             .unwrap();
 
                         rt.block_on(async move {
-                            if let Some(store) = store_opt {
-                                if let Some(refresh_device) = store.get_refresh_device(&udid) {
-                                    if let Some(app) = refresh_device
-                                        .apps
-                                        .iter()
-                                        .find(|a| a.path.to_string_lossy() == app_path)
+                            if let Some(store) = store_opt
+                                && let Some(refresh_device) = store.get_refresh_device(&udid)
+                                && let Some(app) = refresh_device
+                                    .apps
+                                    .iter()
+                                    .find(|a| a.path.to_string_lossy() == app_path)
+                            {
+                                let start = std::time::Instant::now();
+                                let timeout = std::time::Duration::from_secs(60);
+
+                                log::info!(
+                                    "Attempting to refresh app at {:?} on device {}, waiting...",
+                                    app.path,
+                                    udid
+                                );
+
+                                let device_opt = loop {
+                                    if start.elapsed() > timeout {
+                                        log::error!("Timeout waiting for device {}", udid);
+                                        break None;
+                                    }
+
+                                    if let Ok(devices) = daemon_devices.lock()
+                                        && let Some(dev) = devices.get(&udid)
                                     {
-                                        let start = std::time::Instant::now();
-                                        let timeout = std::time::Duration::from_secs(60);
+                                        break Some(dev.clone());
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                };
 
-                                        log::info!(
-                                            "Attempting to refresh app at {:?} on device {}, waiting...",
-                                            app.path, udid
+                                if let Some(device) = device_opt {
+                                    let daemon = crate::refresh::RefreshDaemon::new();
+                                    if let Err(e) = daemon
+                                        .refresh_app(&store, refresh_device, app, &device)
+                                        .await
+                                    {
+                                        log::error!(
+                                            "Failed to refresh app at {:?} on device {}: {}",
+                                            app.path,
+                                            udid,
+                                            e
                                         );
-
-                                        let device_opt = loop {
-                                            if start.elapsed() > timeout {
-                                                log::error!("Timeout waiting for device {}", udid);
-                                                break None;
-                                            }
-
-                                            if let Ok(devices) = daemon_devices.lock() {
-                                                if let Some(dev) = devices.get(&udid) {
-                                                    break Some(dev.clone());
-                                                }
-                                            }
-                                            tokio::time::sleep(std::time::Duration::from_secs(1))
-                                                .await;
-                                        };
-
-                                        if let Some(device) = device_opt {
-                                            let daemon = crate::refresh::RefreshDaemon::new();
-                                            if let Err(e) = daemon
-                                                .refresh_app(&store, refresh_device, app, &device)
-                                                .await
-                                            {
-                                                log::error!(
-                                                    "Failed to refresh app at {:?} on device {}: {}",
-                                                    app.path,
-                                                    udid,
-                                                    e
-                                                );
-                                                notify_rust::Notification::new()
-                                                    .summary(crate::APP_NAME)
-                                                    .body(&format!(
-                                                        "Failed to refresh {} for {}: {}",
-                                                        app.name.as_deref().unwrap_or("???"),
-                                                        &refresh_device.name,
-                                                        e
-                                                    ))
-                                                    .show()
-                                                    .ok();
-                                            }
-                                        }
+                                        notify_rust::Notification::new()
+                                            .summary(crate::APP_NAME)
+                                            .body(&format!(
+                                                "Failed to refresh {} for {}: {}",
+                                                app.name.as_deref().unwrap_or("???"),
+                                                refresh_device.name,
+                                                e
+                                            ))
+                                            .show()
+                                            .ok();
                                     }
                                 }
                             }
@@ -878,41 +850,41 @@ impl Impactor {
                 Task::done(Message::UpdateTrayMenu)
             }
             Message::ForgetApp { udid, app_path } => {
-                if let Some(store) = &mut self.account_store {
-                    if let Some(mut refresh_device) = store.get_refresh_device(&udid).cloned() {
-                        if let Some(app) = refresh_device
-                            .apps
-                            .iter()
-                            .find(|a| a.path.to_string_lossy() == app_path)
-                        {
-                            let app_path_buf = app.path.clone();
-                            std::thread::spawn(move || {
-                                if app_path_buf.exists() {
-                                    if let Err(e) = std::fs::remove_dir_all(&app_path_buf) {
-                                        log::error!(
-                                            "Failed to delete app at {:?}: {}",
-                                            app_path_buf,
-                                            e
-                                        );
-                                    } else {
-                                        log::info!("Deleted app at {:?}", app_path_buf);
-                                    }
+                if let Some(store) = &mut self.account_store
+                    && let Some(mut refresh_device) = store.get_refresh_device(&udid).cloned()
+                {
+                    if let Some(app) = refresh_device
+                        .apps
+                        .iter()
+                        .find(|a| a.path.to_string_lossy() == app_path)
+                    {
+                        let app_path_buf = app.path.clone();
+                        std::thread::spawn(move || {
+                            if app_path_buf.exists() {
+                                if let Err(e) = std::fs::remove_dir_all(&app_path_buf) {
+                                    log::error!(
+                                        "Failed to delete app at {:?}: {}",
+                                        app_path_buf,
+                                        e
+                                    );
+                                } else {
+                                    log::info!("Deleted app at {:?}", app_path_buf);
                                 }
-                            });
-                        }
-
-                        refresh_device
-                            .apps
-                            .retain(|a| a.path.to_string_lossy() != app_path);
-
-                        if refresh_device.apps.is_empty() {
-                            let _ = store.remove_refresh_device_sync(&udid);
-                        } else {
-                            let _ = store.add_or_update_refresh_device_sync(refresh_device);
-                        }
-
-                        self.account_store = Some(Self::init_account_store_sync());
+                            }
+                        });
                     }
+
+                    refresh_device
+                        .apps
+                        .retain(|a| a.path.to_string_lossy() != app_path);
+
+                    if refresh_device.apps.is_empty() {
+                        let _ = store.remove_refresh_device_sync(&udid);
+                    } else {
+                        let _ = store.add_or_update_refresh_device_sync(refresh_device);
+                    }
+
+                    self.account_store = Some(Self::init_account_store_sync());
                 }
                 Task::done(Message::UpdateTrayMenu)
             }
@@ -922,11 +894,11 @@ impl Impactor {
                 if let Some(store) = &self.account_store {
                     match &mut self.tray {
                         Some(existing_tray) => {
-                            existing_tray.update_refresh_apps(&store);
+                            existing_tray.update_refresh_apps(store);
                         }
                         None => {
                             let mut new_tray = ImpactorTray::new();
-                            new_tray.update_refresh_apps(&store);
+                            new_tray.update_refresh_apps(store);
                             self.tray = Some(new_tray);
                         }
                     }
@@ -995,16 +967,6 @@ impl Impactor {
             if let iced::Event::Window(window::Event::CloseRequested) = event {
                 return Some(Message::WindowCloseRequested(id));
             }
-            if matches!(
-                event,
-                iced::Event::Window(window::Event::Unfocused)
-                    | iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                        key: Key::Named(key::Named::Escape),
-                        ..
-                    })
-            ) {
-                return Some(Message::DismissTrayMenu(id));
-            }
             None
         });
 
@@ -1024,15 +986,10 @@ impl Impactor {
     }
 
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
-        if let Some(tray) = &self.tray {
-            if tray.is_popup(window_id) {
-                return tray.view();
-            }
-        }
         if let Some(login_window) = self.login_windows.get(&window_id) {
             return login_window
                 .view()
-                .map(move |msg| Message::LoginWindowMessage(window_id, msg));
+                .map(move |msg| Message::LoginWindow(window_id, msg));
         }
 
         let has_device = self.selected_device.is_some();
@@ -1078,16 +1035,12 @@ impl Impactor {
     fn view_top_bar(&self) -> Element<'_, Message> {
         let device_names: Vec<String> = self.devices.iter().map(|d| d.to_string()).collect();
         let selected_device_name = self.selected_device.as_ref().map(|d| d.to_string());
-        let placeholder_str = selected_device_name
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or("No Device");
+        let placeholder_str = selected_device_name.as_deref().unwrap_or("No Device");
 
-        let right_button = if matches!(self.current_screen, ImpactorScreen::Settings(_)) {
-            button(appearance::icon(appearance::CHEVRON_BACK))
-                .on_press(Message::PreviousScreen)
-                .style(appearance::s_button)
-        } else if matches!(self.current_screen, ImpactorScreen::Utilities(_)) {
+        let right_button = if matches!(
+            self.current_screen,
+            ImpactorScreen::Settings(_) | ImpactorScreen::Utilities(_)
+        ) {
             button(appearance::icon(appearance::CHEVRON_BACK))
                 .on_press(Message::PreviousScreen)
                 .style(appearance::s_button)
@@ -1197,7 +1150,8 @@ impl Impactor {
                 self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
             }
             ImpactorScreenType::Settings => {
-                self.current_screen = ImpactorScreen::Settings(settings::SettingsScreen::new());
+                self.current_screen =
+                    ImpactorScreen::Settings(Box::new(settings::SettingsScreen::new()));
             }
             ImpactorScreenType::Progress => {
                 self.current_screen = ImpactorScreen::Progress(progress::ProgressScreen::new());
@@ -1231,7 +1185,7 @@ impl Impactor {
             let (login_window, task) = login_window::LoginWindow::new();
             let id = login_window.window_id().unwrap();
             self.login_windows.insert(id, login_window);
-            return task.map(move |msg| Message::LoginWindowMessage(id, msg));
+            return task.map(move |msg| Message::LoginWindow(id, msg));
         }
 
         self.start_source_install(app, version)
@@ -1306,10 +1260,10 @@ impl Impactor {
                 &mut self.current_screen,
                 ImpactorScreen::Progress(progress_screen),
             );
-            if let ImpactorScreen::Installer(installer) = previous {
-                if let Some(stale) = self.installer_screen.replace(installer) {
-                    Self::cleanup_package_stage(&stale);
-                }
+            if let ImpactorScreen::Installer(installer) = previous
+                && let Some(stale) = self.installer_screen.replace(installer)
+            {
+                Self::cleanup_package_stage(&stale);
             }
 
             std::thread::spawn(move || {

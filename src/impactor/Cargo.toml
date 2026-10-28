@@ -34,7 +34,8 @@ serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 tiny-skia = "0.11.4"
-tray = "0.1.2"
+# Native menus; the Linux StatusNotifier backend avoids GTK/AppIndicator.
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 plume_core = { path = "../../crates/core", features = ["tweaks"] }
 plume_utils = { path = "../../crates/utils" }
 plume_store = { path = "../../crates/store" }

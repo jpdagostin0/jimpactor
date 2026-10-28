@@ -60,8 +60,3 @@ pub(crate) fn set_main_window_visible(_visible: bool) {}
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn reset_activation_state() {}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn activation_reopen_requested() -> bool {
-    false
-}

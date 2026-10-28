@@ -40,11 +40,12 @@ sudo apt-get install build-essential cmake nasm
 
 Native dependencies such as liblzma, libbz2, libzstd and libdbus are built from
 Cargo-managed sources and statically linked. GTK and AppIndicator are not used.
-The `tray` crate supplies the icon and Iced renders its popup menu, following
-[upstream's Iced example](https://github.com/nobane/tray-rs/blob/main/crates/tray/examples/iced-popup.rs).
-Its Linux tray backend uses X11; an X11 tray host is needed (including on Wayland
-desktops using XWayland). The display/graphics drivers, Secret Service, and
-`usbmuxd` remain runtime services, rather than build dependencies.
+The `tray-icon` crate supplies the icon and native menus without opening an Iced
+popup window. Default features are disabled; Linux uses the GTK-free `ksni`
+StatusNotifierItem backend over D-Bus. A StatusNotifier tray host is required
+(on GNOME, install an AppIndicator/StatusNotifier extension). This backend works
+on X11 and Wayland without an XWayland tray host. The display/graphics drivers,
+Secret Service, and `usbmuxd` remain runtime services, rather than build dependencies.
 
 ### macOS
 
