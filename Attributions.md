@@ -10,6 +10,16 @@ Jimpactor is an independently maintained fork of **Plume Impactor**. It is not a
   - The crates in `crates/core`, `crates/gestalt`, `crates/store` and `crates/utils`, and the applications in `src/impactor` and `src/cli`, come from this project. `crates/core` is licensed under MPL-2.0.
   - Icon and Flatpak distribution by [Paige](https://github.com/ssalggnikool).
 
+## Upstream authentication contributions
+
+The authentication and Omnisette changes incorporate or adapt work from these pull requests:
+
+- [Rogue911](https://github.com/Rogue911): [SideStore/apple-private-apis #27](https://github.com/SideStore/apple-private-apis/pull/27), identifying the AuthKit client as `com.apple.akd/1.0` to avoid GrandSlam HTTP 503 errors.
+- [Nicholas Sharp (nab138)](https://github.com/nab138): [SideStore/apple-private-apis #25](https://github.com/SideStore/apple-private-apis/pull/25), app-token decryption, authenticated plist requests, cancellable sign-in callbacks, and dependency updates.
+- [Maxim Grischenko (max402)](https://github.com/max402): [Impactor #297](https://github.com/claration/impactor/pull/297), SMS challenge handling and preservation of the anisette provider's client identity and header values.
+- [BenwillLopez](https://github.com/BenwillLopez): [Impactor #295](https://github.com/claration/impactor/pull/295), configurable anisette v3 servers and the `PLUMESIGN_ANISETTE_URL` CLI override.
+- [2foil](https://github.com/2foil): [Impactor #304](https://github.com/claration/impactor/pull/304), retaining remote Mac client identity, refreshing provisioning state, and offline regression coverage for sign-in after two-factor authentication.
+
 ## Vendored third-party crates
 
 | Path                    | Upstream                                                                                                     | License    | Notes                                                                                                                                                                                                                      |
