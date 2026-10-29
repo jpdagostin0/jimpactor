@@ -13,4 +13,6 @@ pub use sideloadly_auth::{
     DEFAULT_CLIENT_ID, SideloadlyAccount, SideloadlyAuth, SideloadlySession,
 };
 pub use sideloadly_import::{load_sideloadly_servers, parse_sessions, sessions_paths};
-pub use store::{AccountStore, AppearanceMode};
+pub use store::{
+    AccountStore, AppearanceMode, JitListen, JitServerSettings, LockedDevice, TailscaleSettings,
+};

@@ -10,6 +10,13 @@ const USER_AGENT: &str = concat!("Jimpactor/", env!("CARGO_PKG_VERSION"));
 pub(crate) const DEFAULT_SOURCE_URL: &str = "https://github.com/SideStore/SideStore";
 /// Name of the app the one-click install preselects.
 pub(crate) const SIDESTORE: &str = "SideStore";
+/// Sources added once for every user after SideStore. Unlike SideStore they can be removed,
+/// and a removed one is not added back.
+const EXTRA_DEFAULT_SOURCES: [(&str, &str); 3] = [
+    ("GoldenNugget", "https://github.com/GoldenNugget-Team/GoldenNugget-mobile"),
+    ("LiveContainer", "https://github.com/LiveContainer/LiveContainer"),
+    ("StikDebug", "https://github.com/StikDebug/StikDebug"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SourceKind {
@@ -52,6 +59,9 @@ impl Source {
 pub(crate) struct SourcesStore {
     #[serde(default)]
     sources: Vec<Source>,
+    /// Extra default sources already added once, so removing one is remembered.
+    #[serde(default)]
+    seeded_defaults: Vec<String>,
 }
 
 impl SourcesStore {
@@ -67,7 +77,24 @@ impl SourcesStore {
         if !store.sources.iter().any(Source::is_default) {
             store.sources.insert(0, Source::default_source());
         }
+        store.seed_extra_defaults();
         store
+    }
+
+    fn seed_extra_defaults(&mut self) {
+        for (name, url) in EXTRA_DEFAULT_SOURCES {
+            if self.seeded_defaults.iter().any(|seeded| seeded == url) {
+                continue;
+            }
+            self.seeded_defaults.push(url.to_string());
+            if !self.sources.iter().any(|source| source.url == url) {
+                self.sources.push(Source {
+                    name: name.to_string(),
+                    url: url.to_string(),
+                    kind: SourceKind::GitHub,
+                });
+            }
+        }
     }
 
     pub fn save(&self, data_path: &Path) -> Result<(), String> {
@@ -426,7 +453,27 @@ pub(crate) async fn download(
 
 #[cfg(test)]
 mod tests {
-    use super::github_repo;
+    use super::{EXTRA_DEFAULT_SOURCES, SourcesStore, github_repo};
+
+    #[test]
+    fn extra_defaults_are_added_once_and_stay_removed() {
+        let directory = std::env::temp_dir().join(format!("jimpactor-sources-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let _ = std::fs::remove_file(directory.join(super::SOURCES_FILE));
+
+        let mut store = SourcesStore::load(&directory);
+        assert!(store.sources()[0].is_default());
+        for (_, url) in EXTRA_DEFAULT_SOURCES {
+            assert!(store.sources().iter().any(|source| source.url == url));
+        }
+        store.remove(EXTRA_DEFAULT_SOURCES[0].1);
+        store.save(&directory).unwrap();
+
+        let reloaded = SourcesStore::load(&directory);
+        assert!(!reloaded.sources().iter().any(|source| source.url == EXTRA_DEFAULT_SOURCES[0].1));
+        assert_eq!(reloaded.sources().len(), EXTRA_DEFAULT_SOURCES.len());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     #[test]
     fn identifies_github_repos() {

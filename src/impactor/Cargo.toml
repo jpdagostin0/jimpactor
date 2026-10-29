@@ -20,7 +20,7 @@ info_plist_exts = ["package/macos/Info.plist.ext"]
 
 [dependencies]
 idevice.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time", "macros", "sync"] }
 thiserror.workspace = true
 uuid.workspace = true
 plist.workspace = true

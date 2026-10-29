@@ -7,6 +7,7 @@ use crate::refresh::spawn_refresh_daemon;
 mod appearance;
 mod certificate_reset;
 mod defaults;
+mod jit_server;
 mod logging;
 mod macos_app;
 mod refresh;

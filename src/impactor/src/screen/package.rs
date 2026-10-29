@@ -666,7 +666,7 @@ const IOS_ICON_CTRL_SHOULDER: f32 = 0.868_406_95;
 const IOS_ICON_CTRL_CURVE_OUTER: f32 = 0.372_823_83;
 const IOS_ICON_CTRL_CURVE_INNER: f32 = 0.169_059_56;
 
-fn icon_handle_from_bytes(data: &[u8]) -> Option<image::Handle> {
+pub(super) fn icon_handle_from_bytes(data: &[u8]) -> Option<image::Handle> {
     icon_handle_from_image(::image::load_from_memory(data).ok()?)
 }
 

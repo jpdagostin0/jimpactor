@@ -12,6 +12,7 @@ use crate::{
 };
 use plume_utils::{
     Bundle, Device, DeviceEvent, PlistInfoTrait, watch_devices, watch_network_devices,
+    watch_tailnet_devices,
 };
 
 pub(crate) fn device_listener() -> Subscription<Message> {
@@ -33,6 +34,18 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                         rt.block_on(watch_network_devices(network_tx));
                     })
                     .expect("Could not start Wi-Fi discovery thread");
+
+                let tailnet_tx = tx.clone();
+                std::thread::Builder::new()
+                    .name("jimpactor-tailnet-discovery".into())
+                    .spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("Could not start Tailscale discovery runtime");
+                        rt.block_on(watch_tailnet_devices(tailnet_tx));
+                    })
+                    .expect("Could not start Tailscale discovery thread");
 
                 std::thread::Builder::new()
                     .name("jimpactor-usb-discovery".into())
@@ -180,6 +193,38 @@ pub(crate) fn logs_tick_subscription() -> Subscription<Message> {
             },
         )
     })
+}
+
+/// Redraws once a second so live status (Tailscale, JIT server) stays current.
+pub(crate) fn status_tick_subscription() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(
+            1,
+            |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                use iced::futures::SinkExt;
+                loop {
+                    futures_timer(std::time::Duration::from_secs(1)).await;
+                    if output
+                        .send(Message::SettingsScreen(crate::screen::settings::Message::Noop))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            },
+        )
+    })
+}
+
+/// Sleeps without needing a Tokio runtime on the GUI executor.
+async fn futures_timer(duration: std::time::Duration) {
+    let (tx, rx) = futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(duration);
+        let _ = tx.send(());
+    });
+    let _ = rx.await;
 }
 
 pub(crate) fn certificate_reset_subscription() -> Subscription<Message> {
@@ -332,6 +377,12 @@ pub(crate) async fn run_installation(
     let send = |msg: String, progress: i32| {
         let _ = tx.send((msg, progress));
     };
+
+    if options.install_mode == SignerInstallMode::Install
+        && let Some(dev) = device.filter(|dev| !dev.is_mac)
+    {
+        preflight_device(dev, &options, &send).await?;
+    }
 
     send("Preparing package...".to_string(), 10);
 
@@ -528,18 +579,13 @@ pub(crate) async fn run_installation(
                     .await
                     .map_err(|e| format!("Install error: {}", e))?;
 
-                    if options.app.supports_pairing_file()
+                    if places_pairing_file(&options)
                         && let Some(custom_identifier) = options.custom_identifier.as_ref()
                     {
                         send("Placing pairing file...".to_string(), 90);
-                        if let Err(e) = dev
-                            .install_pairing_files(
-                                custom_identifier,
-                                options.app,
-                                remote_pairing,
-                                get_data_path(),
-                            )
-                            .await
+                        if let Err(e) =
+                            place_pairing_files(dev, custom_identifier, options.app, remote_pairing)
+                                .await
                         {
                             log::error!("Failed to place pairing file: {e}");
                             pairing_error = Some(e.to_string());
@@ -667,6 +713,74 @@ pub(crate) async fn run_installation(
     send("Finished!".to_string(), 100);
 
     Ok(())
+}
+
+fn places_pairing_file(options: &plume_utils::SignerOptions) -> bool {
+    options.app.supports_pairing_file() && options.custom_identifier.is_some()
+}
+
+/// Catches device problems before signing, which would otherwise surface only after
+/// installation as an app that will not open or cannot refresh.
+async fn preflight_device(
+    dev: &Device,
+    options: &plume_utils::SignerOptions,
+    send: &impl Fn(String, i32),
+) -> Result<(), String> {
+    send("Checking Developer Mode...".to_string(), 3);
+    if dev.developer_mode_enabled().await == Some(false) {
+        if let Err(e) = dev.reveal_developer_mode_option().await {
+            log::warn!("Could not reveal the Developer Mode option on {}: {e}", dev.name);
+        }
+        return Err(format!(
+            "Developer Mode is off on {}, so sideloaded apps will not open. Turn it on in Settings > Privacy & Security > Developer Mode, restart the device when asked, then retry.",
+            dev.name
+        ));
+    }
+
+    // The signer sets `custom_identifier` later, so only the app type is known here.
+    if options.app.supports_pairing_file() {
+        send("Checking device trust...".to_string(), 6);
+        dev.lockdown_pairing_file().await.map_err(|e| {
+            format!(
+                "{} needs this computer's pairing record, which could not be read: {e}",
+                options.app
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+/// How long to wait for an automatic RPPairing record before using lockdown pairing only.
+const AUTO_REMOTE_PAIRING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Places `app`'s pairing files. Apps that read a separate RPPairing record (SideStore)
+/// get one even when remote pairing is off, falling back to the lockdown record if the
+/// device cannot provide it, e.g. before iOS 17.
+async fn place_pairing_files(
+    dev: &Device,
+    identifier: &str,
+    app: plume_utils::SignerApp,
+    remote_pairing: bool,
+) -> Result<(), plume_utils::Error> {
+    if remote_pairing || app.extra_pairing_file_paths().is_empty() {
+        return dev
+            .install_pairing_files(identifier, app, remote_pairing, get_data_path())
+            .await;
+    }
+
+    let attempt = tokio::time::timeout(
+        AUTO_REMOTE_PAIRING_TIMEOUT,
+        dev.install_pairing_files(identifier, app, true, get_data_path()),
+    )
+    .await;
+    match attempt {
+        Ok(Ok(())) => return Ok(()),
+        Ok(Err(e)) => log::warn!("RPPairing for {app} failed, using lockdown pairing: {e}"),
+        Err(_) => log::warn!("RPPairing for {app} timed out, using lockdown pairing"),
+    }
+    dev.install_pairing_files(identifier, app, false, get_data_path())
+        .await
 }
 
 #[allow(dead_code)]
@@ -886,4 +1000,66 @@ pub(crate) async fn confirm(title: String, description: String) -> bool {
         .show()
         .await
         == rfd::MessageDialogResult::Yes
+}
+
+/// Streams the device syslog while the utilities screen asks for it. A new `session`
+/// starts a fresh connection; dropping the subscription closes it.
+pub(crate) fn syslog_subscription(
+    device: Device,
+    session: u64,
+) -> Subscription<crate::screen::utilties::Message> {
+    use crate::screen::utilties::Message as UtilitiesMessage;
+
+    struct State {
+        device: Device,
+        session: u64,
+    }
+
+    impl std::hash::Hash for State {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.device.udid.hash(state);
+            self.session.hash(state);
+        }
+    }
+
+    Subscription::run_with(State { device, session }, |state| {
+        let device = state.device.clone();
+        iced::stream::channel(
+            100,
+            move |mut output: iced::futures::channel::mpsc::Sender<UtilitiesMessage>| async move {
+                use iced::futures::SinkExt;
+                // Lines can arrive by the hundred per second, so forward whatever has queued up as one batch.
+                const MAX_BATCH: usize = 500;
+
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                let finished = run_on_tokio(async move {
+                    device
+                        .stream_syslog(tx)
+                        .await
+                        .map_err(|e| format!("Syslog stopped: {e}"))
+                });
+
+                while let Some(line) = rx.recv().await {
+                    let mut batch = vec![line];
+                    while batch.len() < MAX_BATCH {
+                        match rx.try_recv() {
+                            Ok(line) => batch.push(line),
+                            Err(_) => break,
+                        }
+                    }
+                    if output
+                        .send(UtilitiesMessage::SyslogLines(batch))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+
+                let _ = output
+                    .send(UtilitiesMessage::SyslogEnded(finished.await))
+                    .await;
+            },
+        )
+    })
 }

@@ -1,12 +1,15 @@
 mod account;
 mod developer;
+mod jit;
 mod logs;
 mod pairing;
 mod server_info;
 mod source_manager;
+mod tailscale;
 
 pub(crate) use logs::Message as LogsMessage;
 pub(crate) use pairing::Message as PairingMessage;
+pub(crate) use tailscale::Change as TailscaleChange;
 
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
@@ -90,6 +93,12 @@ pub enum Message {
     Developer(developer::Message),
     Sources(source_manager::Message),
     Logs(logs::Message),
+    ToggleLockDevice(bool),
+    ToggleCloseToTray(bool),
+    Tailscale(tailscale::Message),
+    TailscaleChanged(tailscale::Change),
+    Jit(jit::Message),
+    JitChanged(plume_store::JitServerSettings),
 }
 
 #[derive(Clone, Default)]
@@ -104,33 +113,42 @@ impl std::fmt::Debug for PatreonLoginInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    Behavior,
     RemoteAnisette,
     Account,
     Pairing,
     Developer,
     Sources,
+    Tailscale,
+    Jit,
     Logs,
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 7] = [
+    const ALL: [SettingsTab; 10] = [
         SettingsTab::General,
+        SettingsTab::Behavior,
         SettingsTab::RemoteAnisette,
         SettingsTab::Account,
         SettingsTab::Pairing,
         SettingsTab::Developer,
         SettingsTab::Sources,
+        SettingsTab::Tailscale,
+        SettingsTab::Jit,
         SettingsTab::Logs,
     ];
 
     fn label(self) -> std::borrow::Cow<'static, str> {
         match self {
             SettingsTab::General => t!("settings_tab_general"),
+            SettingsTab::Behavior => t!("settings_tab_behavior"),
             SettingsTab::RemoteAnisette => t!("settings_tab_remote_anisette"),
             SettingsTab::Account => t!("settings_tab_account"),
             SettingsTab::Pairing => t!("settings_tab_pairing"),
             SettingsTab::Developer => t!("settings_tab_developer"),
             SettingsTab::Sources => t!("settings_tab_sources"),
+            SettingsTab::Tailscale => t!("settings_tab_tailscale"),
+            SettingsTab::Jit => t!("settings_tab_jit"),
             SettingsTab::Logs => t!("settings_tab_logs"),
         }
     }
@@ -235,6 +253,8 @@ pub struct SettingsScreen {
     pairing: pairing::PairingTab,
     developer: developer::DeveloperTab,
     sources: source_manager::SourcesTab,
+    tailscale: tailscale::TailscaleTab,
+    jit: jit::JitTab,
     logs: logs::LogsTab,
 }
 
@@ -270,6 +290,8 @@ impl SettingsScreen {
             pairing: pairing::PairingTab::new(),
             developer: developer::DeveloperTab::default(),
             sources: source_manager::SourcesTab::new(),
+            tailscale: tailscale::TailscaleTab::new(Default::default()),
+            jit: jit::JitTab::new(Default::default()),
             logs: logs::LogsTab::default(),
         };
         screen.ensure_selected_server_listed();
@@ -358,6 +380,18 @@ impl SettingsScreen {
                     SettingsTab::Developer => {
                         self.update(Message::Developer(developer::Message::Load), store)
                     }
+                    SettingsTab::Tailscale => {
+                        if let Some(store) = store {
+                            self.tailscale = tailscale::TailscaleTab::new(store.tailscale().clone());
+                        }
+                        Task::none()
+                    }
+                    SettingsTab::Jit => {
+                        if let Some(store) = store {
+                            self.jit = jit::JitTab::new(store.jit_server().clone());
+                        }
+                        Task::none()
+                    }
                     _ => Task::none(),
                 }
             }
@@ -371,6 +405,22 @@ impl SettingsScreen {
             }
             Message::Sources(msg) => self.sources.update(msg).map(Message::Sources),
             Message::Logs(msg) => self.logs.update(msg).map(Message::Logs),
+            Message::Tailscale(msg) => {
+                let (task, change) = self.tailscale.update(msg);
+                let task = task.map(Message::Tailscale);
+                match change {
+                    Some(change) => Task::batch([task, Task::done(Message::TailscaleChanged(change))]),
+                    None => task,
+                }
+            }
+            Message::Jit(msg) => {
+                let (task, settings) = self.jit.update(msg);
+                let task = task.map(Message::Jit);
+                match settings {
+                    Some(settings) => Task::batch([task, Task::done(Message::JitChanged(settings))]),
+                    None => task,
+                }
+            }
             Message::FetchTeams(email) => self.account.check(email, store),
             Message::TeamsLoaded(email, request, result) => {
                 self.account.checked(email, request, result);
@@ -859,6 +909,7 @@ impl SettingsScreen {
         let account = account_store.as_ref().and_then(|s| s.selected_account());
         let body = match self.tab {
             SettingsTab::General => self.view_general(account_store, selected_locale),
+            SettingsTab::Behavior => self.view_behavior(account_store),
             SettingsTab::RemoteAnisette => self.view_remote_anisette(),
             SettingsTab::Account => self.account.view(account_store.as_ref()),
             SettingsTab::Pairing => self
@@ -867,6 +918,8 @@ impl SettingsScreen {
                 .map(Message::Pairing),
             SettingsTab::Developer => self.developer.view(account).map(Message::Developer),
             SettingsTab::Sources => self.sources.view().map(Message::Sources),
+            SettingsTab::Tailscale => self.tailscale.view().map(Message::Tailscale),
+            SettingsTab::Jit => self.jit.view().map(Message::Jit),
             SettingsTab::Logs => self.logs.view().map(Message::Logs),
         };
 
@@ -943,6 +996,30 @@ impl SettingsScreen {
             content
                 .padding([0.0, appearance::THEME_PADDING])
                 .width(Fill),
+        )
+        .height(Fill)
+        .into()
+    }
+
+    fn view_behavior<'a>(&'a self, account_store: &'a Option<AccountStore>) -> Element<'a, Message> {
+        let small = appearance::THEME_FONT_SIZE - 1.0;
+        let (lock_device, close_to_tray) = account_store
+            .as_ref()
+            .map_or((false, true), |store| (store.lock_device(), store.close_to_tray()));
+        scrollable(
+            column![
+                checkbox(lock_device)
+                    .label(t!("settings_lock_device"))
+                    .on_toggle(Message::ToggleLockDevice),
+                text(t!("settings_lock_device_desc")).size(small),
+                checkbox(close_to_tray)
+                    .label(t!("settings_close_to_tray"))
+                    .on_toggle(Message::ToggleCloseToTray),
+                text(t!("settings_close_to_tray_desc")).size(small),
+            ]
+            .spacing(appearance::THEME_PADDING)
+            .padding([0.0, appearance::THEME_PADDING])
+            .width(Fill),
         )
         .height(Fill)
         .into()

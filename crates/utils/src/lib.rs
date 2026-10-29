@@ -2,12 +2,15 @@ mod bundle;
 mod cgbi;
 mod device;
 mod device_discovery;
+mod device_tools;
 mod device_worker;
+mod jit;
 mod network_connection;
 mod network_discovery;
 mod options;
 mod package;
 mod signer;
+mod tailnet;
 mod tweak;
 mod xkit_bridge;
 
@@ -19,6 +22,7 @@ pub use device::{
     install_app_mac,
 }; // Device helper
 pub use device_discovery::{DeviceEvent, watch_devices};
+pub use device_tools::{DeviceDetails, InstalledProfile};
 pub use network_connection::NetworkConnection;
 pub use network_discovery::watch_network_devices;
 pub use options::{
@@ -35,6 +39,12 @@ pub use options::{
 };
 pub use package::Package; // Package helper
 pub use signer::Signer; // Signer
+pub use tailnet::{
+    TailnetConfig, TailnetStatus, set_tailnet_devices, start_tailnet, stop_tailnet,
+    subscribe_tailnet_status, tailnet_status, tailnet_supported, watch_tailnet_devices,
+};
+#[cfg(tailnet)]
+pub use tailnet::tailnet_listen;
 pub use tweak::Tweak; // Tweak helper
 pub use xkit_bridge::{ConfirmRevocation, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
 

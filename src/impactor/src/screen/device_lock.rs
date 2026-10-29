@@ -12,6 +12,18 @@ impl DeviceLock {
             name: device.name.clone(),
         }
     }
+    pub fn from_saved(saved: &plume_store::LockedDevice) -> Self {
+        Self {
+            udid: saved.udid.clone(),
+            name: saved.name.clone(),
+        }
+    }
+    pub fn to_saved(&self) -> plume_store::LockedDevice {
+        plume_store::LockedDevice {
+            udid: self.udid.clone(),
+            name: self.name.clone(),
+        }
+    }
     pub fn accepts(&self, device: &Device) -> bool {
         device.udid == self.udid
     }

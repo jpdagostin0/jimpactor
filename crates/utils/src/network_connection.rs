@@ -1,18 +1,111 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use idevice::provider::{IdeviceProvider, TcpProvider};
+use idevice::pairing_file::PairingFile;
+use idevice::provider::IdeviceProvider;
+use idevice::{Idevice, IdeviceError};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 use crate::Error;
 
+/// How a network device is reached: directly on the LAN, or through the embedded tailnet node.
+#[derive(Clone)]
+pub(crate) enum Route {
+    Lan,
+    #[cfg(tailnet)]
+    Tailnet(Arc<tailscale::Device>),
+}
+
+impl fmt::Debug for Route {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Route::Lan => "Lan",
+            #[cfg(tailnet)]
+            Route::Tailnet(_) => "Tailnet",
+        })
+    }
+}
+
+/// Connects lockdown services on a network device over its [`Route`].
+#[derive(Clone)]
+pub(crate) struct NetworkProvider {
+    pub addr: IpAddr,
+    pub scope_id: Option<u32>,
+    pub pairing_file: PairingFile,
+    pub label: String,
+    pub route: Route,
+}
+
+impl fmt::Debug for NetworkProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NetworkProvider")
+            .field("addr", &self.addr)
+            .field("label", &self.label)
+            .field("route", &self.route)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NetworkProvider {
+    pub(crate) fn socket_addr(&self, port: u16) -> SocketAddr {
+        match self.addr {
+            IpAddr::V4(_) => SocketAddr::new(self.addr, port),
+            IpAddr::V6(ip) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, self.scope_id.unwrap_or(0))),
+        }
+    }
+
+    fn with_label(&self, label: &str) -> Self {
+        Self {
+            label: label.to_owned(),
+            ..self.clone()
+        }
+    }
+}
+
+impl IdeviceProvider for NetworkProvider {
+    fn connect(&self, port: u16) -> Pin<Box<dyn Future<Output = Result<Idevice, IdeviceError>> + Send>> {
+        let address = self.socket_addr(port);
+        let label = self.label.clone();
+        let route = self.route.clone();
+        Box::pin(async move {
+            match route {
+                Route::Lan => {
+                    let stream = tokio::net::TcpStream::connect(address).await?;
+                    Ok(Idevice::new(Box::new(stream), label))
+                }
+                #[cfg(tailnet)]
+                Route::Tailnet(node) => {
+                    let stream = node.tcp_connect(address).await.map_err(|error| {
+                        IdeviceError::Socket(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            format!("Tailscale connection to {address} failed: {error}"),
+                        ))
+                    })?;
+                    Ok(Idevice::new(Box::new(stream), label))
+                }
+            }
+        })
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn get_pairing_file(&self) -> Pin<Box<dyn Future<Output = Result<PairingFile, IdeviceError>> + Send>> {
+        let pairing_file = self.pairing_file.clone();
+        Box::pin(async move { Ok(pairing_file) })
+    }
+}
+
 #[derive(Clone)]
 struct Endpoint {
-    provider: Arc<TcpProvider>,
+    provider: Arc<NetworkProvider>,
     runtime: Option<Handle>,
     online: bool,
     generation: u64,
@@ -34,7 +127,7 @@ impl fmt::Debug for NetworkConnection {
 }
 
 impl NetworkConnection {
-    pub(crate) fn new(provider: TcpProvider) -> Self {
+    pub(crate) fn new(provider: NetworkProvider) -> Self {
         let (state, _) = watch::channel(Endpoint {
             provider: Arc::new(provider),
             runtime: Handle::try_current().ok(),
@@ -48,9 +141,13 @@ impl NetworkConnection {
         self.0.borrow().online
     }
 
-    pub(crate) fn provider(&self, label: &str) -> TcpProvider {
-        let state = self.0.borrow();
-        clone_provider(&state.provider, label)
+    /// Whether this device is reached through Tailscale rather than the local network.
+    pub fn is_tailnet(&self) -> bool {
+        !matches!(self.0.borrow().provider.route, Route::Lan)
+    }
+
+    pub(crate) fn provider(&self, label: &str) -> NetworkProvider {
+        self.0.borrow().provider.with_label(label)
     }
 
     async fn ready(&self) -> Result<Endpoint, Error> {
@@ -75,7 +172,7 @@ impl NetworkConnection {
         Fut: Future<Output = Result<T, Error>> + Send + 'static,
     {
         let endpoint = self.ready().await?;
-        let provider = Box::new(clone_provider(&endpoint.provider, label));
+        let provider = Box::new(endpoint.provider.with_label(label));
         let future = operation(provider);
         match endpoint.runtime {
             Some(runtime) => runtime.spawn(future).await.map_err(|error| Error::Other(format!(
@@ -83,15 +180,6 @@ impl NetworkConnection {
             )))?,
             None => future.await,
         }
-    }
-}
-
-fn clone_provider(provider: &TcpProvider, label: &str) -> TcpProvider {
-    TcpProvider {
-        addr: provider.addr,
-        scope_id: provider.scope_id,
-        pairing_file: provider.pairing_file.clone(),
-        label: label.to_owned(),
     }
 }
 
@@ -125,7 +213,7 @@ impl NetworkConnections {
     pub(crate) fn connected(
         &self,
         udid: &str,
-        provider: TcpProvider,
+        provider: NetworkProvider,
     ) -> (NetworkConnection, NetworkSession) {
         let mut devices = self
             .0
@@ -182,12 +270,13 @@ pub(crate) mod tests {
         PairingFile::from_value(&raw.into()).unwrap()
     }
 
-    fn provider(ip: &str) -> TcpProvider {
-        TcpProvider {
+    pub(crate) fn provider(ip: &str) -> NetworkProvider {
+        NetworkProvider {
             addr: ip.parse().unwrap(),
             scope_id: None,
             pairing_file: fixture_pairing(),
             label: "test".into(),
+            route: Route::Lan,
         }
     }
 

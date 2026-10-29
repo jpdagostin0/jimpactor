@@ -29,6 +29,85 @@ impl AppearanceMode {
     ];
 }
 
+/// A device that installs are tied to while device locking is enabled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedDevice {
+    pub udid: String,
+    pub name: String,
+}
+
+/// Joining a tailnet from inside the app to reach devices over Tailscale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailscaleSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// The machine name requested for this computer in the tailnet.
+    #[serde(default = "default_tailscale_hostname")]
+    pub hostname: String,
+    /// A custom coordination server (e.g. Headscale); `None` uses Tailscale's.
+    #[serde(default)]
+    pub control_url: Option<String>,
+    /// Device machine names or tailnet IP addresses to look for.
+    #[serde(default)]
+    pub devices: Vec<String>,
+}
+
+fn default_tailscale_hostname() -> String {
+    "jimpactor".into()
+}
+
+impl Default for TailscaleSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            hostname: default_tailscale_hostname(),
+            control_url: None,
+            devices: Vec::new(),
+        }
+    }
+}
+
+/// Where the JIT server accepts connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JitListen {
+    /// Only this computer.
+    Local,
+    /// Every network interface, so devices on the LAN can reach it.
+    #[default]
+    Network,
+    /// This computer's tailnet address.
+    Tailnet,
+}
+
+impl JitListen {
+    pub const ALL: [JitListen; 3] = [JitListen::Local, JitListen::Network, JitListen::Tailnet];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JitServerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_jit_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub listen: JitListen,
+}
+
+fn default_jit_port() -> u16 {
+    9172
+}
+
+impl Default for JitServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_jit_port(),
+            listen: JitListen::default(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccountStore {
     selected_account: Option<String>,      // Email
@@ -43,6 +122,16 @@ pub struct AccountStore {
     remote_pairing: bool, // Include a remote pairing (RPPairing) record in pairing files
     #[serde(default)]
     appearance: AppearanceMode,
+    #[serde(default)]
+    lock_device: bool, // Installs only go to the device chosen with Select
+    #[serde(default)]
+    locked_device: Option<LockedDevice>,
+    #[serde(default = "default_true")]
+    close_to_tray: bool, // Closing the window keeps the app running in the tray
+    #[serde(default)]
+    tailscale: TailscaleSettings,
+    #[serde(default)]
+    jit_server: JitServerSettings,
     #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
@@ -59,6 +148,11 @@ impl Default for AccountStore {
             use_keyring: true,
             remote_pairing: false,
             appearance: AppearanceMode::default(),
+            lock_device: false,
+            locked_device: None,
+            close_to_tray: true,
+            tailscale: TailscaleSettings::default(),
+            jit_server: JitServerSettings::default(),
             path: None,
             secrets_on_disk: false,
         }
@@ -183,6 +277,51 @@ impl AccountStore {
 
     pub fn set_appearance_sync(&mut self, appearance: AppearanceMode) -> Result<(), Error> {
         self.appearance = appearance;
+        self.save_sync()
+    }
+
+    pub fn lock_device(&self) -> bool {
+        self.lock_device
+    }
+
+    pub fn set_lock_device_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.lock_device = enabled;
+        self.save_sync()
+    }
+
+    pub fn locked_device(&self) -> Option<&LockedDevice> {
+        self.locked_device.as_ref()
+    }
+
+    pub fn set_locked_device_sync(&mut self, device: Option<LockedDevice>) -> Result<(), Error> {
+        self.locked_device = device;
+        self.save_sync()
+    }
+
+    pub fn close_to_tray(&self) -> bool {
+        self.close_to_tray
+    }
+
+    pub fn set_close_to_tray_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.close_to_tray = enabled;
+        self.save_sync()
+    }
+
+    pub fn tailscale(&self) -> &TailscaleSettings {
+        &self.tailscale
+    }
+
+    pub fn set_tailscale_sync(&mut self, settings: TailscaleSettings) -> Result<(), Error> {
+        self.tailscale = settings;
+        self.save_sync()
+    }
+
+    pub fn jit_server(&self) -> &JitServerSettings {
+        &self.jit_server
+    }
+
+    pub fn set_jit_server_sync(&mut self, settings: JitServerSettings) -> Result<(), Error> {
+        self.jit_server = settings;
         self.save_sync()
     }
 

@@ -4,7 +4,7 @@ mod package;
 mod progress;
 mod quick_install;
 pub(crate) mod settings;
-mod utilties;
+pub(crate) mod utilties;
 mod windows;
 
 use std::collections::VecDeque;
@@ -13,7 +13,7 @@ use iced::Length::Fill;
 use iced::event::{self, Event, Status};
 use iced::keyboard::{self, Key, key};
 use iced::widget::operation::{focus_next, focus_previous};
-use iced::widget::{button, checkbox, column, container, pick_list, row, stack, text};
+use iced::widget::{button, column, container, pick_list, row, stack, text};
 use iced::window;
 use iced::{Element, Subscription, Task};
 
@@ -45,7 +45,8 @@ pub enum Message {
 
     // Device management
     ComboBoxSelected(String),
-    ToggleDeviceLock(bool),
+    /// Locks installs to the device chosen in the picker (device locking only).
+    SelectDevice,
     DeviceConnected(Device),
     DeviceDisconnected(u32),
 
@@ -100,7 +101,10 @@ pub struct Impactor {
     previous_screen: Option<Box<ImpactorScreen>>,
     installer_screen: Option<Box<package::PackageScreen>>,
     devices: Vec<Device>,
+    /// Where installs go. With device locking, this is the locked device while it is connected.
     selected_device: Option<Device>,
+    /// The device shown in the picker while device locking is on; Select locks to it.
+    device_candidate: Option<Device>,
     device_lock: Option<device_lock::DeviceLock>,
     tray: Option<ImpactorTray>,
     main_window: Option<window::Id>,
@@ -140,6 +144,14 @@ impl Impactor {
         }
         tray.update_refresh_apps(&store);
         let selected_locale = store.locale().map(str::to_string);
+        let device_lock = store
+            .lock_device()
+            .then(|| store.locked_device().map(device_lock::DeviceLock::from_saved))
+            .flatten();
+        Self::apply_tailscale(store.tailscale(), None, true);
+        if let Some(devices) = REFRESH_DAEMON_DEVICES.get() {
+            crate::jit_server::apply(store.jit_server(), devices.clone());
+        }
         if let Some(code) = &selected_locale {
             rust_i18n::set_locale(code);
         }
@@ -160,7 +172,8 @@ impl Impactor {
                 installer_screen: None,
                 devices: Vec::new(),
                 selected_device: None,
-                device_lock: None,
+                device_candidate: None,
+                device_lock,
                 tray: Some(tray),
                 main_window,
                 account_store: Some(store),
@@ -220,6 +233,54 @@ impl Impactor {
         }
     }
 
+    fn lock_enabled(&self) -> bool {
+        self.account_store.as_ref().is_some_and(|s| s.lock_device())
+    }
+
+    fn save_device_lock(&mut self) {
+        let saved = self.device_lock.as_ref().map(device_lock::DeviceLock::to_saved);
+        if let Some(store) = &mut self.account_store
+            && let Err(err) = store.set_locked_device_sync(saved)
+        {
+            log::error!("Failed to save the locked device: {err}");
+        }
+    }
+
+    /// Starts, restarts or stops the embedded tailnet node. The node restarts only when its
+    /// connection settings change; device list edits just update discovery.
+    fn apply_tailscale(
+        settings: &plume_store::TailscaleSettings,
+        auth_key: Option<String>,
+        restart: bool,
+    ) {
+        plume_utils::set_tailnet_devices(settings.devices.clone());
+        if !restart {
+            return;
+        }
+        if settings.enabled {
+            plume_utils::start_tailnet(plume_utils::TailnetConfig {
+                hostname: settings.hostname.clone(),
+                control_url: settings.control_url.clone(),
+                key_file: defaults::get_data_path().join("tailscale_keys.json"),
+                auth_key,
+            });
+        } else {
+            plume_utils::stop_tailnet(None);
+        }
+    }
+
+    /// Reloads the utilities screen for a new target device, if it is open.
+    fn refresh_utilities(&mut self) -> Task<Message> {
+        if let ImpactorScreen::Utilities(screen) = &self.current_screen {
+            let rppairing_enabled = screen.rppairing_enabled;
+            self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
+            return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
+                rppairing_enabled,
+            )));
+        }
+        Task::none()
+    }
+
     fn new_utilities_screen(&self) -> utilties::UtilitiesScreen {
         utilties::UtilitiesScreen::new(self.selected_device.clone(), self.remote_pairing())
     }
@@ -238,38 +299,29 @@ impl Impactor {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ToggleDeviceLock(locked) => {
-                self.device_lock = if locked {
-                    self.selected_device
-                        .as_ref()
-                        .map(device_lock::DeviceLock::new)
-                } else {
-                    None
+            Message::SelectDevice => {
+                let Some(candidate) = self.device_candidate.clone() else {
+                    return Task::none();
                 };
-                Task::none()
+                if !self.lock_enabled() {
+                    return Task::none();
+                }
+                log::info!("Locked installs to {candidate}");
+                let lock = device_lock::DeviceLock::new(&candidate);
+                self.selected_device = lock.select(&self.devices);
+                self.device_lock = Some(lock);
+                self.save_device_lock();
+                self.refresh_utilities()
             }
             Message::ComboBoxSelected(value) => {
-                self.selected_device = self
-                    .devices
-                    .iter()
-                    .find(|d| {
-                        d.to_string() == value
-                            && self.device_lock.as_ref().is_none_or(|lock| lock.accepts(d))
-                    })
-                    .cloned();
-
-                if let ImpactorScreen::Utilities(_) = self.current_screen {
-                    let rppairing_enabled = match &self.current_screen {
-                        ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
-                        _ => false,
-                    };
-                    self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
-                    return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                        rppairing_enabled,
-                    )));
+                let device = self.devices.iter().find(|d| d.to_string() == value).cloned();
+                if self.lock_enabled() {
+                    // Picking only previews a device; Select makes it the install target.
+                    self.device_candidate = device;
+                    return Task::none();
                 }
-
-                Task::none()
+                self.selected_device = device;
+                self.refresh_utilities()
             }
             Message::DeviceConnected(device) => {
                 if let Some(existing) = self
@@ -290,8 +342,22 @@ impl Impactor {
                     }
                 }
 
-                if let Some(lock) = &self.device_lock {
-                    self.selected_device = lock.select(&self.devices);
+                if self.lock_enabled() {
+                    self.selected_device = self
+                        .device_lock
+                        .as_ref()
+                        .and_then(|lock| lock.select(&self.devices));
+                    if let Some(candidate) = &self.device_candidate
+                        && candidate.device_id == device.device_id
+                    {
+                        self.device_candidate = Some(device.clone());
+                    }
+                    if self.device_candidate.is_none() {
+                        self.device_candidate = self
+                            .selected_device
+                            .clone()
+                            .or_else(|| Some(device.clone()).filter(|d| d.device_id != u32::MAX));
+                    }
                 }
                 if let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get()
                     && let Ok(mut devices) = daemon_devices.lock()
@@ -321,18 +387,24 @@ impl Impactor {
 
                 self.devices.retain(|d| d.device_id != id);
 
-                if self.selected_device.as_ref().map(|d| d.device_id) == Some(id) {
+                if self.lock_enabled() {
+                    self.selected_device = self
+                        .device_lock
+                        .as_ref()
+                        .and_then(|lock| lock.select(&self.devices));
+                    if self.device_candidate.as_ref().map(|d| d.device_id) == Some(id) {
+                        self.device_candidate = self
+                            .devices
+                            .iter()
+                            .find(|device| Some(&device.udid) == udid.as_ref())
+                            .cloned();
+                    }
+                } else if self.selected_device.as_ref().map(|d| d.device_id) == Some(id) {
                     self.selected_device = self
                         .devices
                         .iter()
                         .find(|device| Some(&device.udid) == udid.as_ref())
-                        .or_else(|| {
-                            self.devices.iter().find(|device| {
-                                self.device_lock
-                                    .as_ref()
-                                    .is_none_or(|lock| lock.accepts(device))
-                            })
-                        })
+                        .or_else(|| self.devices.first())
                         .cloned();
                 }
 
@@ -514,7 +586,12 @@ impl Impactor {
                 if self.login_windows.contains_key(&id) {
                     Task::done(Message::LoginWindow(id, login_window::Message::LoginCancel))
                 } else if self.main_window == Some(id) {
-                    Task::done(Message::HideWindow)
+                    if self.account_store.as_ref().is_none_or(|s| s.close_to_tray()) {
+                        Task::done(Message::HideWindow)
+                    } else {
+                        // Quits, unless an install or refresh is running (then it stays in the tray).
+                        Task::done(Message::RestartRequested)
+                    }
                 } else {
                     Task::none()
                 }
@@ -751,6 +828,80 @@ impl Impactor {
                                 && let Err(err) = store.set_appearance_sync(mode)
                             {
                                 log::error!("Failed to save appearance: {err}");
+                            }
+                            Task::none()
+                        }
+                        settings::Message::ToggleLockDevice(enabled) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_lock_device_sync(enabled)
+                            {
+                                log::error!("Failed to save device locking: {err}");
+                            }
+                            if enabled {
+                                // Start locked to the current target so nothing changes until Select.
+                                self.device_lock =
+                                    self.selected_device.as_ref().map(device_lock::DeviceLock::new);
+                                self.device_candidate = self.selected_device.clone();
+                            } else {
+                                if self.selected_device.is_none() {
+                                    self.selected_device = self
+                                        .device_candidate
+                                        .clone()
+                                        .or_else(|| self.devices.first().cloned());
+                                }
+                                self.device_lock = None;
+                                self.device_candidate = None;
+                            }
+                            self.save_device_lock();
+                            Task::none()
+                        }
+                        settings::Message::ToggleCloseToTray(enabled) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_close_to_tray_sync(enabled)
+                            {
+                                log::error!("Failed to save close-to-tray: {err}");
+                            }
+                            Task::none()
+                        }
+                        settings::Message::TailscaleChanged(change) => {
+                            let Some(store) = &mut self.account_store else {
+                                return Task::none();
+                            };
+                            let previous = store.tailscale().clone();
+                            match change {
+                                settings::TailscaleChange::Save { settings, auth_key } => {
+                                    let restart = auth_key.is_some()
+                                        || previous.enabled != settings.enabled
+                                        || previous.hostname != settings.hostname
+                                        || previous.control_url != settings.control_url;
+                                    if let Err(err) = store.set_tailscale_sync(settings.clone()) {
+                                        log::error!("Failed to save Tailscale settings: {err}");
+                                    }
+                                    Self::apply_tailscale(&settings, auth_key, restart);
+                                }
+                                settings::TailscaleChange::SignOut => {
+                                    let settings = plume_store::TailscaleSettings {
+                                        enabled: false,
+                                        ..previous
+                                    };
+                                    if let Err(err) = store.set_tailscale_sync(settings) {
+                                        log::error!("Failed to save Tailscale settings: {err}");
+                                    }
+                                    plume_utils::stop_tailnet(Some(
+                                        defaults::get_data_path().join("tailscale_keys.json"),
+                                    ));
+                                }
+                            }
+                            Task::none()
+                        }
+                        settings::Message::JitChanged(settings) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_jit_server_sync(settings.clone())
+                            {
+                                log::error!("Failed to save JIT server settings: {err}");
+                            }
+                            if let Some(devices) = REFRESH_DAEMON_DEVICES.get() {
+                                crate::jit_server::apply(&settings, devices.clone());
                             }
                             Task::none()
                         }
@@ -1026,6 +1177,21 @@ impl Impactor {
             ImpactorScreen::Settings(screen) if screen.tab == settings::SettingsTab::Logs => {
                 subscriptions::logs_tick_subscription()
             }
+            ImpactorScreen::Settings(screen)
+                if matches!(
+                    screen.tab,
+                    settings::SettingsTab::Tailscale | settings::SettingsTab::Jit
+                ) =>
+            {
+                subscriptions::status_tick_subscription()
+            }
+            _ => Subscription::none(),
+        };
+
+        let utilities_subscription = match &self.current_screen {
+            ImpactorScreen::Utilities(screen) => {
+                screen.subscription().map(Message::UtilitiesScreen)
+            }
             _ => Subscription::none(),
         };
 
@@ -1051,6 +1217,7 @@ impl Impactor {
             close_subscription,
             tab_subscription,
             logs_subscription,
+            utilities_subscription,
             iced::system::theme_changes().map(Message::SystemThemeChanged),
         ])
     }
@@ -1108,24 +1275,18 @@ impl Impactor {
     }
 
     fn view_top_bar(&self) -> Element<'_, Message> {
-        let device_names: Vec<String> = self
-            .devices
-            .iter()
-            .filter(|device| {
-                self.device_lock
-                    .as_ref()
-                    .is_none_or(|lock| lock.accepts(device))
-            })
-            .map(|d| d.to_string())
-            .collect();
-        let selected_device_name = self
-            .selected_device
-            .as_ref()
-            .filter(|device| self.device_lock.is_none() || device.is_available())
-            .map(|d| d.to_string());
+        let locking = self.lock_enabled();
+        let device_names: Vec<String> = self.devices.iter().map(|d| d.to_string()).collect();
+        let shown_device = if locking {
+            self.device_candidate.as_ref()
+        } else {
+            self.selected_device.as_ref()
+        };
+        let selected_device_name = shown_device.map(|d| d.to_string());
         let waiting = self
             .device_lock
             .as_ref()
+            .filter(|_| locking && self.selected_device.is_none())
             .map(|lock| format!("Waiting for {}", lock.name));
         let placeholder_str = selected_device_name
             .as_deref()
@@ -1159,29 +1320,37 @@ impl Impactor {
         }
         left = left.push(right_button);
 
-        container(
-            row![
-                left,
-                container(text("")).width(Fill),
-                checkbox(self.device_lock.is_some())
-                    .label("Lock device")
-                    .on_toggle_maybe(
-                        (self.device_lock.is_some() || self.selected_device.is_some())
-                            .then_some(Message::ToggleDeviceLock)
-                    ),
-                pick_list(
-                    device_names,
-                    selected_device_name.clone(),
-                    Message::ComboBoxSelected
-                )
-                .style(appearance::s_pick_list)
-                .placeholder(placeholder_str)
-                .width(250),
-            ]
-            .spacing(appearance::THEME_PADDING),
-        )
-        .width(Fill)
-        .into()
+        let mut bar = row![
+            left,
+            container(text("")).width(Fill),
+            pick_list(
+                device_names,
+                selected_device_name.clone(),
+                Message::ComboBoxSelected
+            )
+            .style(appearance::s_pick_list)
+            .placeholder(placeholder_str)
+            .width(250),
+        ]
+        .spacing(appearance::THEME_PADDING);
+        if locking {
+            // Select is highlighted while the picker shows a device other than the locked one.
+            let pending = self.device_candidate.as_ref().is_some_and(|candidate| {
+                self.device_lock
+                    .as_ref()
+                    .is_none_or(|lock| !lock.accepts(candidate))
+            });
+            bar = bar.push(
+                button(text("Select"))
+                    .on_press_maybe(pending.then_some(Message::SelectDevice))
+                    .style(if pending {
+                        appearance::p_button
+                    } else {
+                        appearance::s_button
+                    }),
+            );
+        }
+        container(bar).width(Fill).into()
     }
 
     fn view_certificate_reset_prompt(&self) -> Element<'_, Message> {

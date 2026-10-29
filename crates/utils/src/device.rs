@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
+use idevice::amfi::AmfiClient;
 use idevice::core_device_proxy::CoreDeviceProxy;
 use idevice::installation_proxy::InstallationProxyClient;
 use idevice::lockdown::LockdownClient;
@@ -8,6 +9,8 @@ use idevice::misagent::MisagentClient;
 use idevice::provider::IdeviceProvider;
 use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
 use idevice::rsd::RsdHandshake;
+use idevice::springboardservices::SpringBoardServicesClient;
+use idevice::syslog_relay::SyslogRelayClient;
 use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice};
 use idevice::utils::installation;
 use idevice::{IdeviceService, RemoteXpcClient};
@@ -23,6 +26,7 @@ use plist::Value;
 pub const CONNECTION_LABEL: &str = "plume_info";
 pub const INSTALLATION_LABEL: &str = "plume_install";
 pub const HOUSE_ARREST_LABEL: &str = "plume_house_arrest";
+pub const SYSLOG_LABEL: &str = "plume_syslog";
 
 #[derive(Debug, Clone)]
 pub struct Device {
@@ -86,7 +90,7 @@ impl Device {
             .ok_or_else(|| Error::Other("Device is not connected".into()))
     }
 
-    async fn with_provider<T, F, Fut>(&self, label: &str, operation: F) -> Result<T, Error>
+    pub(crate) async fn with_provider<T, F, Fut>(&self, label: &str, operation: F) -> Result<T, Error>
     where
         T: Send + 'static,
         F: FnOnce(Box<dyn IdeviceProvider>) -> Fut + Send + 'static,
@@ -164,6 +168,51 @@ impl Device {
             });
 
             Ok(found_apps)
+        })
+        .await
+    }
+
+    /// Home-screen icons as PNG data, keyed by bundle identifier. Apps whose icon
+    /// cannot be read are left out.
+    pub async fn app_icons(
+        &self,
+        bundle_ids: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, Vec<u8>>, Error> {
+        self.with_provider(CONNECTION_LABEL, move |provider| async move {
+            let mut client = SpringBoardServicesClient::connect(provider.as_ref()).await?;
+            let mut icons = std::collections::HashMap::new();
+            for bundle_id in bundle_ids {
+                match client.get_icon_pngdata(bundle_id.clone()).await {
+                    Ok(png) if !png.is_empty() => {
+                        icons.insert(bundle_id, png);
+                    }
+                    Ok(_) => {}
+                    Err(error) => log::debug!("No icon for {bundle_id}: {error}"),
+                }
+            }
+            Ok(icons)
+        })
+        .await
+    }
+
+    /// Relays the device syslog into `lines` until the receiver is dropped or the
+    /// connection ends.
+    pub async fn stream_syslog(
+        &self,
+        lines: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> Result<(), Error> {
+        self.with_provider(SYSLOG_LABEL, move |provider| async move {
+            let mut client = SyslogRelayClient::connect(provider.as_ref()).await?;
+            loop {
+                let line = tokio::select! {
+                    _ = lines.closed() => return Ok(()),
+                    line = client.next() => line?,
+                };
+                let line = line.trim_matches(|c: char| c == '\0' || c == '\n');
+                if !line.is_empty() && lines.send(line.to_owned()).is_err() {
+                    return Ok(());
+                }
+            }
         })
         .await
     }
@@ -331,9 +380,58 @@ impl Device {
         let data = self.pairing_file(remote, path_to_store).await?;
         for path in std::iter::once(path).chain(app.extra_pairing_file_paths().iter().copied()) {
             self.write_app_document(identifier, path, &data).await?;
+            // Read it back so a silently failed write is reported instead of leaving
+            // the app unable to refresh.
+            if self.read_app_document(identifier, path).await? != data {
+                return Err(Error::Other(format!(
+                    "The pairing file written to {path} in {app} did not match when read back. Unlock the iPhone and retry."
+                )));
+            }
         }
 
         Ok(())
+    }
+
+    /// Reads `path` from the Documents container of the app `identifier`.
+    pub async fn read_app_document(&self, identifier: &str, path: &str) -> Result<Vec<u8>, Error> {
+        let identifier = identifier.to_owned();
+        let path = path.to_owned();
+        self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+            let hc = HouseArrestClient::connect(provider.as_ref()).await?;
+            let mut ac = hc.vend_documents(identifier).await?;
+            let mut f = ac.open(&path, AfcFopenMode::RdOnly).await?;
+            Ok(f.read_entire().await?)
+        })
+        .await
+    }
+
+    /// Whether Developer Mode is on, or `None` when the device cannot report it
+    /// (iOS 15 and earlier have no Developer Mode).
+    pub async fn developer_mode_enabled(&self) -> Option<bool> {
+        let result = self
+            .with_provider(CONNECTION_LABEL, |provider| async move {
+                let mut amfi = AmfiClient::connect(provider.as_ref()).await?;
+                Ok(amfi.get_developer_mode_status().await?)
+            })
+            .await;
+        match result {
+            Ok(enabled) => Some(enabled),
+            Err(error) => {
+                log::debug!("Could not read Developer Mode status for {}: {error}", self.name);
+                None
+            }
+        }
+    }
+
+    /// Shows the Developer Mode switch in Settings → Privacy & Security, which iOS hides
+    /// until a developer tool asks for it.
+    pub async fn reveal_developer_mode_option(&self) -> Result<(), Error> {
+        self.with_provider(CONNECTION_LABEL, |provider| async move {
+            let mut amfi = AmfiClient::connect(provider.as_ref()).await?;
+            amfi.reveal_developer_mode_option_in_ui().await?;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn install_pairing_record(&self, identifier: &str, path: &str) -> Result<(), Error> {
@@ -572,8 +670,11 @@ impl fmt::Display for Device {
                     Connection::Network(_) => "WiFi",
                     Connection::Unknown(_) => "Unknown",
                 },
-                None if self.network.is_some() => "WiFi",
-                None => "LOCAL",
+                None => match &self.network {
+                    Some(network) if network.is_tailnet() => "Tailscale",
+                    Some(_) => "WiFi",
+                    None => "LOCAL",
+                },
             },
             self.name
         )

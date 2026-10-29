@@ -8,7 +8,6 @@ use std::time::Duration;
 use idevice::heartbeat::HeartbeatClient;
 use idevice::lockdown::LockdownClient;
 use idevice::pairing_file::PairingFile;
-use idevice::provider::TcpProvider;
 use idevice::usbmuxd::UsbmuxdAddr;
 use idevice::{IdeviceError, IdeviceService};
 use mdns_sd::{ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
@@ -17,7 +16,7 @@ use tokio::time::Instant;
 
 use crate::device::CONNECTION_LABEL;
 use crate::device_worker::DeviceWorker;
-use crate::network_connection::NetworkConnections;
+use crate::network_connection::{NetworkConnections, NetworkProvider, Route};
 use crate::{Device, DeviceEvent, Error, NetworkConnection};
 
 const APPLE_MOBILE_SERVICE: &str = "_apple-mobdev2._tcp.local.";
@@ -94,7 +93,7 @@ impl WifiDeviceCache {
     }
 }
 
-async fn forward_cached_devices(
+pub(crate) async fn forward_cached_devices(
     mut events: UnboundedReceiver<DeviceEvent>,
     output: UnboundedSender<DeviceEvent>,
 ) {
@@ -288,7 +287,7 @@ async fn run_network_device(
         std::thread::current().name().unwrap_or("unnamed thread")
     );
     loop {
-        match connect_network_device(&service, &addresses, id).await {
+        match connect_network_device(&service, &addresses, id, Route::Lan).await {
             Ok((mut device, mut heartbeat, lockdown)) => {
                 let provider = device
                     .network
@@ -325,7 +324,7 @@ async fn run_network_device(
     }
 }
 
-async fn keep_alive(heartbeat: &mut HeartbeatClient) -> Result<(), IdeviceError> {
+pub(crate) async fn keep_alive(heartbeat: &mut HeartbeatClient) -> Result<(), IdeviceError> {
     let mut interval = 30;
     loop {
         interval = heartbeat.get_marco(interval + 5).await?.clamp(1, 60);
@@ -431,10 +430,11 @@ async fn pairing_candidates() -> Vec<PairingFile> {
     pairings
 }
 
-async fn connect_network_device(
+pub(crate) async fn connect_network_device(
     service: &str,
     addresses: &[SocketAddr],
     id: u32,
+    route: Route,
 ) -> Result<(Device, HeartbeatClient, LockdownClient), Error> {
     let mut pairings = pairing_candidates().await;
     if pairings.is_empty() {
@@ -447,7 +447,7 @@ async fn connect_network_device(
     let mut last_error = Error::Other("No reachable Wi-Fi addresses".into());
     for address in addresses {
         for pairing in &pairings {
-            let provider = TcpProvider {
+            let provider = NetworkProvider {
                 addr: address.ip(),
                 scope_id: match address {
                     SocketAddr::V6(address) => Some(address.scope_id()),
@@ -455,6 +455,7 @@ async fn connect_network_device(
                 },
                 pairing_file: pairing.clone(),
                 label: CONNECTION_LABEL.to_owned(),
+                route: route.clone(),
             };
             // Advertised MACs can differ from saved ones on newer iOS versions.
             // Try saved records, accepting a device only after authenticated TLS.
@@ -467,7 +468,7 @@ async fn connect_network_device(
                 Ok(Ok(device)) => return Ok(device),
                 Ok(Err(error)) => last_error = error,
                 Err(_) => {
-                    last_error = Error::Other(format!("Wi-Fi connection timed out at {address}"))
+                    last_error = Error::Other(format!("Network connection timed out at {address}"))
                 }
             }
         }
@@ -476,7 +477,7 @@ async fn connect_network_device(
 }
 
 async fn initialize_network_device(
-    provider: TcpProvider,
+    provider: NetworkProvider,
     id: u32,
 ) -> Result<(Device, HeartbeatClient, LockdownClient), Error> {
     let mut lockdown = LockdownClient::connect(&provider).await?;
@@ -539,11 +540,9 @@ mod tests {
             device_id: id,
             usbmuxd_device: None,
             is_mac: false,
-            network: Some(NetworkConnection::new(TcpProvider {
-                addr: "127.0.0.1".parse().unwrap(),
-                scope_id: None,
-                pairing_file: fixture_pairing(),
+            network: Some(NetworkConnection::new(NetworkProvider {
                 label: CONNECTION_LABEL.into(),
+                ..crate::network_connection::tests::provider("127.0.0.1")
             })),
         }
     }
@@ -629,11 +628,10 @@ mod tests {
             device_id: 0x8000_0000,
             usbmuxd_device: None,
             is_mac: false,
-            network: Some(NetworkConnection::new(TcpProvider {
+            network: Some(NetworkConnection::new(NetworkProvider {
                 addr: address.ip(),
-                scope_id: None,
-                pairing_file: fixture_pairing(),
                 label: "old label".into(),
+                ..crate::network_connection::tests::provider("127.0.0.1")
             })),
         };
         let cloned = device.clone();
