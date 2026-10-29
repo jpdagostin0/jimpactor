@@ -48,6 +48,7 @@ impl Account {
             HeaderValue::from_str("text/x-xml-plist").unwrap(),
         );
         gsa_headers.insert("Accept", HeaderValue::from_str("*/*").unwrap());
+        gsa_headers.insert("Connection", HeaderValue::from_static("close"));
         gsa_headers.insert(
             "User-Agent",
             HeaderValue::from_str(valid_anisette.user_agent())
