@@ -211,8 +211,6 @@ jobs:
     if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-24.04
     env:
-      # Universal builds otherwise run multiple memory-heavy full-LTO links.
-      CARGO_BUILD_JOBS: '1'
       CARGO_PROFILE_RELEASE_LTO: thin
     steps:
       - name: Install build dependencies
