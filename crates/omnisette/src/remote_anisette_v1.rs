@@ -145,7 +145,7 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV1 {
                 self.url
             )));
         }
-        Ok(headers)
+        Ok(self.normalize_headers(headers))
     }
 }
 

@@ -1,8 +1,15 @@
 // Implementing the SideStore Anisette v3 protocol
 
-use std::{collections::HashMap, fs, io::Cursor, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Cursor,
+    path::{Path, PathBuf},
+};
 
+use crate::ANISETTE_STATE_FILE;
 use crate::adi_proxy::LOOKUP_CLIENT_INFO;
+use crate::anisette_headers_provider::normalize_client_info;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose;
@@ -110,6 +117,10 @@ impl AnisetteState {
         AnisetteState::default()
     }
 
+    fn load(configuration_path: &Path) -> Self {
+        plist::from_file(configuration_path.join(ANISETTE_STATE_FILE)).unwrap_or_default()
+    }
+
     pub fn is_provisioned(&self) -> bool {
         self.adi_pb.is_some()
     }
@@ -187,13 +198,14 @@ impl AnisetteClient {
     pub async fn new(url: String) -> Result<AnisetteClient, AnisetteError> {
         let path = format!("{}/v3/client_info", url);
         let http_client = make_reqwest()?;
-        let client_info = http_client
+        let mut client_info = http_client
             .get(path)
             .send()
             .await?
             .error_for_status()?
             .json::<AnisetteClientInfo>()
             .await?;
+        client_info.client_info = normalize_client_info(&client_info.client_info);
         Ok(AnisetteClient { client_info, url })
     }
 
@@ -498,13 +510,9 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
 
         fs::create_dir_all(&self.configuration_path)?;
 
-        let config_path = self.configuration_path.join("state.plist");
+        let config_path = self.configuration_path.join(ANISETTE_STATE_FILE);
         if self.state.is_none() {
-            self.state = Some(if let Ok(text) = plist::from_file(&config_path) {
-                text
-            } else {
-                AnisetteState::new()
-            });
+            self.state = Some(AnisetteState::load(&self.configuration_path));
         }
 
         let state = self.state.as_mut().unwrap();
@@ -532,6 +540,131 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_state_is_not_reused_and_current_state_survives_refresh() {
+        let path = std::env::temp_dir().join(format!("jimpactor-state-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        let state = AnisetteState {
+            keychain_identifier: [7; 16],
+            adi_pb: Some(vec![8; 16]),
+        };
+        plist::to_file_xml(path.join("state.plist"), &state).unwrap();
+        assert!(!AnisetteState::load(&path).is_provisioned());
+        plist::to_file_xml(path.join(ANISETTE_STATE_FILE), &state).unwrap();
+        let loaded = AnisetteState::load(&path);
+        assert_eq!(loaded.keychain_identifier, state.keychain_identifier);
+        assert_eq!(loaded.adi_pb, state.adi_pb);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn regression_server_identity_used_for_provisioning_and_auth_headers() {
+        check_server_identity(
+            "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn legacy_xcode_identity_is_corrected_before_provisioning_and_authentication() {
+        check_server_identity("<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>").await;
+    }
+
+    async fn check_server_identity(client_info: &str) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        const MAC_CLIENT_INFO: &str =
+            "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        const USER_AGENT: &str = "akd/1.0 CFNetwork/808.3 Darwin/16.6.0";
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let client_info = client_info.to_owned();
+        let server = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "GET /v3/client_info ",
+                    serde_json::json!({
+                        "client_info": client_info,
+                        "user_agent": USER_AGENT,
+                    }),
+                ),
+                (
+                    "POST /v3/get_headers ",
+                    serde_json::json!({
+                        "result": "Headers",
+                        "X-Apple-I-MD-M": "test-machine",
+                        "X-Apple-I-MD": "test-otp",
+                        "X-Apple-I-MD-RINFO": "17106176",
+                    }),
+                ),
+            ];
+            for (expected_request, response) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert_ne!(count, 0, "request closed before its body was received");
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + content_length {
+                            break;
+                        }
+                    }
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with(expected_request));
+                let body = response.to_string();
+                write!(stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                ).unwrap();
+            }
+        });
+
+        let client = AnisetteClient::new(url).await.unwrap();
+        let state = AnisetteState {
+            keychain_identifier: [1; 16],
+            adi_pb: Some(vec![2; 16]),
+        };
+        let request = client
+            .build_apple_request(
+                &state,
+                reqwest::Client::new().post("http://localhost/provision"),
+                &client.client_info.client_info,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+        assert_eq!(request.headers()["User-Agent"], USER_AGENT);
+
+        let headers = client
+            .get_headers(&state)
+            .await
+            .unwrap()
+            .get_headers("0".into());
+        assert_eq!(headers["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+        assert_eq!(headers["User-Agent"], USER_AGENT);
+        assert_eq!(headers["X-Apple-I-MD-M"], "test-machine");
+        assert_eq!(headers["X-Apple-I-MD"], "test-otp");
+        server.join().unwrap();
+    }
+
     #[tokio::test]
     async fn reports_http_failure_before_attempting_to_decode_html() {
         use std::io::{BufRead, BufReader, Write};

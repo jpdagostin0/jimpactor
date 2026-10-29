@@ -295,13 +295,23 @@ mod tests {
     async fn authentication_falls_back_to_v1_and_remembers_the_protocol() {
         use crate::{AutoRemoteProvider, anisette_headers_provider::AnisetteHeadersProvider};
 
-        let headers = json!({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"});
+        let headers = json!({
+            "X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine",
+            "X-MMe-Client-Info": "<MacTest> <macOS;14.5> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>",
+            "User-Agent": "Xcode/ProviderTest"
+        });
         let (address, task) = server(vec![json!({}), headers.clone(), headers]);
         let path = std::env::temp_dir().join(format!("jimpactor-auth-{}", uuid::Uuid::new_v4()));
         let mut provider = AutoRemoteProvider::new(address, path.clone(), "0".into());
         for _ in 0..2 {
             let headers = provider.get_anisette_headers(false).await.unwrap();
             assert_eq!(headers["X-Apple-I-MD"], "otp");
+            assert_eq!(headers["X-Apple-I-MD-M"], "machine");
+            assert_eq!(
+                headers["X-Mme-Client-Info"],
+                "<MacTest> <macOS;14.5> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+            );
+            assert_eq!(headers["User-Agent"], "Xcode/ProviderTest");
         }
         let requests = task.join().unwrap();
         assert_eq!(requests.len(), 3);
@@ -332,7 +342,7 @@ mod tests {
             plist::Value::Data(vec![0; 16]),
         );
         state.insert("adi_pb".into(), plist::Value::Data(vec![1]));
-        plist::to_file_xml(path.join("state.plist"), &state).unwrap();
+        plist::to_file_xml(path.join(crate::ANISETTE_STATE_FILE), &state).unwrap();
         let mut provider = AutoRemoteProvider::new(address, path.clone(), "0".into());
         for _ in 0..2 {
             let headers = provider.get_anisette_headers(false).await.unwrap();

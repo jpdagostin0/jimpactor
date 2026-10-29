@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::sideloadly_auth::SideloadlySession;
 use plume_core::remote_servers::AnisetteServer;
-use plume_core::{AnisetteConfiguration, AnisetteProvider, Error, FAKE_IDENTITY_DIR};
+use plume_core::{
+    ANISETTE_STATE_FILE, AnisetteConfiguration, AnisetteProvider, Error, FAKE_IDENTITY_DIR,
+};
 
 pub const ANISETTE_SETTINGS_FILE: &str = "anisette.json";
 
@@ -21,6 +23,30 @@ pub enum AnisetteMode {
 mod sideloadly_tests {
     use super::*;
     use crate::SideloadlyAccount;
+
+    #[test]
+    fn remote_reset_clears_current_state_and_preserves_accounts_and_legacy_data() {
+        let path = std::env::temp_dir().join(format!("jimpactor-reset-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&path).unwrap();
+        for file in [
+            ANISETTE_STATE_FILE,
+            "state.plist",
+            "accounts.json",
+            "certificate.p12",
+        ] {
+            std::fs::write(path.join(file), "synthetic").unwrap();
+        }
+        AnisetteSettings::default().reset_identity(&path).unwrap();
+        assert!(!path.join(ANISETTE_STATE_FILE).exists());
+        for file in ["state.plist", "accounts.json", "certificate.p12"] {
+            assert_eq!(
+                std::fs::read_to_string(path.join(file)).unwrap(),
+                "synthetic"
+            );
+        }
+        AnisetteSettings::default().reset_identity(&path).unwrap();
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn old_settings_load_without_a_sideloadly_session() {
@@ -165,7 +191,7 @@ impl AnisetteSettings {
             _ => Ok(()),
         };
         match self.mode {
-            AnisetteMode::Remote => remove_file(data_path.join("state.plist"))?,
+            AnisetteMode::Remote => remove_file(data_path.join(ANISETTE_STATE_FILE))?,
             AnisetteMode::Local => {
                 remove_file(data_path.join("adi.pb"))?;
                 remove_file(data_path.join("identifier"))?;

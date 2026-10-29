@@ -72,6 +72,10 @@ pub const DEFAULT_ANISETTE_URL: &str = "https://ani.f1sh.me/";
 
 pub const DEFAULT_ANISETTE_URL_V3: &str = "https://mac-ani.jkcoxson.com";
 
+/// Remote provisioning state created with the current Mac provider identity.
+/// Legacy `state.plist` data must not be reused after the identity change.
+pub const ANISETTE_STATE_FILE: &str = "mac_anisette_state.plist";
+
 /// Sub-directory of the configuration path used by [`AnisetteProvider::Fake`].
 pub const FAKE_IDENTITY_DIR: &str = "fake";
 

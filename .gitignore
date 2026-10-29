@@ -2,5 +2,7 @@
 /dist
 
 *.DS_Store
+state.plist
+mac_anisette_state.plist
 
 /.tmp

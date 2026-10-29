@@ -5,8 +5,8 @@ mod utils;
 pub use apple_codesign::{AppleCodesignError, SettingsScope, SigningSettings, UnifiedSigner};
 
 pub use omnisette::{
-    AnisetteConfiguration, AnisetteProvider, FAKE_IDENTITY_DIR, adi_libraries, remote_anisette_v1,
-    remote_probe, remote_servers,
+    ANISETTE_STATE_FILE, AnisetteConfiguration, AnisetteProvider, FAKE_IDENTITY_DIR, adi_libraries,
+    remote_anisette_v1, remote_probe, remote_servers,
 };
 
 pub use utils::{CertificateIdentity, MachO, MachOExt, MobileProvision};

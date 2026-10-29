@@ -122,6 +122,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_identity_is_preserved_and_excluded_from_srp_cpd() {
+        let client_info =
+            "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        let data = AnisetteData {
+            base_headers: HashMap::from([
+                ("X-Mme-Client-Info".into(), client_info.into()),
+                ("User-Agent".into(), "akd/1.0 Provider/Test".into()),
+                ("X-Apple-I-MD".into(), "AbC+/Otp==".into()),
+                ("X-Apple-I-MD-M".into(), "CaseSensitiveMachineId".into()),
+            ]),
+            generated_at: SystemTime::now(),
+            config: Default::default(),
+        };
+        let headers = data.generate_headers(false, true, true);
+        assert_eq!(headers["X-Mme-Client-Info"], client_info);
+        assert_eq!(data.get_header("x-mme-client-info").unwrap(), client_info);
+        assert_eq!(data.user_agent(), "akd/1.0 Provider/Test");
+        assert_eq!(headers["X-Apple-App-Info"], "com.apple.gs.xcode.auth");
+        let cpd = data.to_plist(true, false, false);
+        for excluded in [
+            "User-Agent",
+            "X-Mme-Client-Info",
+            "X-Apple-App-Info",
+            "X-Xcode-Version",
+        ] {
+            assert!(!cpd.contains_key(excluded));
+        }
+        assert_eq!(cpd["X-Apple-I-MD"].as_string(), Some("AbC+/Otp=="));
+        assert_eq!(
+            cpd["X-Apple-I-MD-M"].as_string(),
+            Some("CaseSensitiveMachineId")
+        );
+        assert_eq!(data.base_headers["X-Mme-Client-Info"], client_info);
+    }
+
+    #[test]
     fn header_lookup_preserves_identity_values_and_accepts_short_client_info() {
         let data = AnisetteData {
             base_headers: HashMap::from([
