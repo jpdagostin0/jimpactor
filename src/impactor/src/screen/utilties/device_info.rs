@@ -282,8 +282,7 @@ impl DeviceTab {
                     .style(appearance::s_button),
                 button(text(t!("utilities_crash_reports_export")).align_x(Center))
                     .on_press_maybe(
-                        (!self.crash_loading && has_reports)
-                            .then_some(Message::ExportCrashReports),
+                        (!self.crash_loading && has_reports).then_some(Message::ExportCrashReports),
                     )
                     .style(appearance::s_button),
             ]

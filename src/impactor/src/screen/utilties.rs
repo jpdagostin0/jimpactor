@@ -9,6 +9,9 @@ use crate::defaults::get_data_path;
 use plume_utils::{Device, SignerAppReal};
 use std::collections::{HashMap, VecDeque};
 
+mod device_info;
+mod profiles;
+
 // Older syslog lines are dropped past this; saving writes what is buffered.
 const SYSLOG_BUFFER: usize = 20_000;
 // Drawing every buffered line as a widget gets slow.
@@ -56,6 +59,11 @@ pub enum Message {
     InstallPairingResult(String, Result<(), String>),
     ToggleRPPairing(bool),
     SelectTab(UtilitiesTab),
+    Uninstall(SignerAppReal),
+    UninstallConfirmed(String, String, bool),
+    UninstallResult(String, String, Result<(), String>),
+    Profiles(profiles::Message),
+    Device(device_info::Message),
     SyslogStart,
     SyslogStop,
     SyslogLines(Vec<String>),
@@ -72,6 +80,8 @@ pub enum Message {
 pub enum UtilitiesTab {
     #[default]
     Apps,
+    Profiles,
+    Device,
     Syslog,
 }
 
@@ -120,7 +130,10 @@ pub struct UtilitiesScreen {
     trust_loading: bool,
     pub rppairing_enabled: bool,
     tab: UtilitiesTab,
-    syslog: SyslogState,
+    syslog: Box<SyslogState>,
+    // Boxed so the screen enum stays small.
+    profiles: Box<profiles::ProfilesTab>,
+    device_tab: Box<device_info::DeviceTab>,
 }
 
 impl UtilitiesScreen {
@@ -135,7 +148,9 @@ impl UtilitiesScreen {
             trust_loading: false,
             rppairing_enabled,
             tab: UtilitiesTab::default(),
-            syslog: SyslogState::default(),
+            syslog: Box::default(),
+            profiles: Box::default(),
+            device_tab: Box::default(),
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
@@ -313,8 +328,74 @@ impl UtilitiesScreen {
             }
             Message::SelectTab(tab) => {
                 self.tab = tab;
+                let usable = self.device_usable();
+                match tab {
+                    UtilitiesTab::Profiles if usable => {
+                        self.profiles.on_open().map(Message::Profiles)
+                    }
+                    UtilitiesTab::Device if usable => {
+                        self.device_tab.on_open().map(Message::Device)
+                    }
+                    _ => Task::none(),
+                }
+            }
+            Message::Uninstall(app) => {
+                let Some(bundle_id) = app.bundle_id.clone() else {
+                    return Task::none();
+                };
+                let app_key = Self::app_key(&app);
+                let name = app
+                    .installed_name
+                    .clone()
+                    .unwrap_or_else(|| app.app.to_string());
+                Task::perform(
+                    crate::subscriptions::confirm(
+                        t!("utilities_uninstall").to_string(),
+                        t!("utilities_uninstall_confirm", name = name).to_string(),
+                    ),
+                    move |yes| Message::UninstallConfirmed(app_key, bundle_id, yes),
+                )
+            }
+            Message::UninstallConfirmed(app_key, bundle_id, true) => {
+                let Some(device) = self.device.clone() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    crate::subscriptions::run_on_tokio({
+                        let bundle_id = bundle_id.clone();
+                        async move {
+                            device
+                                .uninstall_app(&bundle_id)
+                                .await
+                                .map_err(|e| format!("Failed to uninstall: {e}"))
+                        }
+                    }),
+                    move |result| Message::UninstallResult(app_key, bundle_id, result),
+                )
+            }
+            Message::UninstallConfirmed(..) => Task::none(),
+            Message::UninstallResult(app_key, bundle_id, result) => {
+                match result {
+                    Ok(()) => {
+                        self.installed_apps
+                            .retain(|app| app.bundle_id.as_deref() != Some(bundle_id.as_str()));
+                        self.status_message =
+                            Some(StatusMessage::success(t!("utilities_uninstalled")));
+                    }
+                    Err(e) => {
+                        self.app_statuses.insert(app_key, StatusMessage::error(e));
+                    }
+                }
                 Task::none()
             }
+            Message::Profiles(msg) => self
+                .profiles
+                .update(self.device.as_ref(), msg)
+                .map(Message::Profiles),
+            Message::Device(msg) => self
+                .device_tab
+                .update(self.device.as_ref(), msg)
+                .map(Message::Device),
             Message::SyslogStart => {
                 if self
                     .device
@@ -422,6 +503,12 @@ impl UtilitiesScreen {
         }
     }
 
+    fn device_usable(&self) -> bool {
+        self.device
+            .as_ref()
+            .is_some_and(|d| !d.is_mac && d.is_available())
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         match &self.device {
             Some(device) if self.syslog.running => {
@@ -444,12 +531,25 @@ impl UtilitiesScreen {
         };
         let tabs = row![
             tab_button(UtilitiesTab::Apps, t!("utilities_tab_apps").to_string()),
+            tab_button(
+                UtilitiesTab::Profiles,
+                t!("utilities_tab_profiles").to_string()
+            ),
+            tab_button(UtilitiesTab::Device, t!("utilities_tab_device").to_string()),
             tab_button(UtilitiesTab::Syslog, t!("utilities_tab_syslog").to_string()),
         ]
         .spacing(appearance::THEME_PADDING);
 
         let body = match self.tab {
             UtilitiesTab::Apps => self.view_apps(),
+            UtilitiesTab::Profiles => self
+                .profiles
+                .view(self.device_usable())
+                .map(Message::Profiles),
+            UtilitiesTab::Device => self
+                .device_tab
+                .view(self.device_usable())
+                .map(Message::Device),
             UtilitiesTab::Syslog => self.view_syslog(),
         };
 
@@ -641,6 +741,13 @@ impl UtilitiesScreen {
                     header = header.push(
                         button(text(t!("utilities_install_pairing")).align_x(Center))
                             .on_press(Message::InstallPairingFile(app.clone()))
+                            .style(appearance::s_button),
+                    );
+                }
+                if app.bundle_id.is_some() {
+                    header = header.push(
+                        button(text(t!("utilities_uninstall")).align_x(Center))
+                            .on_press(Message::Uninstall(app.clone()))
                             .style(appearance::s_button),
                     );
                 }

@@ -154,47 +154,50 @@ impl ProfilesTab {
             content = content.push(text(t!("utilities_profiles_empty")).size(small));
         }
 
-        let list = self.profiles.iter().fold(column![].spacing(6), |col, profile| {
-            let expiration = match profile.expiration {
-                Some(date) => {
-                    let date = chrono::DateTime::<chrono::Local>::from(date)
-                        .format("%Y-%m-%d %H:%M")
-                        .to_string();
-                    if profile.is_expired() {
-                        t!("utilities_profiles_expired", date = date)
-                    } else {
-                        t!("utilities_profiles_expires", date = date)
+        let list = self
+            .profiles
+            .iter()
+            .fold(column![].spacing(6), |col, profile| {
+                let expiration = match profile.expiration {
+                    Some(date) => {
+                        let date = chrono::DateTime::<chrono::Local>::from(date)
+                            .format("%Y-%m-%d %H:%M")
+                            .to_string();
+                        if profile.is_expired() {
+                            t!("utilities_profiles_expired", date = date)
+                        } else {
+                            t!("utilities_profiles_expires", date = date)
+                        }
                     }
+                    None => t!("utilities_profiles_no_expiration"),
+                };
+                let mut details = profile.app_id.clone().unwrap_or_default();
+                if let Some(team) = &profile.team_name {
+                    details = format!("{details} · {team}");
                 }
-                None => t!("utilities_profiles_no_expiration"),
-            };
-            let mut details = profile.app_id.clone().unwrap_or_default();
-            if let Some(team) = &profile.team_name {
-                details = format!("{details} · {team}");
-            }
-            let mut expiration_text = text(expiration).size(small);
-            if profile.is_expired() {
-                expiration_text = expiration_text.color(Color::from_rgb(0.9, 0.35, 0.35));
-            }
-            col.push(
-                row![
-                    column![
-                        text(&profile.name).size(14),
-                        text(details).size(small),
-                        expiration_text,
+                let mut expiration_text = text(expiration).size(small);
+                if profile.is_expired() {
+                    expiration_text = expiration_text.color(Color::from_rgb(0.9, 0.35, 0.35));
+                }
+                col.push(
+                    row![
+                        column![
+                            text(&profile.name).size(14),
+                            text(details).size(small),
+                            expiration_text,
+                        ]
+                        .spacing(2)
+                        .width(Fill),
+                        button(text(t!("utilities_profiles_remove")).align_x(Center))
+                            .on_press_maybe(
+                                (!self.busy).then(|| Message::Remove(vec![profile.uuid.clone()])),
+                            )
+                            .style(appearance::s_button),
                     ]
-                    .spacing(2)
-                    .width(Fill),
-                    button(text(t!("utilities_profiles_remove")).align_x(Center))
-                        .on_press_maybe(
-                            (!self.busy).then(|| Message::Remove(vec![profile.uuid.clone()])),
-                        )
-                        .style(appearance::s_button),
-                ]
-                .spacing(appearance::THEME_PADDING)
-                .align_y(Center),
-            )
-        });
+                    .spacing(appearance::THEME_PADDING)
+                    .align_y(Center),
+                )
+            });
 
         content
             .push(scrollable(list).height(Fill).width(Fill))

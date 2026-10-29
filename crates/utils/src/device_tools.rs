@@ -32,7 +32,8 @@ pub struct InstalledProfile {
 
 impl InstalledProfile {
     pub fn is_expired(&self) -> bool {
-        self.expiration.is_some_and(|date| date <= SystemTime::now())
+        self.expiration
+            .is_some_and(|date| date <= SystemTime::now())
     }
 
     fn parse(data: &[u8]) -> Option<Self> {
@@ -128,14 +129,15 @@ impl Device {
                 Err(error) => log::debug!("No pairing file for lockdown session: {error}"),
             }
 
-            let domain = async |lockdown: &mut LockdownClient, domain: Option<&str>| {
-                match lockdown.get_value(None, domain).await {
-                    Ok(Value::Dictionary(dict)) => dict,
-                    Ok(_) => Dictionary::new(),
-                    Err(error) => {
-                        log::debug!("Could not read lockdown domain {domain:?}: {error}");
-                        Dictionary::new()
-                    }
+            let domain = async |lockdown: &mut LockdownClient, domain: Option<&str>| match lockdown
+                .get_value(None, domain)
+                .await
+            {
+                Ok(Value::Dictionary(dict)) => dict,
+                Ok(_) => Dictionary::new(),
+                Err(error) => {
+                    log::debug!("Could not read lockdown domain {domain:?}: {error}");
+                    Dictionary::new()
                 }
             };
             let general = domain(&mut lockdown, None).await;
@@ -145,9 +147,8 @@ impl Device {
             let string = |dict: &Dictionary, key: &str| {
                 dict.get(key).and_then(Value::as_string).map(str::to_owned)
             };
-            let number = |dict: &Dictionary, key: &str| {
-                dict.get(key).and_then(Value::as_unsigned_integer)
-            };
+            let number =
+                |dict: &Dictionary, key: &str| dict.get(key).and_then(Value::as_unsigned_integer);
 
             Ok(DeviceDetails {
                 name: string(&general, "DeviceName"),
