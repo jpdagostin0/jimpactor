@@ -113,6 +113,19 @@ fn get_settings_path() -> PathBuf {
     get_data_path().join("accounts.json")
 }
 
+fn anisette_config() -> plume_core::AnisetteConfiguration {
+    let config = plume_store::AnisetteSettings::load_configuration(&get_data_path());
+    // Keep the upstream variable available for existing CLI wrappers.
+    let url = ["JIMPACTOR_ANISETTE_URL", "PLUMESIGN_ANISETTE_URL"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|url| !url.trim().is_empty());
+    match url {
+        Some(url) => config.set_anisette_url_v3(url),
+        None => config,
+    }
+}
+
 pub async fn get_authenticated_account() -> Result<DeveloperSession> {
     let settings_path = get_settings_path();
     let settings = AccountStore::load(&Some(settings_path.clone())).await?;
@@ -126,7 +139,7 @@ pub async fn get_authenticated_account() -> Result<DeveloperSession> {
         })?
         .clone();
 
-    let anisette_config = plume_store::AnisetteSettings::load_configuration(&get_data_path());
+    let anisette_config = anisette_config();
 
     log::info!("Restoring session for {}...", gsa_account.email());
 
@@ -185,7 +198,7 @@ async fn login(args: LoginArgs) -> Result<()> {
         std::result::Result::Ok(TwoFactorAction::SubmitCode(input.to_string()))
     };
 
-    let anisette_config = plume_store::AnisetteSettings::load_configuration(&get_data_path());
+    let anisette_config = anisette_config();
 
     let username = if let Some(user) = args.username {
         user
