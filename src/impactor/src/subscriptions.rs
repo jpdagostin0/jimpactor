@@ -205,7 +205,9 @@ pub(crate) fn status_tick_subscription() -> Subscription<Message> {
                 loop {
                     futures_timer(std::time::Duration::from_secs(1)).await;
                     if output
-                        .send(Message::SettingsScreen(crate::screen::settings::Message::Noop))
+                        .send(Message::SettingsScreen(
+                            crate::screen::settings::Message::Noop,
+                        ))
                         .await
                         .is_err()
                     {
@@ -729,7 +731,10 @@ async fn preflight_device(
     send("Checking Developer Mode...".to_string(), 3);
     if dev.developer_mode_enabled().await == Some(false) {
         if let Err(e) = dev.reveal_developer_mode_option().await {
-            log::warn!("Could not reveal the Developer Mode option on {}: {e}", dev.name);
+            log::warn!(
+                "Could not reveal the Developer Mode option on {}: {e}",
+                dev.name
+            );
         }
         return Err(format!(
             "Developer Mode is off on {}, so sideloaded apps will not open. Turn it on in Settings > Privacy & Security > Developer Mode, restart the device when asked, then retry.",

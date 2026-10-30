@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, rule, scrollable, text};
+use iced::widget::{button, column, container, row, text};
 use iced::{Center, Color, Element, Fill, Task};
 use plume_utils::{Device, DeviceDetails};
 use rust_i18n::t;
@@ -6,9 +6,6 @@ use rust_i18n::t;
 use super::StatusMessage;
 use crate::appearance;
 use crate::subscriptions::{confirm, run_on_tokio};
-
-// Listing hundreds of report names adds little; export saves all of them.
-const CRASH_REPORTS_SHOWN: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerAction {
@@ -23,18 +20,12 @@ pub enum Message {
     Power(PowerAction),
     PowerConfirmed(PowerAction, bool),
     PowerDone(Result<(), String>),
-    LoadCrashReports,
-    CrashReportsLoaded(Result<Vec<String>, String>),
-    ExportCrashReports,
-    CrashReportsExported(Result<Option<usize>, String>),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct DeviceTab {
     details: Option<DeviceDetails>,
     loading: bool,
-    crash_reports: Option<Vec<String>>,
-    crash_loading: bool,
     status: Option<StatusMessage>,
 }
 
@@ -101,67 +92,6 @@ impl DeviceTab {
                     Ok(()) => StatusMessage::success(t!("utilities_device_power_sent")),
                     Err(e) => StatusMessage::error(e),
                 });
-                Task::none()
-            }
-            Message::LoadCrashReports => {
-                let Some(device) = device.cloned() else {
-                    return Task::none();
-                };
-                self.crash_loading = true;
-                Task::perform(
-                    run_on_tokio(async move {
-                        device
-                            .crash_reports()
-                            .await
-                            .map_err(|e| format!("Failed to list crash reports: {e}"))
-                    }),
-                    Message::CrashReportsLoaded,
-                )
-            }
-            Message::CrashReportsLoaded(result) => {
-                self.crash_loading = false;
-                match result {
-                    Ok(reports) => self.crash_reports = Some(reports),
-                    Err(e) => self.status = Some(StatusMessage::error(e)),
-                }
-                Task::none()
-            }
-            Message::ExportCrashReports => {
-                let (Some(device), Some(reports)) = (device.cloned(), self.crash_reports.clone())
-                else {
-                    return Task::none();
-                };
-                self.crash_loading = true;
-                Task::perform(
-                    async move {
-                        let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await else {
-                            return Ok(None);
-                        };
-                        let folder = folder.path().to_owned();
-                        run_on_tokio(async move {
-                            device
-                                .export_crash_reports(reports, &folder)
-                                .await
-                                .map(Some)
-                                .map_err(|e| format!("Failed to export crash reports: {e}"))
-                        })
-                        .await
-                    },
-                    Message::CrashReportsExported,
-                )
-            }
-            Message::CrashReportsExported(result) => {
-                self.crash_loading = false;
-                match result {
-                    Ok(Some(count)) => {
-                        self.status = Some(StatusMessage::success(t!(
-                            "utilities_crash_reports_exported",
-                            count = count
-                        )))
-                    }
-                    Ok(None) => {}
-                    Err(e) => self.status = Some(StatusMessage::error(e)),
-                }
                 Task::none()
             }
         }
@@ -263,48 +193,6 @@ impl DeviceTab {
                 ]
                 .spacing(4),
             );
-        }
-
-        content =
-            content.push(container(rule::horizontal(1)).padding([appearance::THEME_PADDING, 0.0]));
-
-        let crash_label = if self.crash_loading {
-            t!("utilities_loading")
-        } else {
-            t!("utilities_crash_reports_load")
-        };
-        let has_reports = self.crash_reports.as_ref().is_some_and(|r| !r.is_empty());
-        content = content.push(
-            row![
-                text(t!("utilities_crash_reports")).size(14).width(Fill),
-                button(text(crash_label).align_x(Center))
-                    .on_press_maybe((!self.crash_loading).then_some(Message::LoadCrashReports))
-                    .style(appearance::s_button),
-                button(text(t!("utilities_crash_reports_export")).align_x(Center))
-                    .on_press_maybe(
-                        (!self.crash_loading && has_reports).then_some(Message::ExportCrashReports),
-                    )
-                    .style(appearance::s_button),
-            ]
-            .spacing(appearance::THEME_PADDING)
-            .align_y(Center),
-        );
-
-        if let Some(ref reports) = self.crash_reports {
-            if reports.is_empty() {
-                content = content.push(text(t!("utilities_crash_reports_empty")).size(small));
-            } else {
-                content = content.push(
-                    text(t!("utilities_crash_reports_count", count = reports.len())).size(small),
-                );
-                let list = reports
-                    .iter()
-                    .take(CRASH_REPORTS_SHOWN)
-                    .fold(column![].spacing(1), |col, name| {
-                        col.push(text(name).size(small).font(appearance::p_font()))
-                    });
-                content = content.push(scrollable(list).height(Fill).width(Fill));
-            }
         }
 
         content.height(Fill).into()

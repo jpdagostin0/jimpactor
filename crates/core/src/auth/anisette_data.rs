@@ -15,12 +15,11 @@ pub struct AnisetteData {
 
 impl AnisetteData {
     pub async fn new(config: AnisetteConfiguration) -> Result<Self, Error> {
-        // The ADI libraries keep global state (including the provisioning path),
-        // so only one local/fake provider may use them at a time.
+        // Serialize updates to the persistent local/fake provisioning stores.
         static ADI_LOCK: Mutex<()> = Mutex::const_new(());
         let _adi_guard = if config.provider().needs_libraries() {
             let guard = ADI_LOCK.lock().await;
-            omnisette::adi_libraries::ensure_libraries(config.configuration_path()).await?;
+            omnisette::mac_libraries::ensure_library(config.configuration_path()).await?;
             Some(guard)
         } else {
             None

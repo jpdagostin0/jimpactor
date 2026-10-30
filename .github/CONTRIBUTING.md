@@ -21,7 +21,7 @@ See [Attributions.md](../Attributions.md) for upstream sources and licenses. Pre
 
 ## Building
 
-Install [Rust](https://rustup.rs/), [CMake](https://cmake.org/download/), and a C/C++ compiler.
+Install [Rust](https://rustup.rs/), [CMake](https://cmake.org/download/), a C/C++ compiler, and LLVM/libclang for the in-process Mac anisette emulator.
 
 ```sh
 cargo run --locked --bin jimpactor
@@ -35,7 +35,7 @@ cargo test --workspace --locked
 Install `usbmuxd` for device communication. On Ubuntu/Debian, install build dependencies with:
 
 ```sh
-sudo apt-get install build-essential cmake nasm
+sudo apt-get install build-essential cmake nasm clang libclang-dev python3
 ```
 
 Native dependencies such as liblzma, libbz2, libzstd and libdbus are built from

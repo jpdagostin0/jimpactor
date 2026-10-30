@@ -100,7 +100,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake nasm pkg-config file desktop-file-utils
+            build-essential cmake nasm pkg-config clang libclang-dev file desktop-file-utils
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.commit }}
@@ -153,7 +153,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake nasm pkg-config clang-19 llvm-19 lld-19 ninja-build nsis
+            build-essential cmake nasm pkg-config clang-19 libclang-19-dev llvm-19 lld-19 ninja-build nsis
           # Clang 18's ARM64 __prefetch builtin conflicts with the Windows SDK.
           # Select LLVM 19 for cargo-xwin and native dependency build scripts.
           llvm_bin="$RUNNER_TEMP/llvm-19-bin"
@@ -217,7 +217,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake nasm pkg-config xz-utils libssl-dev
+            build-essential cmake nasm pkg-config clang libclang-dev xz-utils libssl-dev
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.commit }}

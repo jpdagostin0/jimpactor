@@ -4,7 +4,6 @@
 //!
 //! If you want remote anisette, make sure the `remote-anisette` feature is enabled. (it's currently on by default)
 
-use crate::adi_proxy::ADIProxyAnisetteProvider;
 use crate::anisette_headers_provider::AnisetteHeadersProvider;
 use adi_proxy::ADIError;
 use std::io;
@@ -14,6 +13,8 @@ use thiserror::Error;
 pub mod adi_libraries;
 pub mod adi_proxy;
 pub mod anisette_headers_provider;
+pub mod mac_anisette;
+pub mod mac_libraries;
 pub mod remote_anisette_v1;
 pub mod store_services_core;
 
@@ -44,7 +45,6 @@ pub enum AnisetteError {
     #[cfg(feature = "remote-anisette-v3")]
     #[error("Provisioning socket error {0}")]
     WsError(#[from] Box<tokio_tungstenite::tungstenite::error::Error>),
-    #[cfg(feature = "remote-anisette-v3")]
     #[error("JSON error {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("IO error {0}")]
@@ -82,7 +82,7 @@ pub const FAKE_IDENTITY_DIR: &str = "fake";
 /// Where anisette data comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum AnisetteProvider {
-    /// Computed on this machine with Apple's ADI libraries, using a persistent identity.
+    /// Computed on this machine with Apple's Mac CoreADI, using a persistent Mac identity.
     Local,
     /// Requested from a remote anisette v3 server.
     #[default]
@@ -224,9 +224,8 @@ impl AnisetteHeaders {
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
         let config_path = configuration.configuration_path();
-        let ssc_adi_proxy = store_services_core::StoreServicesCoreADIProxy::new(config_path)?;
         Ok(AnisetteHeadersProviderRes::local(Box::new(
-            ADIProxyAnisetteProvider::new(ssc_adi_proxy, config_path.to_path_buf())?,
+            mac_anisette::MacAnisetteProvider::new(config_path.to_path_buf(), false),
         )))
     }
 
@@ -235,19 +234,8 @@ impl AnisetteHeaders {
     pub fn get_fake_anisette_headers_provider(
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
-        let library_path = configuration.configuration_path();
-        let identity_path = library_path.join(FAKE_IDENTITY_DIR);
-        std::fs::create_dir_all(&identity_path)?;
-
-        let mut ssc_adi_proxy =
-            store_services_core::StoreServicesCoreADIProxy::with_custom_provisioning_path(
-                library_path,
-                &identity_path,
-            )?;
-        ssc_adi_proxy.set_serial_number(adi_libraries::fake_serial_number(&identity_path)?);
-
         Ok(AnisetteHeadersProviderRes::local(Box::new(
-            ADIProxyAnisetteProvider::new(ssc_adi_proxy, identity_path)?,
+            mac_anisette::MacAnisetteProvider::new(configuration.configuration_path, true),
         )))
     }
 }

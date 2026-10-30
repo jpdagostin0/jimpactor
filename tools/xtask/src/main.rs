@@ -158,6 +158,9 @@ fn copy_notices(destination: &Path) -> Result {
     for name in NOTICE_FILES {
         fs::copy(name, destination.join(name))?;
     }
+    for name in ["adi-core-MIT.txt", "Unicorn-GPL-2.0.txt"] {
+        fs::copy(Path::new("licenses").join(name), destination.join(name))?;
+    }
     Ok(())
 }
 

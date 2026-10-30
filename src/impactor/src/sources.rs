@@ -13,8 +13,14 @@ pub(crate) const SIDESTORE: &str = "SideStore";
 /// Sources added once for every user after SideStore. Unlike SideStore they can be removed,
 /// and a removed one is not added back.
 const EXTRA_DEFAULT_SOURCES: [(&str, &str); 3] = [
-    ("GoldenNugget", "https://github.com/GoldenNugget-Team/GoldenNugget-mobile"),
-    ("LiveContainer", "https://github.com/LiveContainer/LiveContainer"),
+    (
+        "GoldenNugget",
+        "https://github.com/GoldenNugget-Team/GoldenNugget-mobile",
+    ),
+    (
+        "LiveContainer",
+        "https://github.com/LiveContainer/LiveContainer",
+    ),
     ("StikDebug", "https://github.com/StikDebug/StikDebug"),
 ];
 
@@ -457,7 +463,8 @@ mod tests {
 
     #[test]
     fn extra_defaults_are_added_once_and_stay_removed() {
-        let directory = std::env::temp_dir().join(format!("jimpactor-sources-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("jimpactor-sources-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let _ = std::fs::remove_file(directory.join(super::SOURCES_FILE));
 
@@ -470,7 +477,12 @@ mod tests {
         store.save(&directory).unwrap();
 
         let reloaded = SourcesStore::load(&directory);
-        assert!(!reloaded.sources().iter().any(|source| source.url == EXTRA_DEFAULT_SOURCES[0].1));
+        assert!(
+            !reloaded
+                .sources()
+                .iter()
+                .any(|source| source.url == EXTRA_DEFAULT_SOURCES[0].1)
+        );
         assert_eq!(reloaded.sources().len(), EXTRA_DEFAULT_SOURCES.len());
         let _ = std::fs::remove_dir_all(&directory);
     }

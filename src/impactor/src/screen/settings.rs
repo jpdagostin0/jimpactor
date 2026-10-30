@@ -382,7 +382,8 @@ impl SettingsScreen {
                     }
                     SettingsTab::Tailscale => {
                         if let Some(store) = store {
-                            self.tailscale = tailscale::TailscaleTab::new(store.tailscale().clone());
+                            self.tailscale =
+                                tailscale::TailscaleTab::new(store.tailscale().clone());
                         }
                         Task::none()
                     }
@@ -409,7 +410,9 @@ impl SettingsScreen {
                 let (task, change) = self.tailscale.update(msg);
                 let task = task.map(Message::Tailscale);
                 match change {
-                    Some(change) => Task::batch([task, Task::done(Message::TailscaleChanged(change))]),
+                    Some(change) => {
+                        Task::batch([task, Task::done(Message::TailscaleChanged(change))])
+                    }
                     None => task,
                 }
             }
@@ -417,7 +420,9 @@ impl SettingsScreen {
                 let (task, settings) = self.jit.update(msg);
                 let task = task.map(Message::Jit);
                 match settings {
-                    Some(settings) => Task::batch([task, Task::done(Message::JitChanged(settings))]),
+                    Some(settings) => {
+                        Task::batch([task, Task::done(Message::JitChanged(settings))])
+                    }
                     None => task,
                 }
             }
@@ -1001,11 +1006,14 @@ impl SettingsScreen {
         .into()
     }
 
-    fn view_behavior<'a>(&'a self, account_store: &'a Option<AccountStore>) -> Element<'a, Message> {
+    fn view_behavior<'a>(
+        &'a self,
+        account_store: &'a Option<AccountStore>,
+    ) -> Element<'a, Message> {
         let small = appearance::THEME_FONT_SIZE - 1.0;
-        let (lock_device, close_to_tray) = account_store
-            .as_ref()
-            .map_or((false, true), |store| (store.lock_device(), store.close_to_tray()));
+        let (lock_device, close_to_tray) = account_store.as_ref().map_or((false, true), |store| {
+            (store.lock_device(), store.close_to_tray())
+        });
         scrollable(
             column![
                 checkbox(lock_device)

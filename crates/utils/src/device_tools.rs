@@ -19,6 +19,8 @@ use crate::device::{CONNECTION_LABEL, Device, INSTALLATION_LABEL};
 
 const DIAGNOSTICS_LABEL: &str = "plume_diagnostics";
 const CRASH_REPORTS_LABEL: &str = "plume_crash_reports";
+// `Retired/`, `Panics/` and friends sit one level down; nothing useful is deeper.
+const CRASH_FOLDER_DEPTH: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct InstalledProfile {
@@ -184,21 +186,63 @@ impl Device {
         .await
     }
 
-    /// Crash report file names, newest first. Pending reports are flushed to the
-    /// share directory first so recent crashes show up.
+    /// Every file under the device's crash log folder (Settings → Privacy &
+    /// Security → Analytics Data), as paths relative to that folder, newest
+    /// first. Pending reports are flushed first so recent crashes show up.
     pub async fn crash_reports(&self) -> Result<Vec<String>, Error> {
         self.with_provider(CRASH_REPORTS_LABEL, |provider| async move {
             flush_crash_reports(provider.as_ref()).await;
             let mut client = CrashReportCopyMobileClient::connect(provider.as_ref()).await?;
-            let mut reports: Vec<String> = client
-                .ls(None)
-                .await?
-                .into_iter()
-                .filter(|name| is_crash_report(name))
-                .collect();
+            let mut reports = Vec::new();
+            let mut pending = vec![(String::new(), 0)];
+            while let Some((dir, depth)) = pending.pop() {
+                let entries = match client.ls((!dir.is_empty()).then_some(dir.as_str())).await {
+                    Ok(entries) => entries,
+                    // The root listing must work; a subfolder we cannot read is skipped.
+                    Err(error) if !dir.is_empty() => {
+                        log::debug!("Could not list crash folder {dir}: {error}");
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                for name in entries {
+                    if name.is_empty() || name.starts_with('.') {
+                        continue;
+                    }
+                    let path = if dir.is_empty() {
+                        name
+                    } else {
+                        format!("{dir}/{name}")
+                    };
+                    // Folders such as `Retired` or `Panics` have no extension; only
+                    // those are worth a file-info round trip.
+                    let maybe_dir = depth < CRASH_FOLDER_DEPTH && !name_has_extension(&path);
+                    if maybe_dir
+                        && client
+                            .afc_client
+                            .get_file_info(format!("/{path}"))
+                            .await
+                            .is_ok_and(|info| info.st_ifmt == "S_IFDIR")
+                    {
+                        pending.push((path, depth + 1));
+                    } else {
+                        reports.push(path);
+                    }
+                }
+            }
             // Names end in a `YYYY-MM-DD-HHMMSS` timestamp, so that orders them by time.
             reports.sort_by(|a, b| report_timestamp(b).cmp(report_timestamp(a)));
             Ok(reports)
+        })
+        .await
+    }
+
+    /// Reads one crash report, by a path returned from [`Self::crash_reports`].
+    pub async fn crash_report(&self, name: &str) -> Result<Vec<u8>, Error> {
+        let name = name.to_owned();
+        self.with_provider(CRASH_REPORTS_LABEL, move |provider| async move {
+            let mut client = CrashReportCopyMobileClient::connect(provider.as_ref()).await?;
+            Ok(client.pull(name).await?)
         })
         .await
     }
@@ -241,18 +285,29 @@ async fn flush_crash_reports(provider: &dyn IdeviceProvider) {
     }
 }
 
-fn is_crash_report(name: &str) -> bool {
-    [".ips", ".crash", ".panic"]
-        .iter()
-        .any(|ext| name.to_ascii_lowercase().ends_with(ext))
+fn name_has_extension(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.contains('.')
 }
 
-fn report_timestamp(name: &str) -> &str {
-    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    stem.len()
-        .checked_sub(17)
-        .and_then(|start| stem.get(start..))
-        .unwrap_or(stem)
+/// The last `YYYY-MM-DD-HHMMSS` in the file name, or the name itself. Process
+/// names can contain dots and reports can carry several extensions
+/// (`.ips.ca.synced`), so the timestamp is found by shape, not position.
+fn report_timestamp(path: &str) -> &str {
+    const SHAPE: &[u8; 17] = b"0000-00-00-000000";
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.as_bytes()
+        .windows(SHAPE.len())
+        .rposition(|window| {
+            window.iter().zip(SHAPE).all(|(&c, &shape)| {
+                if shape == b'-' {
+                    c == b'-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            })
+        })
+        .map_or(name, |start| &name[start..start + SHAPE.len()])
 }
 
 #[cfg(test)]
@@ -267,8 +322,16 @@ mod tests {
         ];
         names.sort_by(|a, b| report_timestamp(b).cmp(report_timestamp(a)));
         assert_eq!(names[0], "Alpha-2026-03-04-090000.ips");
-        assert!(is_crash_report("Foo.IPS"));
-        assert!(!is_crash_report("Retired"));
+        assert_eq!(
+            report_timestamp("Retired/Foo-2026-01-02-101010.ips.ca.synced"),
+            "2026-01-02-101010"
+        );
+        assert_eq!(
+            report_timestamp("com.apple.WebKit.WebContent-2026-05-06-070809.ips"),
+            "2026-05-06-070809"
+        );
+        assert!(name_has_extension("Retired/Foo.ips"));
+        assert!(!name_has_extension("Retired"));
     }
 
     #[test]

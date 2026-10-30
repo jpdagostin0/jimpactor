@@ -228,15 +228,12 @@ impl Account {
             .and_then(Value::as_string)
             .ok_or_else(|| missing("c"))?;
 
-        let hashed_password = Sha256::digest(password.as_bytes());
-
-        let mut password_buf = [0u8; 32];
-        pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(
-            &hashed_password,
-            salt,
-            iters as u32,
-            &mut password_buf,
-        )?;
+        let protocol = res
+            .get("sp")
+            .and_then(Value::as_string)
+            .ok_or_else(|| missing("sp"))?;
+        log::debug!("GrandSlam selected SRP protocol {protocol} with {iters} iterations");
+        let password_buf = derive_srp_password(password, salt, iters as u32, protocol)?;
 
         let verifier = srp_client
             .process_reply(&a, username_for_spd.as_bytes(), &password_buf, salt, b_pub)
@@ -347,6 +344,63 @@ impl Account {
 
 fn missing(field: &str) -> Error {
     Error::AuthenticationResponse(format!("Missing or invalid {field} in SRP response"))
+}
+
+fn derive_srp_password(
+    password: &str,
+    salt: &[u8],
+    iterations: u32,
+    protocol: &str,
+) -> Result<[u8; 32], Error> {
+    let digest = Sha256::digest(password.as_bytes());
+    let input = match protocol {
+        "s2k" => digest.to_vec(),
+        "s2k_fo" => hex::encode(digest).into_bytes(),
+        _ => {
+            return Err(Error::AuthenticationResponse(format!(
+                "Unsupported SRP password protocol: {protocol}"
+            )));
+        }
+    };
+    if !(1..=10_000_000).contains(&iterations) {
+        return Err(missing("i"));
+    }
+    let mut output = [0; 32];
+    pbkdf2::pbkdf2::<hmac::Hmac<Sha256>>(&input, salt, iterations, &mut output)?;
+    Ok(output)
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+
+    #[test]
+    fn negotiated_password_formats_match_independent_pbkdf2_vectors() {
+        // Generated independently with Python hashlib SHA256 and pbkdf2_hmac.
+        for (protocol, expected) in [
+            (
+                "s2k",
+                "c82e2bcc1d562491e9cafe01cddd4671224d1db28f02c4d53234246c0508aad8",
+            ),
+            (
+                "s2k_fo",
+                "0bb210fbad7c203c2e61b17c24150b35922ce003d18792dc384412dca190af2c",
+            ),
+        ] {
+            assert_eq!(
+                hex::encode(derive_srp_password("password", b"salt", 4096, protocol).unwrap()),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_protocols_and_invalid_round_counts_are_rejected() {
+        assert!(derive_srp_password("password", b"salt", 1, "unknown").is_err());
+        for iterations in [0, 10_000_001] {
+            assert!(derive_srp_password("password", b"salt", iterations, "s2k").is_err());
+        }
+    }
 }
 
 // A completed challenge must not cause another SMS delivery request.

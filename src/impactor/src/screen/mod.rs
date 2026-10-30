@@ -146,7 +146,11 @@ impl Impactor {
         let selected_locale = store.locale().map(str::to_string);
         let device_lock = store
             .lock_device()
-            .then(|| store.locked_device().map(device_lock::DeviceLock::from_saved))
+            .then(|| {
+                store
+                    .locked_device()
+                    .map(device_lock::DeviceLock::from_saved)
+            })
             .flatten();
         Self::apply_tailscale(store.tailscale(), None, true);
         if let Some(devices) = REFRESH_DAEMON_DEVICES.get() {
@@ -238,7 +242,10 @@ impl Impactor {
     }
 
     fn save_device_lock(&mut self) {
-        let saved = self.device_lock.as_ref().map(device_lock::DeviceLock::to_saved);
+        let saved = self
+            .device_lock
+            .as_ref()
+            .map(device_lock::DeviceLock::to_saved);
         if let Some(store) = &mut self.account_store
             && let Err(err) = store.set_locked_device_sync(saved)
         {
@@ -314,7 +321,11 @@ impl Impactor {
                 self.refresh_utilities()
             }
             Message::ComboBoxSelected(value) => {
-                let device = self.devices.iter().find(|d| d.to_string() == value).cloned();
+                let device = self
+                    .devices
+                    .iter()
+                    .find(|d| d.to_string() == value)
+                    .cloned();
                 if self.lock_enabled() {
                     // Picking only previews a device; Select makes it the install target.
                     self.device_candidate = device;
@@ -586,7 +597,11 @@ impl Impactor {
                 if self.login_windows.contains_key(&id) {
                     Task::done(Message::LoginWindow(id, login_window::Message::LoginCancel))
                 } else if self.main_window == Some(id) {
-                    if self.account_store.as_ref().is_none_or(|s| s.close_to_tray()) {
+                    if self
+                        .account_store
+                        .as_ref()
+                        .is_none_or(|s| s.close_to_tray())
+                    {
                         Task::done(Message::HideWindow)
                     } else {
                         // Quits, unless an install or refresh is running (then it stays in the tray).
@@ -839,8 +854,10 @@ impl Impactor {
                             }
                             if enabled {
                                 // Start locked to the current target so nothing changes until Select.
-                                self.device_lock =
-                                    self.selected_device.as_ref().map(device_lock::DeviceLock::new);
+                                self.device_lock = self
+                                    .selected_device
+                                    .as_ref()
+                                    .map(device_lock::DeviceLock::new);
                                 self.device_candidate = self.selected_device.clone();
                             } else {
                                 if self.selected_device.is_none() {

@@ -65,7 +65,9 @@ pub(crate) fn apply(settings: &JitServerSettings, devices: ConnectedDevices) {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    server.status.send_replace(JitServerStatus::Failed(error.to_string()));
+                    server
+                        .status
+                        .send_replace(JitServerStatus::Failed(error.to_string()));
                     return;
                 }
             };
@@ -77,7 +79,9 @@ pub(crate) fn apply(settings: &JitServerSettings, devices: ConnectedDevices) {
             });
         });
     if let Err(error) = spawned {
-        server.status.send_replace(JitServerStatus::Failed(error.to_string()));
+        server
+            .status
+            .send_replace(JitServerStatus::Failed(error.to_string()));
     }
 }
 
@@ -93,7 +97,10 @@ async fn serve(settings: JitServerSettings, devices: ConnectedDevices) {
             let listener = match tokio::net::TcpListener::bind((host, settings.port)).await {
                 Ok(listener) => listener,
                 Err(error) => {
-                    log::error!("JIT server could not listen on port {}: {error}", settings.port);
+                    log::error!(
+                        "JIT server could not listen on port {}: {error}",
+                        settings.port
+                    );
                     status.send_replace(JitServerStatus::Failed(format!(
                         "Could not listen on port {}: {error}",
                         settings.port
@@ -101,7 +108,10 @@ async fn serve(settings: JitServerSettings, devices: ConnectedDevices) {
                     return;
                 }
             };
-            status.send_replace(JitServerStatus::Listening(format!("{host}:{}", settings.port)));
+            status.send_replace(JitServerStatus::Listening(format!(
+                "{host}:{}",
+                settings.port
+            )));
             log::info!("JIT server listening on {host}:{}", settings.port);
             loop {
                 match listener.accept().await {
@@ -124,7 +134,9 @@ async fn serve_tailnet(port: u16, devices: ConnectedDevices) {
         match plume_utils::tailnet_listen(port).await {
             Ok(listener) => {
                 let address = match plume_utils::tailnet_status() {
-                    plume_utils::TailnetStatus::Connected { address } => format!("{address}:{port}"),
+                    plume_utils::TailnetStatus::Connected { address } => {
+                        format!("{address}:{port}")
+                    }
                     _ => format!("tailnet port {port}"),
                 };
                 log::info!("JIT server listening on {address}");
@@ -221,7 +233,10 @@ async fn route(path: &str, devices: ConnectedDevices) -> (u16, serde_json::Value
         .into_iter()
         .find(|device| device.udid.eq_ignore_ascii_case(udid))
     else {
-        return (404, json!({ "ok": false, "error": format!("Device {udid} is not connected") }));
+        return (
+            404,
+            json!({ "ok": false, "error": format!("Device {udid} is not connected") }),
+        );
     };
     let ddi_dir = crate::defaults::get_data_path().join("ddi");
 
@@ -247,7 +262,10 @@ async fn route(path: &str, devices: ConnectedDevices) -> (u16, serde_json::Value
         }
         [_, bundle_id] => {
             log::info!("Enabling JIT for {bundle_id} on {}", device.name);
-            jit_result(device.launch_with_jit(bundle_id, ddi_dir).await, &device.name)
+            jit_result(
+                device.launch_with_jit(bundle_id, ddi_dir).await,
+                &device.name,
+            )
         }
         _ => (404, json!({ "ok": false, "error": "Unknown endpoint" })),
     }
@@ -270,7 +288,13 @@ fn jit_result(result: Result<u64, plume_utils::Error>, device: &str) -> (u16, se
 fn connected(devices: &ConnectedDevices) -> Vec<plume_utils::Device> {
     let mut list: Vec<_> = devices
         .lock()
-        .map(|devices| devices.values().filter(|d| d.is_available() && !d.is_mac).cloned().collect())
+        .map(|devices| {
+            devices
+                .values()
+                .filter(|d| d.is_available() && !d.is_mac)
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     list.sort_by(|a, b| a.name.cmp(&b.name));
     list

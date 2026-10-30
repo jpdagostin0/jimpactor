@@ -248,8 +248,12 @@ impl TailscaleTab {
                 .width(Fill),
         );
 
-        scrollable(content.padding([0.0, appearance::THEME_PADDING]).width(Fill))
-            .height(Fill)
-            .into()
+        scrollable(
+            content
+                .padding([0.0, appearance::THEME_PADDING])
+                .width(Fill),
+        )
+        .height(Fill)
+        .into()
     }
 }

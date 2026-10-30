@@ -12,15 +12,20 @@ Jimpactor is an independently maintained fork of **Plume Impactor**. It is not a
 
 ## Upstream authentication contributions
 
-The authentication and Omnisette changes incorporate or adapt work from these pull requests:
+The authentication and Omnisette changes incorporate or adapt the following upstream work:
 
 - [Rogue911](https://github.com/Rogue911): [SideStore/apple-private-apis #27](https://github.com/SideStore/apple-private-apis/pull/27), identifying the AuthKit client as `com.apple.akd/1.0` to avoid GrandSlam HTTP 503 errors.
 - [Nicholas Sharp (nab138)](https://github.com/nab138): [SideStore/apple-private-apis #25](https://github.com/SideStore/apple-private-apis/pull/25), app-token decryption, authenticated plist requests, cancellable sign-in callbacks, and dependency updates.
 - [Maxim Grischenko (max402)](https://github.com/max402): [Impactor #297](https://github.com/claration/impactor/pull/297), SMS challenge handling and preservation of the anisette provider's client identity and header values.
 - [BenwillLopez](https://github.com/BenwillLopez): [Impactor #295](https://github.com/claration/impactor/pull/295), configurable anisette v3 servers and the `PLUMESIGN_ANISETTE_URL` CLI override.
 - [2foil](https://github.com/2foil): [Impactor #304](https://github.com/claration/impactor/pull/304), retaining remote Mac client identity, refreshing provisioning state, and offline regression coverage for sign-in after two-factor authentication.
+- [icebergOcean](https://github.com/icebergOcean): [SideStore #1448](https://github.com/SideStore/SideStore/issues/1448), documenting `s2k_fo` password derivation using the lowercase hexadecimal ASCII encoding of the SHA-256 password digest as the PBKDF2 input.
 
 ## Vendored third-party crates
+
+Local Mac anisette uses **adi-core** by [sacca97](https://github.com/sacca97/os-findmy-e), pinned to the MIT-licensed commit [`374d83854f657a7fdca45f813387d99d491db0e2`](https://github.com/sacca97/os-findmy-e/tree/374d83854f657a7fdca45f813387d99d491db0e2/native/adi-core). Its MIT notice is preserved in [`licenses/adi-core-MIT.txt`](licenses/adi-core-MIT.txt). The emulator runs inside Jimpactor; there is no helper executable. Its dependency **Unicorn** 2.1.5 still declares GPL-2.0, preserved in [`licenses/Unicorn-GPL-2.0.txt`](licenses/Unicorn-GPL-2.0.txt). The MIT pin does not change Unicorn's license. Apple's Mac CoreADI is downloaded directly from Apple at runtime and is not redistributed.
+
+The local Mac identity and provisioning approach follows [sacca97/os-findmy-e's Mac anisette implementation](https://github.com/sacca97/os-findmy-e/blob/374d83854f657a7fdca45f813387d99d491db0e2/tools/machoadi/mac_anisette.py). The pinned iTunes payload offsets and hashes were documented by [lazzurs](https://github.com/lazzurs) in [OpenTagViewer #274](https://github.com/parawanderer/OpenTagViewer/pull/274). [Kabir Oberai's XTool #337](https://github.com/xtool-org/xtool/pull/337) identified the Android-ADI/Mac-client mismatch causing `-80045`.
 
 | Path                    | Upstream                                                                                                     | License    | Notes                                                                                                                                                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

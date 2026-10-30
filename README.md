@@ -125,6 +125,8 @@ The CLI accepts `JIMPACTOR_ANISETTE_URL` to override the remote anisette server 
 
 Remote v3 provisioning now uses `mac_anisette_state.plist`. Existing users provision a fresh identity once; account and certificate files are retained. The Settings identity reset action clears the new provisioning state.
 
+Local and Fake anisette run Apple's Mac CoreADI in-process through the MIT-licensed adi-core revision `374d83854f657a7fdca45f813387d99d491db0e2`. No separate executable is required. Setup downloads and verifies the Mac library directly from Apple's iTunes installer. Each mode keeps its own Mac identity and provisioning store, separate from the previous Android ADI data. The Unicorn emulator dependency still declares GPL-2.0; see [Attributions.md](Attributions.md) and the notices in `licenses/`.
+
 Jimpactor uses its own application identifier, `io.github.jpdagostin0.jimpactor`, and stores configuration in `%APPDATA%/Jimpactor` on Windows or `${XDG_CONFIG_HOME:-$HOME/.config}/Jimpactor` on macOS and Linux. GUI and CLI share this directory. Account tokens use the `Jimpactor` service in the OS credential store when available.
 
 Earlier development builds used the original project's `PlumeImpactor` directory and credential-store name. Sign in and configure Jimpactor again when moving from one of those builds; the original project's data is left in place.

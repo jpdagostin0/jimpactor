@@ -9,6 +9,8 @@ use crate::defaults::get_data_path;
 use plume_utils::{Device, SignerAppReal};
 use std::collections::{HashMap, VecDeque};
 
+mod app_files;
+mod crash_logs;
 mod device_info;
 mod profiles;
 
@@ -64,6 +66,9 @@ pub enum Message {
     UninstallResult(String, String, Result<(), String>),
     Profiles(profiles::Message),
     Device(device_info::Message),
+    CrashLogs(crash_logs::Message),
+    BrowseFiles(SignerAppReal),
+    AppFiles(app_files::Message),
     SyslogStart,
     SyslogStop,
     SyslogLines(Vec<String>),
@@ -82,6 +87,8 @@ pub enum UtilitiesTab {
     Apps,
     Profiles,
     Device,
+    CrashLogs,
+    AppFiles,
     Syslog,
 }
 
@@ -134,6 +141,8 @@ pub struct UtilitiesScreen {
     // Boxed so the screen enum stays small.
     profiles: Box<profiles::ProfilesTab>,
     device_tab: Box<device_info::DeviceTab>,
+    crash_logs: Box<crash_logs::CrashLogsTab>,
+    app_files: Box<app_files::AppFilesTab>,
 }
 
 impl UtilitiesScreen {
@@ -151,6 +160,8 @@ impl UtilitiesScreen {
             syslog: Box::default(),
             profiles: Box::default(),
             device_tab: Box::default(),
+            crash_logs: Box::default(),
+            app_files: Box::default(),
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
@@ -219,9 +230,11 @@ impl UtilitiesScreen {
                 Task::none()
             }
             Message::IconsLoaded(icons) => {
-                self.app_icons.extend(icons.into_iter().filter_map(|(bundle_id, png)| {
-                    super::package::icon_handle_from_bytes(&png).map(|handle| (bundle_id, handle))
-                }));
+                self.app_icons
+                    .extend(icons.into_iter().filter_map(|(bundle_id, png)| {
+                        super::package::icon_handle_from_bytes(&png)
+                            .map(|handle| (bundle_id, handle))
+                    }));
                 Task::none()
             }
             Message::InstallPairingFile(app) => {
@@ -336,6 +349,9 @@ impl UtilitiesScreen {
                     UtilitiesTab::Device if usable => {
                         self.device_tab.on_open().map(Message::Device)
                     }
+                    UtilitiesTab::CrashLogs if usable => {
+                        self.crash_logs.on_open().map(Message::CrashLogs)
+                    }
                     _ => Task::none(),
                 }
             }
@@ -396,6 +412,27 @@ impl UtilitiesScreen {
                 .device_tab
                 .update(self.device.as_ref(), msg)
                 .map(Message::Device),
+            Message::CrashLogs(msg) => self
+                .crash_logs
+                .update(self.device.as_ref(), msg)
+                .map(Message::CrashLogs),
+            Message::BrowseFiles(app) => {
+                let Some(bundle_id) = app.bundle_id.clone() else {
+                    return Task::none();
+                };
+                let name = app
+                    .installed_name
+                    .clone()
+                    .unwrap_or_else(|| app.app.to_string());
+                self.tab = UtilitiesTab::AppFiles;
+                self.app_files
+                    .open_app(bundle_id, name)
+                    .map(Message::AppFiles)
+            }
+            Message::AppFiles(msg) => self
+                .app_files
+                .update(self.device.as_ref(), msg)
+                .map(Message::AppFiles),
             Message::SyslogStart => {
                 if self
                     .device
@@ -536,6 +573,14 @@ impl UtilitiesScreen {
                 t!("utilities_tab_profiles").to_string()
             ),
             tab_button(UtilitiesTab::Device, t!("utilities_tab_device").to_string()),
+            tab_button(
+                UtilitiesTab::CrashLogs,
+                t!("utilities_tab_crash_logs").to_string()
+            ),
+            tab_button(
+                UtilitiesTab::AppFiles,
+                t!("utilities_tab_files").to_string()
+            ),
             tab_button(UtilitiesTab::Syslog, t!("utilities_tab_syslog").to_string()),
         ]
         .spacing(appearance::THEME_PADDING);
@@ -550,6 +595,14 @@ impl UtilitiesScreen {
                 .device_tab
                 .view(self.device_usable())
                 .map(Message::Device),
+            UtilitiesTab::CrashLogs => self
+                .crash_logs
+                .view(self.device_usable())
+                .map(Message::CrashLogs),
+            UtilitiesTab::AppFiles => self
+                .app_files
+                .view(self.device_usable())
+                .map(Message::AppFiles),
             UtilitiesTab::Syslog => self.view_syslog(),
         };
 
@@ -708,11 +761,11 @@ impl UtilitiesScreen {
 
         content = content.push(toggle);
 
-        // Apps without a readable provisioning profile (App Store and system apps) are hidden.
+        // App Store apps are hidden; only sideloaded ones can be managed here.
         let mut listed_apps = self
             .installed_apps
             .iter()
-            .filter(|app| app.expiration.is_some())
+            .filter(|app| app.sideloaded)
             .peekable();
         if listed_apps.peek().is_some() {
             content = content
@@ -745,6 +798,11 @@ impl UtilitiesScreen {
                     );
                 }
                 if app.bundle_id.is_some() {
+                    header = header.push(
+                        button(text(t!("utilities_files")).align_x(Center))
+                            .on_press(Message::BrowseFiles(app.clone()))
+                            .style(appearance::s_button),
+                    );
                     header = header.push(
                         button(text(t!("utilities_uninstall")).align_x(Center))
                             .on_press(Message::Uninstall(app.clone()))
@@ -785,7 +843,7 @@ impl UtilitiesScreen {
         let bundle_ids: Vec<String> = self
             .installed_apps
             .iter()
-            .filter(|app| app.expiration.is_some())
+            .filter(|app| app.sideloaded)
             .filter_map(|app| app.bundle_id.clone())
             .filter(|bundle_id| !self.app_icons.contains_key(bundle_id))
             .collect();

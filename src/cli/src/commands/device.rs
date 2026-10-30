@@ -31,9 +31,21 @@ pub struct DeviceArgs {
     /// App identifier for the app to use for pairing record installation (optional, will prompt if not provided)
     #[arg(long = "pairing-app-identifier", value_name = "IDENTIFIER")]
     pub pairing_app_identifier: Option<String>,
+    /// App whose container to browse with --ls / --pull (optional, will prompt if not provided)
+    #[arg(short = 'a', long = "app", value_name = "IDENTIFIER")]
+    pub app: Option<String>,
+    /// List a folder inside the app's container (default: /Documents)
+    #[arg(long = "ls", value_name = "DIR", num_args = 0..=1, default_missing_value = "/Documents")]
+    pub ls: Option<String>,
+    /// Copy a file out of the app's container (i.e. /Documents/output.json)
+    #[arg(long = "pull", value_name = "PATH")]
+    pub pull: Option<String>,
+    /// Where to save the file from --pull (default: its file name in the current folder)
+    #[arg(short = 'o', long = "output", value_name = "PATH", requires = "pull")]
+    pub output: Option<PathBuf>,
     /// Install to connected Mac (arm64 only)
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with_all = ["udid", "pairing"])]
+    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with_all = ["udid", "pairing", "ls", "pull"])]
     pub mac: bool,
 }
 
@@ -103,7 +115,43 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
             .await?;
     }
 
+    if args.ls.is_some() || args.pull.is_some() {
+        let app_identifier = match args.app {
+            Some(identifier) => identifier,
+            None => apps(&device).await?,
+        };
+
+        if let Some(dir) = args.ls {
+            for entry in device.list_app_documents(&app_identifier, &dir).await? {
+                println!("{entry}");
+            }
+        }
+
+        if let Some(remote_path) = args.pull {
+            let data = device
+                .read_app_document(&app_identifier, &remote_path)
+                .await?;
+            let output = match args.output {
+                Some(output) if output.is_dir() => output.join(remote_file_name(&remote_path)?),
+                Some(output) => output,
+                None => PathBuf::from(remote_file_name(&remote_path)?),
+            };
+            std::fs::write(&output, &data)?;
+            log::info!(
+                "Saved {remote_path} from {app_identifier} to {:?} ({} bytes)",
+                output,
+                data.len()
+            );
+        }
+    }
+
     Ok(())
+}
+
+fn remote_file_name(path: &str) -> Result<&str> {
+    path.rsplit('/')
+        .find(|name| !name.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{path} does not name a file"))
 }
 
 pub async fn select_device(device_udid: Option<String>) -> Result<Device> {

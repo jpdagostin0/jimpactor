@@ -18,6 +18,7 @@ use plume_core::MobileProvision;
 
 use crate::options::{SignerApp, SignerAppReal};
 use crate::{Bundle, Error, NetworkConnection, PlistInfoTrait};
+use idevice::afc::AfcClient;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
 use idevice::usbmuxd::UsbmuxdConnection;
@@ -158,6 +159,7 @@ impl Device {
                 );
                 app.installed_name = app_name;
                 app.expiration = installed_profile_expiration(&bundle_id, &info, &profiles);
+                app.sideloaded = app.expiration.is_some() || is_sideloaded(&info);
                 found_apps.push(app);
             }
             found_apps.sort_by_key(|app| {
@@ -397,10 +399,37 @@ impl Device {
         let identifier = identifier.to_owned();
         let path = path.to_owned();
         self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
-            let hc = HouseArrestClient::connect(provider.as_ref()).await?;
-            let mut ac = hc.vend_documents(identifier).await?;
+            let mut ac = open_app_container(provider.as_ref(), &identifier).await?;
             let mut f = ac.open(&path, AfcFopenMode::RdOnly).await?;
             Ok(f.read_entire().await?)
+        })
+        .await
+    }
+
+    /// Lists `dir` inside the container of the app `identifier` (e.g. `/Documents`).
+    /// Folders are returned with a trailing `/`.
+    pub async fn list_app_documents(
+        &self,
+        identifier: &str,
+        dir: &str,
+    ) -> Result<Vec<String>, Error> {
+        let identifier = identifier.to_owned();
+        let dir = dir.trim_end_matches('/').to_owned();
+        self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
+            let mut ac = open_app_container(provider.as_ref(), &identifier).await?;
+            let mut entries = Vec::new();
+            for name in ac.list_dir(if dir.is_empty() { "/" } else { &dir }).await? {
+                if name == "." || name == ".." {
+                    continue;
+                }
+                let is_dir = ac
+                    .get_file_info(format!("{dir}/{name}"))
+                    .await
+                    .is_ok_and(|info| info.st_ifmt == "S_IFDIR");
+                entries.push(if is_dir { format!("{name}/") } else { name });
+            }
+            entries.sort();
+            Ok(entries)
         })
         .await
     }
@@ -594,6 +623,34 @@ fn merge_pairing_records(lockdown: &[u8], remote: &[u8]) -> Result<Vec<u8>, Erro
     Ok(out)
 }
 
+/// Opens the container of the app `identifier` (Documents, Library, tmp).
+/// `VendContainer` works for development-signed apps; apps that only enable
+/// iTunes file sharing allow `VendDocuments` instead, which sees `/Documents`.
+async fn open_app_container(
+    provider: &dyn IdeviceProvider,
+    identifier: &str,
+) -> Result<AfcClient, Error> {
+    match HouseArrestClient::connect(provider)
+        .await?
+        .vend_container(identifier)
+        .await
+    {
+        Ok(client) => Ok(client),
+        Err(error) => {
+            log::debug!("VendContainer failed for {identifier}, trying VendDocuments: {error}");
+            HouseArrestClient::connect(provider)
+                .await?
+                .vend_documents(identifier)
+                .await
+                .map_err(|error| {
+                    Error::Other(format!(
+                        "iOS will not share the files of {identifier} ({error}). Only apps signed with a development profile or with file sharing enabled can be browsed."
+                    ))
+                })
+        }
+    }
+}
+
 fn installed_profile_expiration(
     bundle_id: &str,
     info: &Value,
@@ -629,11 +686,45 @@ fn installed_profile_expiration(
         .filter(|profile| profile.bundle_id().as_deref() == Some(bundle_id))
         .collect::<Vec<_>>();
     let candidates = if exact.is_empty() { candidates } else { exact };
-    let date = *candidates.first()?.expiration_date();
-    candidates
+    // Refreshing leaves the old profile installed beside the new one; the newest
+    // is the one the latest install was signed with. Profiles for different app
+    // IDs (another team) stay ambiguous.
+    let app_id = |profile: &MobileProvision| {
+        profile
+            .entitlements()
+            .get("application-identifier")
+            .and_then(Value::as_string)
+            .map(str::to_owned)
+    };
+    let first_app_id = app_id(candidates.first()?);
+    let same_app_id = candidates
         .iter()
-        .all(|profile| profile.expiration_date() == &date)
-        .then_some(date)
+        .all(|profile| app_id(profile) == first_app_id);
+    let date = *candidates.first()?.expiration_date();
+    if same_app_id {
+        candidates
+            .iter()
+            .map(|profile| *profile.expiration_date())
+            .max_by_key(|date| std::time::SystemTime::from(*date))
+    } else {
+        candidates
+            .iter()
+            .all(|profile| profile.expiration_date() == &date)
+            .then_some(date)
+    }
+}
+
+/// Whether installation_proxy reports the app as signed with a provisioning
+/// profile rather than by the App Store. Used when no installed profile matches.
+fn is_sideloaded(info: &Value) -> bool {
+    let Some(info) = info.as_dictionary() else {
+        return false;
+    };
+    info.get("ProfileValidated").and_then(Value::as_boolean) == Some(true)
+        || info
+            .get("SignerIdentity")
+            .and_then(Value::as_string)
+            .is_some_and(|signer| !signer.starts_with("Apple iPhone OS Application Signing"))
 }
 
 /// Prefix and suffix of cached remote pairing files, `plume_<UDID>.plist`.
@@ -801,6 +892,33 @@ mod selection_tests {
         );
         assert!(installed_profile_expiration("com.other.app", &info, &profiles).is_none());
         assert!(installed_profile_expiration("com.example.app", &info, &[]).is_none());
+
+        // A refresh leaves the old profile installed; the newest one wins.
+        let refreshed = [
+            profile("TEAM123456.com.example.app", "2031-01-01T00:00:00Z"),
+            profile("TEAM123456.com.example.app", "2031-01-08T00:00:00Z"),
+        ];
+        assert_eq!(
+            installed_profile_expiration("com.example.app", &info, &refreshed),
+            Some(plist::Date::from_xml_format("2031-01-08T00:00:00Z").unwrap())
+        );
+    }
+
+    #[test]
+    fn app_store_apps_are_not_sideloaded() {
+        let info = |key: &str, value: Value| {
+            Value::Dictionary(plist::Dictionary::from_iter([(key.to_owned(), value)]))
+        };
+        assert!(!is_sideloaded(&info(
+            "SignerIdentity",
+            "Apple iPhone OS Application Signing".into()
+        )));
+        assert!(is_sideloaded(&info(
+            "SignerIdentity",
+            "Apple Development: someone@example.com (ABCDE12345)".into()
+        )));
+        assert!(is_sideloaded(&info("ProfileValidated", true.into())));
+        assert!(!is_sideloaded(&Value::Dictionary(Default::default())));
     }
     #[test]
     fn hybrid_pairing_roundtrips_through_both_consumers() {

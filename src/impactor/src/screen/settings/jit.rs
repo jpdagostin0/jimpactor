@@ -1,4 +1,6 @@
-use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_input};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
+};
 use iced::{Alignment, Element, Fill, Task};
 use plume_store::{JitListen, JitServerSettings};
 use rust_i18n::t;
@@ -140,9 +142,13 @@ impl JitTab {
                 .width(Fill),
         );
 
-        scrollable(content.padding([0.0, appearance::THEME_PADDING]).width(Fill))
-            .height(Fill)
-            .into()
+        scrollable(
+            content
+                .padding([0.0, appearance::THEME_PADDING])
+                .width(Fill),
+        )
+        .height(Fill)
+        .into()
     }
 
     fn example_host(&self) -> String {

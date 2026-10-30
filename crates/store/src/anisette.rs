@@ -49,6 +49,32 @@ mod sideloadly_tests {
     }
 
     #[test]
+    fn local_reset_only_clears_the_new_mac_identity() {
+        let root =
+            std::env::temp_dir().join(format!("jimpactor-local-reset-{}", rand::random::<u64>()));
+        let local = plume_core::mac_anisette::identity_path(&root, false);
+        let fake = plume_core::mac_anisette::identity_path(&root, true);
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&fake).unwrap();
+        for name in ["adi.pb", "identifier", "accounts.json", ANISETTE_STATE_FILE] {
+            std::fs::write(root.join(name), "keep").unwrap();
+        }
+        std::fs::write(local.join("store.json"), "reset").unwrap();
+        let settings = AnisetteSettings {
+            mode: AnisetteMode::Local,
+            ..Default::default()
+        };
+        settings.reset_identity(&root).unwrap();
+        settings.reset_identity(&root).unwrap();
+        assert!(!local.exists());
+        assert!(fake.exists());
+        for name in ["adi.pb", "identifier", "accounts.json", ANISETTE_STATE_FILE] {
+            assert_eq!(std::fs::read_to_string(root.join(name)).unwrap(), "keep");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn old_settings_load_without_a_sideloadly_session() {
         let settings: AnisetteSettings = serde_json::from_str(r#"{"mode":"remote"}"#).unwrap();
         assert!(settings.sideloadly_session.is_none());
@@ -193,8 +219,12 @@ impl AnisetteSettings {
         match self.mode {
             AnisetteMode::Remote => remove_file(data_path.join(ANISETTE_STATE_FILE))?,
             AnisetteMode::Local => {
-                remove_file(data_path.join("adi.pb"))?;
-                remove_file(data_path.join("identifier"))?;
+                match std::fs::remove_dir_all(plume_core::mac_anisette::identity_path(
+                    data_path, false,
+                )) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                    _ => {}
+                }
             }
             AnisetteMode::Fake => {
                 match std::fs::remove_dir_all(data_path.join(FAKE_IDENTITY_DIR)) {

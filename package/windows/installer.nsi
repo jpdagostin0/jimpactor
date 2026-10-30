@@ -55,6 +55,8 @@ Section "Install"
     File "${APPEXE}"
     File "LICENSE"
     File "Attributions.md"
+    File "adi-core-MIT.txt"
+    File "Unicorn-GPL-2.0.txt"
 
     ; Start Menu entries
     CreateDirectory "$SMPROGRAMS\${APPNAME}"
@@ -87,6 +89,8 @@ Section "Uninstall"
     Delete "$INSTDIR\${APPEXE}"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\Attributions.md"
+    Delete "$INSTDIR\adi-core-MIT.txt"
+    Delete "$INSTDIR\Unicorn-GPL-2.0.txt"
     Delete "$INSTDIR\Uninstall.exe"
 
     RMDir "$INSTDIR"
