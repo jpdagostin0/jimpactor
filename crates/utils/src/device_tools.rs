@@ -3,7 +3,7 @@
 //! developer disk image.
 
 use std::cmp::Ordering;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use idevice::IdeviceService;
@@ -294,7 +294,19 @@ impl Device {
         .await
     }
 
-    /// Copies the named crash reports into `destination`, returning how many were saved.
+    /// Copies every `.ips` report into `destination`, returning how many were saved.
+    pub async fn dump_ips_reports(&self, destination: &Path) -> Result<usize, Error> {
+        let reports = self
+            .crash_reports()
+            .await?
+            .into_iter()
+            .filter(|report| is_ips_report(report))
+            .collect();
+        self.export_crash_reports(reports, destination).await
+    }
+
+    /// Copies the named crash reports into `destination`, keeping their folders so reports
+    /// with the same name stay apart. Returns how many were saved.
     pub async fn export_crash_reports(
         &self,
         names: Vec<String>,
@@ -306,12 +318,17 @@ impl Device {
             let mut saved = 0;
             for name in names {
                 // Report names come from the device; never let one escape the folder.
-                let Some(file_name) = Path::new(&name).file_name() else {
+                let Some(path) = report_destination(&destination, &name) else {
+                    log::warn!("Not saving crash report with an unsafe name: {name}");
                     continue;
                 };
                 match client.pull(name.as_str()).await {
                     Ok(data) => {
-                        std::fs::write(destination.join(file_name), data)
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent)
+                                .map_err(|e| Error::Other(format!("Could not save {name}: {e}")))?;
+                        }
+                        std::fs::write(path, data)
                             .map_err(|e| Error::Other(format!("Could not save {name}: {e}")))?;
                         saved += 1;
                     }
@@ -330,6 +347,26 @@ async fn flush_crash_reports(provider: &dyn IdeviceProvider) {
         Ok(Err(error)) => log::debug!("Crash report flush failed: {error}"),
         Err(_) => log::debug!("Crash report flush timed out"),
     }
+}
+
+/// `.ips` reports, including the `.ips.ca.synced` copies iOS leaves in `Retired`.
+fn is_ips_report(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.ends_with(".ips") || name.contains(".ips.")
+}
+
+/// Where the report `name` is saved below `folder`, or `None` if the name could leave it.
+fn report_destination(folder: &Path, name: &str) -> Option<PathBuf> {
+    let mut path = folder.to_owned();
+    for part in name.split('/') {
+        let unsafe_part =
+            part.is_empty() || part == "." || part == ".." || part.contains(['\\', ':', '\0']);
+        if unsafe_part {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
 }
 
 fn name_has_extension(path: &str) -> bool {
@@ -379,6 +416,30 @@ mod tests {
         );
         assert!(name_has_extension("Retired/Foo.ips"));
         assert!(!name_has_extension("Retired"));
+    }
+
+    #[test]
+    fn ips_reports_are_recognized_with_their_synced_suffixes() {
+        assert!(is_ips_report("App-2026-01-02-101010.ips"));
+        assert!(is_ips_report("Retired/App-2026-01-02-101010.ips.ca.synced"));
+        assert!(!is_ips_report("Panics/log-2026.txt"));
+        assert!(!is_ips_report("ips.txt/report"));
+    }
+
+    #[test]
+    fn report_destinations_keep_folders_and_stay_inside() {
+        let folder = Path::new("dump");
+        assert_eq!(
+            report_destination(folder, "Retired/App.ips"),
+            Some(folder.join("Retired").join("App.ips"))
+        );
+        assert_ne!(
+            report_destination(folder, "App.ips"),
+            report_destination(folder, "Retired/App.ips")
+        );
+        for name in ["../App.ips", "/App.ips", "a/../../b", "a\\b", "C:/b", ""] {
+            assert_eq!(report_destination(folder, name), None, "{name}");
+        }
     }
 
     fn profile(name: &str, team: Option<&str>, days: Option<u64>) -> InstalledProfile {

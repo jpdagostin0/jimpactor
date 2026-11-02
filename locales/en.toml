@@ -389,3 +389,5 @@ utilities_profiles_sort_app_id = "Sort: App ID"
 utilities_profiles_sort_team = "Sort: Team"
 utilities_profiles_ascending = "Ascending"
 utilities_profiles_descending = "Descending"
+
+utilities_crash_logs_dump_ips = "Dump all .ips"

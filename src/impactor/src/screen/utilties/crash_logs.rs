@@ -23,6 +23,7 @@ pub enum Message {
     Saved(Result<bool, String>),
     SaveAll,
     SavedAll(Result<Option<usize>, String>),
+    DumpIps,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -144,6 +145,29 @@ impl CrashLogsTab {
                     Message::SavedAll,
                 )
             }
+            Message::DumpIps => {
+                let Some(device) = device.cloned() else {
+                    return Task::none();
+                };
+                self.busy = true;
+                Task::perform(
+                    async move {
+                        let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await else {
+                            return Ok(None);
+                        };
+                        let folder = folder.path().to_owned();
+                        run_on_tokio(async move {
+                            device
+                                .dump_ips_reports(&folder)
+                                .await
+                                .map(Some)
+                                .map_err(|e| format!("Failed to dump crash logs: {e}"))
+                        })
+                        .await
+                    },
+                    Message::SavedAll,
+                )
+            }
             Message::SavedAll(result) => {
                 self.busy = false;
                 match result {
@@ -211,6 +235,9 @@ impl CrashLogsTab {
                 .on_press_maybe(
                     (usable && !self.busy && !matching.is_empty()).then_some(Message::SaveAll),
                 )
+                .style(appearance::s_button),
+            button(text(t!("utilities_crash_logs_dump_ips")).align_x(Center))
+                .on_press_maybe((usable && !self.busy).then_some(Message::DumpIps))
                 .style(appearance::s_button),
         ]
         .spacing(appearance::THEME_PADDING)
