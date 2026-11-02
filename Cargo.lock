@@ -840,7 +840,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.11.0",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1720,19 +1720,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
-name = "crossfire"
-version = "2.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd901251b9b46c1752c85edfee0aee718c03a85a065f4126d32e5d6d419edf48"
-dependencies = [
- "crossbeam-queue",
- "crossbeam-utils",
- "enum_dispatch",
- "futures-core",
- "parking_lot",
-]
-
-[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2438,18 +2425,6 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
-
-[[package]]
-name = "enum_dispatch"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "enumflags2"
@@ -3788,32 +3763,32 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "idevice"
-version = "0.1.58"
-source = "git+https://github.com/jkcoxson/idevice?rev=5171e34e3a236842af1160a84d955d037ddca3af#5171e34e3a236842af1160a84d955d037ddca3af"
+version = "0.1.68"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5d7799c8497cef60ddfd38f7d92e267b9fa5d0b18e7691d31041453007400ca"
 dependencies = [
  "aes 0.8.4",
  "async-stream",
  "async_zip",
  "base64 0.22.1",
- "byteorder",
  "bytes",
  "cbc 0.1.2",
  "chacha20poly1305",
  "chrono",
+ "der",
  "ed25519-dalek",
+ "flate2",
  "futures",
  "hkdf",
  "hmac 0.12.1",
  "idevice-srp",
  "indexmap 2.14.0",
  "jktcp",
- "json",
  "libc",
  "ns-keyed-archive",
  "plist",
  "plist-macro",
  "rand 0.10.1",
- "reqwest 0.13.3",
  "rsa",
  "rustls",
  "serde",
@@ -3826,6 +3801,8 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "uuid",
+ "web-time",
+ "webpki-roots 1.0.7",
  "x25519-dalek 2.0.1",
  "x509-cert",
 ]
@@ -4150,15 +4127,17 @@ dependencies = [
 
 [[package]]
 name = "jktcp"
-version = "0.1.2"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65b9d88c89c8fe802c7e7c2bf32b0fb85ef53187c30a8f130d41578b4362baa7"
+checksum = "f67259b6408391e66f7d7fd3dbef41ef3bc65e1d67f4c8d5512f2e59835f7844"
 dependencies = [
- "crossfire",
  "futures",
+ "getrandom 0.3.4",
  "rand 0.9.4",
  "tokio",
  "tracing",
+ "wasm-bindgen-futures",
+ "wasmtimer",
 ]
 
 [[package]]
@@ -4240,12 +4219,6 @@ dependencies = [
  "once_cell",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "json"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
 
 [[package]]
 name = "kamadak-exif"
