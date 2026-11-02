@@ -1,5 +1,6 @@
 mod account_limits;
 mod alerts;
+mod app_data;
 mod app_profiles;
 mod bundle;
 mod cgbi;
@@ -25,6 +26,9 @@ pub use account_limits::{
     AccountKind, AccountLimits, FREE_ACTIVE_APP_LIMIT, FREE_APP_ID_LIMIT, Meter, PAID_DEVICE_LIMIT,
 };
 pub use alerts::{ExpiringApp, expiring_apps};
+pub use app_data::{
+    ArchiveScope, BACKUP_MANIFEST, BackupManifest, TransferSummary, read_backup_manifest,
+};
 pub use app_profiles::{AppProfile, AppProfiles};
 pub use bundle::{Bundle, BundleType}; // Bundle helper
 pub use device::{

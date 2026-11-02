@@ -479,17 +479,8 @@ impl UtilitiesScreen {
                 .map(Message::CrashLogs),
             Message::InstallUpdate(_) => Task::none(),
             Message::BrowseFiles(app) => {
-                let Some(bundle_id) = app.bundle_id.clone() else {
-                    return Task::none();
-                };
-                let name = app
-                    .installed_name
-                    .clone()
-                    .unwrap_or_else(|| app.app.to_string());
                 self.browsing_files = true;
-                self.app_files
-                    .open_app(bundle_id, name)
-                    .map(Message::AppFiles)
+                self.app_files.open_app(&app).map(Message::AppFiles)
             }
             Message::AppFiles(app_files::Message::Back) => {
                 self.browsing_files = false;

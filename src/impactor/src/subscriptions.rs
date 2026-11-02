@@ -1057,6 +1057,40 @@ pub(crate) fn run_on_tokio<T: Send + 'static>(
     async move { rx.await.expect("background task panicked") }
 }
 
+/// An update from [`work_stream`].
+#[derive(Debug, Clone)]
+pub(crate) enum Work<T> {
+    Progress(String),
+    Done(T),
+}
+
+/// Runs `work` on its own tokio runtime, relaying what it reports while it runs.
+pub(crate) fn work_stream<T, F, Fut>(work: F) -> impl iced::futures::Stream<Item = Work<T>>
+where
+    T: Send + 'static,
+    F: FnOnce(tokio::sync::mpsc::UnboundedSender<String>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T> + Send + 'static,
+{
+    iced::stream::channel(
+        32,
+        move |mut output: iced::futures::channel::mpsc::Sender<Work<T>>| async move {
+            use iced::futures::SinkExt;
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let finished = run_on_tokio(work(tx));
+            while let Some(status) = rx.recv().await {
+                // Files can go by faster than they can be drawn; show the latest.
+                let mut latest = status;
+                while let Ok(status) = rx.try_recv() {
+                    latest = status;
+                }
+                let _ = output.send(Work::Progress(latest)).await;
+            }
+            let _ = output.send(Work::Done(finished.await)).await;
+        },
+    )
+}
+
 /// Asks a yes/no question in a native dialog.
 pub(crate) async fn confirm(title: String, description: String) -> bool {
     rfd::AsyncMessageDialog::new()

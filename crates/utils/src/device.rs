@@ -634,7 +634,7 @@ fn merge_pairing_records(lockdown: &[u8], remote: &[u8]) -> Result<Vec<u8>, Erro
 /// Opens the container of the app `identifier` (Documents, Library, tmp).
 /// `VendContainer` works for development-signed apps; apps that only enable
 /// iTunes file sharing allow `VendDocuments` instead, which sees `/Documents`.
-async fn open_app_container(
+pub(crate) async fn open_app_container(
     provider: &dyn IdeviceProvider,
     identifier: &str,
 ) -> Result<AfcClient, Error> {

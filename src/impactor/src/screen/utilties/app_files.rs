@@ -1,14 +1,16 @@
-//! Browses the container of one installed app (Documents, Library, tmp) and
-//! copies files from it to the computer. Opened from an app's Files button.
+//! Browses the container of one installed app (Documents, Library, tmp), copies
+//! files from it to the computer, and backs its data up or restores it. Opened from
+//! an app's Files button.
 
 use iced::widget::{button, column, row, scrollable, text};
 use iced::{Center, Element, Fill, Task};
-use plume_utils::Device;
+use plume_utils::{ArchiveScope, Device, SignerAppReal, TransferSummary, read_backup_manifest};
 use rust_i18n::t;
+use std::path::PathBuf;
 
 use super::StatusMessage;
 use crate::appearance;
-use crate::subscriptions::run_on_tokio;
+use crate::subscriptions::{Work, confirm, run_on_tokio, work_stream};
 
 const START_FOLDER: &str = "/Documents";
 
@@ -23,12 +25,19 @@ pub enum Message {
     Select(String),
     Save,
     Saved(Result<bool, String>),
+    Backup,
+    BackupTo(Option<PathBuf>),
+    Restore,
+    RestoreFrom(Option<PathBuf>),
+    RestoreConfirmed(PathBuf),
+    Transfer(Work<Result<TransferSummary, String>>),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct AppFiles {
     /// Bundle identifier and display name of the app being browsed.
     app: Option<(String, String)>,
+    version: Option<String>,
     /// Folder shown, from the container root, without a trailing `/`.
     folder: String,
     /// Names in `folder`; subfolders end in `/`.
@@ -41,7 +50,14 @@ pub struct AppFiles {
 
 impl AppFiles {
     /// Switches to `bundle_id`, starting in its Documents folder.
-    pub fn open_app(&mut self, bundle_id: String, name: String) -> Task<Message> {
+    pub fn open_app(&mut self, app: &SignerAppReal) -> Task<Message> {
+        let Some(bundle_id) = app.bundle_id.clone() else {
+            return Task::none();
+        };
+        let name = app
+            .installed_name
+            .clone()
+            .unwrap_or_else(|| app.app.to_string());
         if self.app.as_ref().is_some_and(|(id, _)| *id == bundle_id) {
             return if self.loaded || self.busy {
                 Task::none()
@@ -51,6 +67,7 @@ impl AppFiles {
         }
         *self = Self {
             app: Some((bundle_id, name)),
+            version: app.version.clone(),
             folder: START_FOLDER.to_owned(),
             ..Self::default()
         };
@@ -144,7 +161,132 @@ impl AppFiles {
                 }
                 Task::none()
             }
+            Message::Backup => {
+                let Some((bundle_id, _)) = &self.app else {
+                    return Task::none();
+                };
+                let file_name = format!(
+                    "{bundle_id}-{}.zip",
+                    chrono::Local::now().format("%Y%m%d-%H%M%S")
+                );
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("Backup", &["zip"])
+                            .set_file_name(file_name)
+                            .save_file()
+                            .await
+                            .map(|file| file.path().to_owned())
+                    },
+                    Message::BackupTo,
+                )
+            }
+            Message::BackupTo(None) | Message::RestoreFrom(None) => Task::none(),
+            Message::BackupTo(Some(path)) => {
+                let (Some(device), Some((bundle_id, _))) = (device.cloned(), self.app.clone())
+                else {
+                    return Task::none();
+                };
+                let version = self.version.clone();
+                self.begin_transfer(move |progress| async move {
+                    device
+                        .archive_app_files(
+                            &bundle_id,
+                            version,
+                            ArchiveScope::Backup,
+                            &path,
+                            move |file| {
+                                let _ = progress.send(file.to_owned());
+                            },
+                        )
+                        .await
+                        .map_err(|e| format!("Backup failed: {e}"))
+                })
+            }
+            Message::Restore => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .add_filter("Backup", &["zip"])
+                        .pick_file()
+                        .await
+                        .map(|file| file.path().to_owned())
+                },
+                Message::RestoreFrom,
+            ),
+            Message::RestoreFrom(Some(path)) => {
+                let Some((bundle_id, name)) = self.app.clone() else {
+                    return Task::none();
+                };
+                let manifest = match read_backup_manifest(&path) {
+                    Ok(manifest) => manifest,
+                    Err(e) => {
+                        self.status = Some(StatusMessage::error(e.to_string()));
+                        return Task::none();
+                    }
+                };
+                let mut description = t!(
+                    "utilities_restore_confirm",
+                    files = manifest.files,
+                    date = manifest.created.format("%Y-%m-%d %H:%M").to_string(),
+                    name = name
+                )
+                .into_owned();
+                if manifest.bundle_id != bundle_id {
+                    description.push_str("\n\n");
+                    description
+                        .push_str(&t!("utilities_restore_other_app", app = manifest.bundle_id));
+                }
+                let title = t!("utilities_files_restore").into_owned();
+                Task::perform(confirm(title, description), move |yes| {
+                    if yes {
+                        Message::RestoreConfirmed(path.clone())
+                    } else {
+                        Message::RestoreFrom(None)
+                    }
+                })
+            }
+            Message::RestoreConfirmed(path) => {
+                let (Some(device), Some((bundle_id, _))) = (device.cloned(), self.app.clone())
+                else {
+                    return Task::none();
+                };
+                self.begin_transfer(move |progress| async move {
+                    device
+                        .restore_app_files(&bundle_id, &path, move |file| {
+                            let _ = progress.send(file.to_owned());
+                        })
+                        .await
+                        .map_err(|e| format!("Restore failed: {e}"))
+                })
+            }
+            Message::Transfer(Work::Progress(file)) => {
+                self.status = Some(StatusMessage::success(file));
+                Task::none()
+            }
+            Message::Transfer(Work::Done(result)) => {
+                self.busy = false;
+                self.status = Some(match result {
+                    Ok(summary) => StatusMessage::success(t!(
+                        "utilities_files_transferred",
+                        files = summary.files,
+                        size = format!("{:.1}", summary.bytes as f64 / 1_048_576.0),
+                        skipped = summary.skipped.len()
+                    )),
+                    Err(e) => StatusMessage::error(e),
+                });
+                self.load(device)
+            }
         }
+    }
+
+    fn begin_transfer<F, Fut>(&mut self, work: F) -> Task<Message>
+    where
+        F: FnOnce(tokio::sync::mpsc::UnboundedSender<String>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<TransferSummary, String>> + Send + 'static,
+    {
+        self.busy = true;
+        self.status = None;
+        Task::stream(work_stream(work)).map(Message::Transfer)
     }
 
     fn load(&mut self, device: Option<&Device>) -> Task<Message> {
@@ -205,6 +347,12 @@ impl AppFiles {
                 .on_press(Message::Back)
                 .style(appearance::s_button),
             text(format!("{name} ({bundle_id})")).width(Fill),
+            button(text(t!("utilities_files_backup")).align_x(Center))
+                .on_press_maybe((!self.busy).then_some(Message::Backup))
+                .style(appearance::s_button),
+            button(text(t!("utilities_files_restore")).align_x(Center))
+                .on_press_maybe((!self.busy).then_some(Message::Restore))
+                .style(appearance::s_button),
         ]
         .spacing(appearance::THEME_PADDING)
         .align_y(Center);
