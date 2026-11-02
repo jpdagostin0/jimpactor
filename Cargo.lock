@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "genicons"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "resvg",
 ]
@@ -4090,7 +4090,7 @@ dependencies = [
 
 [[package]]
 name = "jimpactor"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "auto-launcher",
  "chrono",
@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "jimpactor-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -5588,7 +5588,7 @@ dependencies = [
 
 [[package]]
 name = "omnisette"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "adi-core",
  "android-loader",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "plume_core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes 0.9.0",
  "aes-gcm",
@@ -6143,11 +6143,11 @@ dependencies = [
 
 [[package]]
 name = "plume_gestalt"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "plume_store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "keyring",
@@ -6162,7 +6162,7 @@ dependencies = [
 
 [[package]]
 name = "plume_utils"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ar",
  "bzip2 0.6.1",
@@ -11064,7 +11064,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xkit"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "apple-bundles",
  "apple-codesign",
@@ -11116,7 +11116,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "apple-dmg",
  "flate2",

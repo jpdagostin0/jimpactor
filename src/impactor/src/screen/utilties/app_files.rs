@@ -2,7 +2,7 @@
 //! copies files from it to the computer. Opened from an app's Files button.
 
 use iced::widget::{button, column, row, scrollable, text};
-use iced::{Center, Color, Element, Fill, Task};
+use iced::{Center, Element, Fill, Task};
 use plume_utils::Device;
 use rust_i18n::t;
 
@@ -14,6 +14,8 @@ const START_FOLDER: &str = "/Documents";
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Handled by the Apps section, which returns to the app list.
+    Back,
     Refresh,
     Loaded(String, Result<Vec<String>, String>),
     Open(String),
@@ -24,7 +26,7 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AppFilesTab {
+pub struct AppFiles {
     /// Bundle identifier and display name of the app being browsed.
     app: Option<(String, String)>,
     /// Folder shown, from the container root, without a trailing `/`.
@@ -37,7 +39,7 @@ pub struct AppFilesTab {
     status: Option<StatusMessage>,
 }
 
-impl AppFilesTab {
+impl AppFiles {
     /// Switches to `bundle_id`, starting in its Documents folder.
     pub fn open_app(&mut self, bundle_id: String, name: String) -> Task<Message> {
         if self.app.as_ref().is_some_and(|(id, _)| *id == bundle_id) {
@@ -57,6 +59,7 @@ impl AppFilesTab {
 
     pub fn update(&mut self, device: Option<&Device>, message: Message) -> Task<Message> {
         match message {
+            Message::Back => Task::none(),
             Message::Refresh => self.load(device),
             Message::Loaded(folder, result) => {
                 // A reply for a folder we already left is stale.
@@ -164,20 +167,12 @@ impl AppFilesTab {
         )
     }
 
-    pub fn view(&self, usable: bool) -> Element<'_, Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         let small = appearance::THEME_FONT_SIZE - 1.0;
-        let hint = |label: String| {
-            text(label)
-                .size(small)
-                .color(Color::from_rgb(0.7, 0.7, 0.7))
-        };
-
-        if !usable {
-            return hint(t!("utilities_no_device_connected").to_string()).into();
-        }
-        let Some((bundle_id, name)) = &self.app else {
-            return hint(t!("utilities_files_pick_app").to_string()).into();
-        };
+        let (bundle_id, name) = self
+            .app
+            .as_ref()
+            .map_or(("", ""), |(id, name)| (id.as_str(), name.as_str()));
 
         let refresh_label = if self.busy {
             t!("utilities_loading")
@@ -205,8 +200,16 @@ impl AppFilesTab {
         .spacing(appearance::THEME_PADDING)
         .align_y(Center);
 
-        let mut content = column![text(format!("{name} ({bundle_id})")).size(small), toolbar]
-            .spacing(appearance::THEME_PADDING);
+        let header = row![
+            button(text(t!("back")).align_x(Center))
+                .on_press(Message::Back)
+                .style(appearance::s_button),
+            text(format!("{name} ({bundle_id})")).width(Fill),
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .align_y(Center);
+
+        let mut content = column![header, toolbar].spacing(appearance::THEME_PADDING);
         if let Some(ref status) = self.status {
             content = content.push(text(&status.text).size(small).color(status.color()));
         }

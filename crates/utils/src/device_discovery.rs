@@ -20,13 +20,20 @@ pub enum DeviceEvent {
 /// already attached as well as subsequent changes, avoiding a list/subscribe race.
 /// The caller must poll this on a local runtime: idevice's listen stream isn't Send.
 pub async fn watch_devices(address: UsbmuxdAddr, output: UnboundedSender<DeviceEvent>) {
+    let mut reported = None;
     loop {
         let mut connected = BTreeSet::new();
         tokio::select! {
             _ = output.closed() => return,
             result = watch_connection(&address, &output, &mut connected) => {
                 if let Err(error) = result {
-                    log::warn!("Device discovery interrupted: {error}; reconnecting in 2 seconds");
+                    let reason = interruption(&address, &error);
+                    if reported.as_ref() == Some(&reason) {
+                        log::debug!("USB device discovery still unavailable: {reason}");
+                    } else {
+                        log::warn!("USB device discovery unavailable: {reason}. Retrying every few seconds; Wi-Fi devices are not affected.");
+                        reported = Some(reason);
+                    }
                 }
             }
         }
@@ -40,6 +47,16 @@ pub async fn watch_devices(address: UsbmuxdAddr, output: UnboundedSender<DeviceE
             _ = output.closed() => return,
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
         }
+    }
+}
+
+/// Names the socket's own error, which `IdeviceError::Socket` leaves out of its message.
+fn interruption(address: &UsbmuxdAddr, error: &Error) -> String {
+    match error {
+        Error::Idevice(idevice::IdeviceError::Socket(source)) => {
+            format!("could not reach the Apple device service at {address:?}: {source}")
+        }
+        error => error.to_string(),
     }
 }
 

@@ -17,7 +17,6 @@ pub enum Message {
     OpenFileDialog,
     FileSelected(Option<std::path::PathBuf>),
     NavigateToInstaller(plume_utils::Package),
-    NavigateToUtilities,
     QuickInstall(super::quick_install::Message),
 }
 
@@ -89,9 +88,10 @@ impl GeneralScreen {
                 .height(Fill)
                 .padding(0)
                 .style(button::text),
+            // No bottom padding: this row lines up with the sidebar's Settings button.
             container(quick_install)
                 .width(Fill)
-                .padding([appearance::THEME_PADDING, 0.0]),
+                .padding(iced::Padding::ZERO.top(appearance::THEME_PADDING)),
         ]
         .into()
     }

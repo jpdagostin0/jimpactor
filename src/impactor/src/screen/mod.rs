@@ -13,9 +13,9 @@ use iced::Length::Fill;
 use iced::event::{self, Event, Status};
 use iced::keyboard::{self, Key, key};
 use iced::widget::operation::{focus_next, focus_previous};
-use iced::widget::{button, column, container, pick_list, row, stack, text};
+use iced::widget::{Stack, button, column, container, mouse_area, opaque, pick_list, row, text};
 use iced::window;
-use iced::{Element, Subscription, Task};
+use iced::{Alignment, Element, Subscription, Task};
 
 use plume_store::{AccountStore, AppearanceMode};
 use plume_utils::{Device, SignerOptions};
@@ -24,6 +24,10 @@ use crate::subscriptions;
 use crate::tray::ImpactorTray;
 use crate::{appearance, defaults};
 use windows::login_window;
+
+const SIDEBAR_WIDTH: f32 = 180.0;
+const SETTINGS_POPUP_WIDTH: f32 = 720.0;
+const SETTINGS_POPUP_HEIGHT: f32 = 480.0;
 
 static REFRESH_DAEMON_DEVICES: std::sync::OnceLock<crate::refresh::ConnectedDevices> =
     std::sync::OnceLock::new();
@@ -37,6 +41,10 @@ pub fn set_refresh_daemon_devices(devices: crate::refresh::ConnectedDevices) {
 pub enum Message {
     // Navigation
     NavigateToScreen(ImpactorScreenType),
+    /// Shows one of the selected device's sections in the sidebar.
+    SelectDeviceTab(utilties::UtilitiesTab),
+    OpenSettings,
+    CloseSettings,
     NextScreen,
     PreviousScreen,
     TabPressed {
@@ -98,7 +106,10 @@ pub enum Message {
 
 pub struct Impactor {
     current_screen: ImpactorScreen,
-    previous_screen: Option<Box<ImpactorScreen>>,
+    /// The selected device's sections. Kept while other screens show so syslog keeps streaming.
+    utilities: Box<utilties::UtilitiesScreen>,
+    /// The settings popup, while it is open.
+    settings: Option<Box<settings::SettingsScreen>>,
     installer_screen: Option<Box<package::PackageScreen>>,
     devices: Vec<Device>,
     /// Where installs go. With device locking, this is the locked device while it is connected.
@@ -121,16 +132,13 @@ pub struct Impactor {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImpactorScreenType {
     Main,
-    Utilities,
-    Settings,
     Installer,
     Progress,
 }
 
 enum ImpactorScreen {
     Main(general::GeneralScreen),
-    Utilities(utilties::UtilitiesScreen),
-    Settings(Box<settings::SettingsScreen>),
+    Utilities,
     Installer(Box<package::PackageScreen>),
     Progress(progress::ProgressScreen),
 }
@@ -144,6 +152,7 @@ impl Impactor {
         }
         tray.update_refresh_apps(&store);
         let selected_locale = store.locale().map(str::to_string);
+        let remote_pairing = store.remote_pairing();
         let device_lock = store
             .lock_device()
             .then(|| {
@@ -172,7 +181,8 @@ impl Impactor {
         (
             Self {
                 current_screen: ImpactorScreen::Main(general::GeneralScreen::new()),
-                previous_screen: None,
+                utilities: Box::new(utilties::UtilitiesScreen::new(None, remote_pairing)),
+                settings: None,
                 installer_screen: None,
                 devices: Vec::new(),
                 selected_device: None,
@@ -276,20 +286,31 @@ impl Impactor {
         }
     }
 
-    /// Reloads the utilities screen for a new target device, if it is open.
-    fn refresh_utilities(&mut self) -> Task<Message> {
-        if let ImpactorScreen::Utilities(screen) = &self.current_screen {
-            let rppairing_enabled = screen.rppairing_enabled;
-            self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
-            return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                rppairing_enabled,
-            )));
+    /// Points the device sections at the current target, reloading the open section.
+    fn sync_utilities(&mut self) -> Task<Message> {
+        if self.utilities.targets(self.selected_device.as_ref()) {
+            return Task::none();
         }
-        Task::none()
+        let tab = self.utilities.tab();
+        self.utilities = Box::new(utilties::UtilitiesScreen::new(
+            self.selected_device.clone(),
+            self.remote_pairing(),
+        ));
+        let select = Task::done(Message::UtilitiesScreen(utilties::Message::SelectTab(tab)));
+        if matches!(self.current_screen, ImpactorScreen::Utilities) {
+            Task::batch([select, self.refresh_apps()])
+        } else {
+            select
+        }
     }
 
-    fn new_utilities_screen(&self) -> utilties::UtilitiesScreen {
-        utilties::UtilitiesScreen::new(self.selected_device.clone(), self.remote_pairing())
+    fn refresh_apps(&self) -> Task<Message> {
+        if self.selected_device.is_none() {
+            return Task::none();
+        }
+        Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
+            self.utilities.rppairing_enabled,
+        )))
     }
 
     fn respond_to_next_certificate_reset(&mut self, accepted: bool) {
@@ -318,7 +339,7 @@ impl Impactor {
                 self.selected_device = lock.select(&self.devices);
                 self.device_lock = Some(lock);
                 self.save_device_lock();
-                self.refresh_utilities()
+                self.sync_utilities()
             }
             Message::ComboBoxSelected(value) => {
                 let device = self
@@ -332,7 +353,7 @@ impl Impactor {
                     return Task::none();
                 }
                 self.selected_device = device;
-                self.refresh_utilities()
+                self.sync_utilities()
             }
             Message::DeviceConnected(device) => {
                 if let Some(existing) = self
@@ -376,18 +397,7 @@ impl Impactor {
                     devices.insert(device.udid.clone(), device.clone());
                 }
 
-                if let ImpactorScreen::Utilities(_) = self.current_screen {
-                    let rppairing_enabled = match &self.current_screen {
-                        ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
-                        _ => false,
-                    };
-                    self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
-                    return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                        rppairing_enabled,
-                    )));
-                }
-
-                Task::none()
+                self.sync_utilities()
             }
             Message::DeviceDisconnected(id) => {
                 let udid = self
@@ -430,47 +440,32 @@ impl Impactor {
                     }
                 }
 
-                if let ImpactorScreen::Utilities(_) = self.current_screen {
-                    let rppairing_enabled = match &self.current_screen {
-                        ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
-                        _ => false,
-                    };
-                    self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
-                    return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                        rppairing_enabled,
-                    )));
-                }
-
-                Task::none()
+                self.sync_utilities()
             }
             Message::NavigateToScreen(screen_type) => {
-                if screen_type == ImpactorScreenType::Settings
-                    && !matches!(self.current_screen, ImpactorScreen::Progress(_))
-                {
-                    self.previous_screen = Some(Box::new(std::mem::replace(
-                        &mut self.current_screen,
-                        ImpactorScreen::Main(general::GeneralScreen::new()),
-                    )));
+                self.navigate_to_screen(screen_type);
+                Task::none()
+            }
+            Message::SelectDeviceTab(tab) => {
+                let reopened = matches!(self.current_screen, ImpactorScreen::Utilities)
+                    && self.utilities.tab() == tab;
+                self.current_screen = ImpactorScreen::Utilities;
+                let select =
+                    Task::done(Message::UtilitiesScreen(utilties::Message::SelectTab(tab)));
+                if tab == utilties::UtilitiesTab::Apps && !reopened {
+                    Task::batch([select, self.refresh_apps()])
+                } else {
+                    select
                 }
-
-                self.navigate_to_screen(screen_type.clone());
-
-                if screen_type == ImpactorScreenType::Settings {
-                    return Task::done(Message::SettingsScreen(
-                        settings::Message::ProbeRemoteServer,
-                    ));
-                }
-
-                if screen_type == ImpactorScreenType::Utilities {
-                    let rppairing_enabled = match &self.current_screen {
-                        ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
-                        _ => false,
-                    };
-                    return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                        rppairing_enabled,
-                    )));
-                }
-
+            }
+            Message::OpenSettings => {
+                self.settings = Some(Box::new(settings::SettingsScreen::new()));
+                Task::done(Message::SettingsScreen(
+                    settings::Message::ProbeRemoteServer,
+                ))
+            }
+            Message::CloseSettings => {
+                self.settings = None;
                 Task::none()
             }
 
@@ -484,9 +479,8 @@ impl Impactor {
             Message::NextScreen => {
                 let next_screen = match self.current_screen {
                     ImpactorScreen::Main(_) => ImpactorScreenType::Installer,
-                    ImpactorScreen::Utilities(_) => return Task::none(),
+                    ImpactorScreen::Utilities => return Task::none(),
                     ImpactorScreen::Installer(_) => ImpactorScreenType::Progress,
-                    ImpactorScreen::Settings(_) => return Task::none(),
                     ImpactorScreen::Progress(_) => return Task::none(),
                 };
 
@@ -495,7 +489,7 @@ impl Impactor {
             }
             Message::PreviousScreen => match &self.current_screen {
                 ImpactorScreen::Main(_) => Task::none(),
-                ImpactorScreen::Utilities(_) => {
+                ImpactorScreen::Utilities => {
                     self.navigate_to_screen(ImpactorScreenType::Main);
                     Task::none()
                 }
@@ -506,14 +500,6 @@ impl Impactor {
                 ImpactorScreen::Progress(_) => {
                     if let Some(installer) = self.installer_screen.take() {
                         self.current_screen = ImpactorScreen::Installer(installer);
-                    } else {
-                        self.navigate_to_screen(ImpactorScreenType::Main);
-                    }
-                    Task::none()
-                }
-                ImpactorScreen::Settings(_) => {
-                    if let Some(prev_screen) = self.previous_screen.take() {
-                        self.current_screen = *prev_screen;
                     } else {
                         self.navigate_to_screen(ImpactorScreenType::Main);
                     }
@@ -656,23 +642,22 @@ impl Impactor {
                             | login_window::Message::TwoFactorCancel
                     ) {
                         self.login_windows.remove(&id);
-                        let settings_task =
-                            if let ImpactorScreen::Settings(screen) = &mut self.current_screen {
-                                if let login_window::Message::LoginSuccess(account) = &msg {
-                                    screen.account_changed(account.email());
-                                    screen.tab = settings::SettingsTab::Account;
-                                    screen
-                                        .update(
-                                            settings::Message::FetchTeams(account.email().clone()),
-                                            self.account_store.as_ref(),
-                                        )
-                                        .map(Message::SettingsScreen)
-                                } else {
-                                    Task::none()
-                                }
+                        let settings_task = if let Some(screen) = &mut self.settings {
+                            if let login_window::Message::LoginSuccess(account) = &msg {
+                                screen.account_changed(account.email());
+                                screen.tab = settings::SettingsTab::Account;
+                                screen
+                                    .update(
+                                        settings::Message::FetchTeams(account.email().clone()),
+                                        self.account_store.as_ref(),
+                                    )
+                                    .map(Message::SettingsScreen)
                             } else {
                                 Task::none()
-                            };
+                            }
+                        } else {
+                            Task::none()
+                        };
 
                         if let Some((app, version)) = self.pending_source_install.take()
                             && matches!(msg, login_window::Message::LoginSuccess(_))
@@ -722,16 +707,6 @@ impl Impactor {
                         self.current_screen = ImpactorScreen::Installer(Box::new(
                             package::PackageScreen::new(Some(package), options),
                         ));
-                    } else if let general::Message::NavigateToUtilities = msg {
-                        let rppairing_enabled = match &self.current_screen {
-                            ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
-                            _ => false,
-                        };
-                        self.current_screen =
-                            ImpactorScreen::Utilities(self.new_utilities_screen());
-                        return Task::done(Message::UtilitiesScreen(
-                            utilties::Message::RefreshApps(rppairing_enabled),
-                        ));
                     }
 
                     task
@@ -740,17 +715,10 @@ impl Impactor {
                 }
             }
             Message::UtilitiesScreen(msg) => {
-                if let utilties::Message::ToggleRPPairing(enabled) = msg {
-                    self.set_remote_pairing(enabled);
-                }
-                if let ImpactorScreen::Utilities(ref mut screen) = self.current_screen {
-                    screen.update(msg).map(Message::UtilitiesScreen)
-                } else {
-                    Task::none()
-                }
+                self.utilities.update(msg).map(Message::UtilitiesScreen)
             }
             Message::SettingsScreen(msg) => {
-                if let ImpactorScreen::Settings(ref mut screen) = self.current_screen {
+                if let Some(screen) = &mut self.settings {
                     match msg {
                         settings::Message::ShowLogin(email) => {
                             if let Some(id) = self.login_windows.keys().next().copied() {
@@ -870,7 +838,7 @@ impl Impactor {
                                 self.device_candidate = None;
                             }
                             self.save_device_lock();
-                            Task::none()
+                            self.sync_utilities()
                         }
                         settings::Message::ToggleCloseToTray(enabled) => {
                             if let Some(store) = &mut self.account_store
@@ -934,6 +902,7 @@ impl Impactor {
                             settings::PairingMessage::ToggleRemotePairing(enabled),
                         ) => {
                             self.set_remote_pairing(enabled);
+                            self.utilities.rppairing_enabled = enabled;
                             Task::none()
                         }
                         settings::Message::Sources(ref sources_msg)
@@ -1156,11 +1125,12 @@ impl Impactor {
 
         let tray_subscription = subscriptions::tray_subscription();
 
-        let hover_subscription = if let ImpactorScreen::Main(_) = self.current_screen {
-            subscriptions::file_hover_subscription()
-        } else {
-            Subscription::none()
-        };
+        let hover_subscription =
+            if matches!(self.current_screen, ImpactorScreen::Main(_)) && self.settings.is_none() {
+                subscriptions::file_hover_subscription()
+            } else {
+                Subscription::none()
+            };
 
         let progress_subscription =
             if let ImpactorScreen::Progress(ref progress) = self.current_screen {
@@ -1187,14 +1157,21 @@ impl Impactor {
             ) => Some(Message::TabPressed {
                 shift: modifiers.shift(),
             }),
+            (
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: Key::Named(key::Named::Escape),
+                    ..
+                }),
+                _,
+            ) => Some(Message::CloseSettings),
             _ => None,
         });
 
-        let logs_subscription = match &self.current_screen {
-            ImpactorScreen::Settings(screen) if screen.tab == settings::SettingsTab::Logs => {
+        let logs_subscription = match self.settings.as_deref() {
+            Some(screen) if screen.tab == settings::SettingsTab::Logs => {
                 subscriptions::logs_tick_subscription()
             }
-            ImpactorScreen::Settings(screen)
+            Some(screen)
                 if matches!(
                     screen.tab,
                     settings::SettingsTab::Tailscale | settings::SettingsTab::Jit
@@ -1205,12 +1182,7 @@ impl Impactor {
             _ => Subscription::none(),
         };
 
-        let utilities_subscription = match &self.current_screen {
-            ImpactorScreen::Utilities(screen) => {
-                screen.subscription().map(Message::UtilitiesScreen)
-            }
-            _ => Subscription::none(),
-        };
+        let utilities_subscription = self.utilities.subscription().map(Message::UtilitiesScreen);
 
         let tray_menu_refresh_subscription = subscriptions::tray_menu_refresh_subscription();
         let certificate_reset_subscription = subscriptions::certificate_reset_subscription();
@@ -1253,17 +1225,27 @@ impl Impactor {
                 lock.can_install(self.selected_device.as_ref())
             });
         let screen_content = self.view_current_screen(has_device);
-        let top_bar = self.view_top_bar();
-        let base: Element<'_, Message> =
-            container(column(vec![top_bar, screen_content]).spacing(appearance::THEME_PADDING))
-                .padding(appearance::THEME_PADDING)
-                .into();
+        let base: Element<'_, Message> = container(
+            row![
+                self.view_sidebar(),
+                container(screen_content).width(Fill).height(Fill)
+            ]
+            .height(Fill)
+            .spacing(appearance::THEME_PADDING),
+        )
+        .padding(appearance::THEME_PADDING)
+        .width(Fill)
+        .height(Fill)
+        .into();
 
-        if self.certificate_reset_queue.front().is_some() {
-            stack![base, self.view_certificate_reset_prompt()].into()
-        } else {
-            base
+        let mut layers = vec![base];
+        if let Some(screen) = &self.settings {
+            layers.push(self.view_settings_popup(screen));
         }
+        if self.certificate_reset_queue.front().is_some() {
+            layers.push(self.view_certificate_reset_prompt());
+        }
+        Stack::with_children(layers).into()
     }
 
     fn view_current_screen(&self, has_device: bool) -> Element<'_, Message> {
@@ -1275,15 +1257,7 @@ impl Impactor {
                         .map(general::Message::QuickInstall),
                 )
                 .map(Message::MainScreen),
-            ImpactorScreen::Utilities(screen) => screen.view().map(Message::UtilitiesScreen),
-            ImpactorScreen::Settings(screen) => screen
-                .view(
-                    &self.account_store,
-                    &self.selected_locale,
-                    self.selected_device.as_ref(),
-                    &self.devices,
-                )
-                .map(Message::SettingsScreen),
+            ImpactorScreen::Utilities => self.utilities.view().map(Message::UtilitiesScreen),
             ImpactorScreen::Installer(screen) => {
                 screen.view(has_device).map(Message::InstallerScreen)
             }
@@ -1291,7 +1265,7 @@ impl Impactor {
         }
     }
 
-    fn view_top_bar(&self) -> Element<'_, Message> {
+    fn view_device_hero(&self) -> Element<'_, Message> {
         let locking = self.lock_enabled();
         let device_names: Vec<String> = self.devices.iter().map(|d| d.to_string()).collect();
         let shown_device = if locking {
@@ -1308,38 +1282,10 @@ impl Impactor {
         let placeholder_str = selected_device_name
             .as_deref()
             .or(waiting.as_deref())
-            .unwrap_or("No Device");
+            .map(str::to_owned)
+            .unwrap_or_else(|| rust_i18n::t!("utilities_no_device_connected").to_string());
 
-        let right_button = if matches!(
-            self.current_screen,
-            ImpactorScreen::Settings(_) | ImpactorScreen::Utilities(_)
-        ) {
-            button(appearance::icon(appearance::CHEVRON_BACK))
-                .on_press(Message::PreviousScreen)
-                .style(appearance::s_button)
-        } else {
-            button(appearance::icon(appearance::GEAR))
-                .style(appearance::s_button)
-                .on_press(Message::NavigateToScreen(ImpactorScreenType::Settings))
-        };
-
-        let mut left = row![].spacing(appearance::THEME_PADDING);
-        if matches!(self.current_screen, ImpactorScreen::Main(_)) {
-            left = left.push(
-                button(appearance::icon_text(
-                    appearance::WRENCH,
-                    rust_i18n::t!("utilities"),
-                    None,
-                ))
-                .on_press(Message::MainScreen(general::Message::NavigateToUtilities))
-                .style(appearance::s_button),
-            );
-        }
-        left = left.push(right_button);
-
-        let mut bar = row![
-            left,
-            container(text("")).width(Fill),
+        let mut picker = column![
             pick_list(
                 device_names,
                 selected_device_name.clone(),
@@ -1347,7 +1293,9 @@ impl Impactor {
             )
             .style(appearance::s_pick_list)
             .placeholder(placeholder_str)
-            .width(250),
+            .text_size(appearance::THEME_FONT_SIZE + 2.0)
+            .padding(appearance::THEME_PADDING)
+            .width(Fill),
         ]
         .spacing(appearance::THEME_PADDING);
         if locking {
@@ -1357,17 +1305,111 @@ impl Impactor {
                     .as_ref()
                     .is_none_or(|lock| !lock.accepts(candidate))
             });
-            bar = bar.push(
-                button(text("Select"))
+            picker = picker.push(
+                button(text("Select").align_x(Alignment::Center))
                     .on_press_maybe(pending.then_some(Message::SelectDevice))
                     .style(if pending {
                         appearance::p_button
                     } else {
                         appearance::s_button
-                    }),
+                    })
+                    .width(Fill),
             );
         }
-        container(bar).width(Fill).into()
+        picker.into()
+    }
+
+    fn view_sidebar(&self) -> Element<'_, Message> {
+        // The installer and progress screens have their own way back.
+        let can_navigate = matches!(
+            self.current_screen,
+            ImpactorScreen::Main(_) | ImpactorScreen::Utilities
+        );
+        let section = |label: std::borrow::Cow<'static, str>, active: bool, message: Message| {
+            button(text(label).align_x(Alignment::Start))
+                .on_press_maybe(can_navigate.then_some(message))
+                .style(if active {
+                    appearance::p_button
+                } else {
+                    appearance::s_button
+                })
+                .width(Fill)
+        };
+
+        let mut sidebar = column![
+            self.view_device_hero(),
+            section(
+                rust_i18n::t!("install"),
+                !matches!(self.current_screen, ImpactorScreen::Utilities),
+                Message::NavigateToScreen(ImpactorScreenType::Main),
+            ),
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .width(SIDEBAR_WIDTH)
+        .height(Fill);
+        for tab in utilties::UtilitiesTab::ALL {
+            let active = matches!(self.current_screen, ImpactorScreen::Utilities)
+                && self.utilities.tab() == tab;
+            sidebar = sidebar.push(section(tab.label(), active, Message::SelectDeviceTab(tab)));
+        }
+
+        sidebar
+            .push(container(text("")).height(Fill))
+            .push(
+                button(appearance::icon_text(
+                    appearance::GEAR,
+                    rust_i18n::t!("settings_title"),
+                    None,
+                ))
+                .on_press(Message::OpenSettings)
+                .style(appearance::s_button)
+                .width(Fill),
+            )
+            .into()
+    }
+
+    fn view_settings_popup<'a>(
+        &'a self,
+        screen: &'a settings::SettingsScreen,
+    ) -> Element<'a, Message> {
+        let header = row![
+            text(rust_i18n::t!("settings_title"))
+                .size(appearance::THEME_FONT_SIZE + 2.0)
+                .width(Fill),
+            button(text(rust_i18n::t!("close")))
+                .on_press(Message::CloseSettings)
+                .style(appearance::s_button),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(appearance::THEME_PADDING);
+
+        let body = screen
+            .view(
+                &self.account_store,
+                &self.selected_locale,
+                self.selected_device.as_ref(),
+                &self.devices,
+            )
+            .map(Message::SettingsScreen);
+
+        let dialog = container(column![header, body].spacing(appearance::THEME_PADDING))
+            .padding(appearance::THEME_PADDING)
+            .width(SETTINGS_POPUP_WIDTH)
+            .height(SETTINGS_POPUP_HEIGHT)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(iced::Background::Color(theme.palette().background)),
+                border: iced::Border {
+                    width: 1.0,
+                    color: theme.palette().text.scale_alpha(0.2),
+                    radius: appearance::THEME_CORNER_RADIUS.into(),
+                },
+                ..Default::default()
+            });
+
+        opaque(
+            mouse_area(container(opaque(dialog)).center(Fill).style(popup_backdrop))
+                .on_press(Message::CloseSettings),
+        )
     }
 
     fn view_certificate_reset_prompt(&self) -> Element<'_, Message> {
@@ -1409,15 +1451,7 @@ impl Impactor {
             .width(Fill)
             .height(Fill)
             .center(Fill)
-            .style(|_theme: &iced::Theme| container::Style {
-                background: Some(iced::Background::Color(iced::Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.45,
-                })),
-                ..Default::default()
-            })
+            .style(popup_backdrop)
             .into()
     }
 
@@ -1432,13 +1466,6 @@ impl Impactor {
                 }
 
                 self.current_screen = ImpactorScreen::Main(general::GeneralScreen::new());
-            }
-            ImpactorScreenType::Utilities => {
-                self.current_screen = ImpactorScreen::Utilities(self.new_utilities_screen());
-            }
-            ImpactorScreenType::Settings => {
-                self.current_screen =
-                    ImpactorScreen::Settings(Box::new(settings::SettingsScreen::new()));
             }
             ImpactorScreenType::Progress => {
                 self.current_screen = ImpactorScreen::Progress(progress::ProgressScreen::new());
@@ -1605,5 +1632,17 @@ impl Impactor {
         } else {
             Task::none()
         }
+    }
+}
+
+fn popup_backdrop(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Background::Color(iced::Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.45,
+        })),
+        ..Default::default()
     }
 }

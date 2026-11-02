@@ -269,90 +269,99 @@ impl DeveloperTab {
         let enabled = !self.loading;
         let small = appearance::THEME_FONT_SIZE - 1.0;
 
-        content = content.push(text(t!(
+        let section = |title: std::borrow::Cow<'static, str>| {
+            text(title.into_owned()).size(appearance::THEME_FONT_SIZE + 1.0)
+        };
+        let divider =
+            || container(rule::horizontal(1)).padding([appearance::THEME_PADDING / 2.0, 0.0]);
+        let item = |title: String, detail: String, action: Element<'a, Message>| {
+            row![
+                column![text(title), text(detail).size(small)].width(Fill),
+                action,
+            ]
+            .spacing(appearance::THEME_PADDING)
+            .align_y(Alignment::Center)
+        };
+
+        content = content.push(section(t!(
             "developer_certificates",
             count = overview.certificates.len()
         )));
+        if overview.certificates.is_empty() {
+            content = content.push(text(t!("developer_none")).size(small));
+        }
         for cert in &overview.certificates {
-            let machine = cert.machine_name.as_deref().unwrap_or("?");
-            content = content.push(
-                row![
-                    column![
-                        text(format!("{} – {machine}", cert.name)),
-                        text(t!(
-                            "developer_certificate_details",
-                            serial = cert.serial_number.as_str(),
-                            expires = cert.expires.as_str()
-                        ))
-                        .size(small),
-                    ]
-                    .width(Fill),
-                    button(text(t!("developer_revoke")))
-                        .on_press_maybe(enabled.then(|| Message::RevokeCertificate(cert.clone())))
-                        .style(appearance::s_button),
-                ]
-                .spacing(appearance::THEME_PADDING)
-                .align_y(Alignment::Center),
-            );
+            // Every certificate shares the account's name; the machine tells them apart.
+            let title = cert.machine_name.as_deref().unwrap_or(cert.name.as_str());
+            content = content.push(item(
+                title.to_owned(),
+                t!(
+                    "developer_certificate_expires",
+                    expires = cert.expires.as_str()
+                )
+                .into_owned(),
+                button(text(t!("developer_revoke")))
+                    .on_press_maybe(enabled.then(|| Message::RevokeCertificate(cert.clone())))
+                    .style(appearance::s_button)
+                    .into(),
+            ));
         }
 
-        content = content.push(container(rule::horizontal(1)).padding([appearance::THEME_PADDING / 2.0, 0.0]))
-            .push(text("Registered devices"))
-            .push(text("Devices can be enabled or disabled, not permanently deleted. Disabling invalidates affected profiles and does not free an annual slot. Requires Account Holder or Admin access.").size(small));
+        content = content.push(divider());
         match &overview.devices {
             Ok(devices) => {
+                content = content.push(section(t!("developer_devices", count = devices.len())));
+                if devices.is_empty() {
+                    content = content.push(text(t!("developer_none")).size(small));
+                }
                 for device in devices {
                     let target_enabled = device.status == "DISABLED";
                     let known_status = matches!(device.status.as_str(), "ENABLED" | "DISABLED");
-                    content = content.push(
-                        row![
-                            column![
-                                text(&device.name),
-                                text(format!(
-                                    "{} · {} · {}",
-                                    device.udid, device.platform, device.status
-                                ))
-                                .size(small)
-                            ]
-                            .width(Fill),
-                            button(text(if target_enabled { "Enable" } else { "Disable" }))
-                                .on_press_maybe((enabled && known_status).then(|| {
-                                    Message::SetDeviceEnabled(device.clone(), target_enabled)
-                                }))
-                                .style(appearance::s_button),
-                        ]
-                        .spacing(appearance::THEME_PADDING)
-                        .align_y(Alignment::Center),
-                    );
+                    let status = match device.status.as_str() {
+                        "ENABLED" => t!("developer_device_enabled").into_owned(),
+                        "DISABLED" => t!("developer_device_disabled").into_owned(),
+                        other => other.to_owned(),
+                    };
+                    content = content.push(item(
+                        device.name.clone(),
+                        format!("{status} · {}", device.udid),
+                        button(text(if target_enabled {
+                            t!("developer_device_enable")
+                        } else {
+                            t!("developer_device_disable")
+                        }))
+                        .on_press_maybe(
+                            (enabled && known_status)
+                                .then(|| Message::SetDeviceEnabled(device.clone(), target_enabled)),
+                        )
+                        .style(appearance::s_button)
+                        .into(),
+                    ));
                 }
             }
             Err(error) => {
                 content = content.push(
-                    text(format!(
-                        "Device management unavailable for this account: {error}"
-                    ))
-                    .size(small),
+                    text(t!("developer_devices_unavailable", error = error.as_str())).size(small),
                 );
             }
         }
 
-        content = content
-            .push(container(rule::horizontal(1)).padding([appearance::THEME_PADDING / 2.0, 0.0]))
-            .push(text(t!(
-                "developer_app_ids",
-                count = overview.app_ids.len()
-            )));
+        content = content.push(divider()).push(section(t!(
+            "developer_app_ids",
+            count = overview.app_ids.len()
+        )));
+        if overview.app_ids.is_empty() {
+            content = content.push(text(t!("developer_none")).size(small));
+        }
         for app_id in &overview.app_ids {
-            content = content.push(
-                row![
-                    column![text(&app_id.name), text(&app_id.identifier).size(small)].width(Fill),
-                    button(text(t!("pairing_delete")))
-                        .on_press_maybe(enabled.then(|| Message::DeleteAppId(app_id.clone())))
-                        .style(appearance::s_button),
-                ]
-                .spacing(appearance::THEME_PADDING)
-                .align_y(Alignment::Center),
-            );
+            content = content.push(item(
+                app_id.name.clone(),
+                app_id.identifier.clone(),
+                button(text(t!("pairing_delete")))
+                    .on_press_maybe(enabled.then(|| Message::DeleteAppId(app_id.clone())))
+                    .style(appearance::s_button)
+                    .into(),
+            ));
         }
 
         scrollable(content).height(Fill).into()

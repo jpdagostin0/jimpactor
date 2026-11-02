@@ -134,7 +134,7 @@ impl SourcesTab {
                 t!("sources_remove"),
                 None,
             ))
-            .on_press_maybe((!source.is_default()).then(|| Message::Remove(source.url.clone())))
+            .on_press(Message::Remove(source.url.clone()))
             .style(appearance::s_button);
             content = content.push(
                 row![

@@ -1,6 +1,4 @@
-use iced::widget::{
-    button, checkbox, column, container, image, row, rule, scrollable, text, text_input,
-};
+use iced::widget::{button, column, container, image, row, rule, scrollable, text, text_input};
 use iced::{Center, Color, Element, Fill, Subscription, Task};
 use rust_i18n::t;
 
@@ -59,7 +57,6 @@ pub enum Message {
     Trust,
     PairResult(Result<(), String>),
     InstallPairingResult(String, Result<(), String>),
-    ToggleRPPairing(bool),
     SelectTab(UtilitiesTab),
     Uninstall(SignerAppReal),
     UninstallConfirmed(String, String, bool),
@@ -88,8 +85,27 @@ pub enum UtilitiesTab {
     Profiles,
     Device,
     CrashLogs,
-    AppFiles,
     Syslog,
+}
+
+impl UtilitiesTab {
+    pub const ALL: [UtilitiesTab; 5] = [
+        UtilitiesTab::Apps,
+        UtilitiesTab::Profiles,
+        UtilitiesTab::Device,
+        UtilitiesTab::CrashLogs,
+        UtilitiesTab::Syslog,
+    ];
+
+    pub fn label(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            UtilitiesTab::Apps => t!("utilities_tab_apps"),
+            UtilitiesTab::Profiles => t!("utilities_tab_profiles"),
+            UtilitiesTab::Device => t!("utilities_tab_device"),
+            UtilitiesTab::CrashLogs => t!("utilities_tab_crash_logs"),
+            UtilitiesTab::Syslog => t!("utilities_tab_syslog"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,7 +158,9 @@ pub struct UtilitiesScreen {
     profiles: Box<profiles::ProfilesTab>,
     device_tab: Box<device_info::DeviceTab>,
     crash_logs: Box<crash_logs::CrashLogsTab>,
-    app_files: Box<app_files::AppFilesTab>,
+    app_files: Box<app_files::AppFiles>,
+    /// Whether Apps shows the chosen app's files instead of the app list.
+    browsing_files: bool,
 }
 
 impl UtilitiesScreen {
@@ -162,6 +180,7 @@ impl UtilitiesScreen {
             device_tab: Box::default(),
             crash_logs: Box::default(),
             app_files: Box::default(),
+            browsing_files: false,
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
@@ -171,6 +190,23 @@ impl UtilitiesScreen {
         }
 
         screen
+    }
+
+    pub fn tab(&self) -> UtilitiesTab {
+        self.tab
+    }
+
+    /// Whether this screen already shows `device` in its current connection state.
+    pub fn targets(&self, device: Option<&Device>) -> bool {
+        match (&self.device, device) {
+            (None, None) => true,
+            (Some(current), Some(device)) => {
+                current.device_id == device.device_id
+                    && current.udid == device.udid
+                    && current.is_available() == device.is_available()
+            }
+            _ => false,
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -335,12 +371,9 @@ impl UtilitiesScreen {
                 self.app_statuses.insert(app_key, status);
                 Task::none()
             }
-            Message::ToggleRPPairing(enabled) => {
-                self.rppairing_enabled = enabled;
-                Task::none()
-            }
             Message::SelectTab(tab) => {
                 self.tab = tab;
+                self.browsing_files = false;
                 let usable = self.device_usable();
                 match tab {
                     UtilitiesTab::Profiles if usable => {
@@ -424,10 +457,14 @@ impl UtilitiesScreen {
                     .installed_name
                     .clone()
                     .unwrap_or_else(|| app.app.to_string());
-                self.tab = UtilitiesTab::AppFiles;
+                self.browsing_files = true;
                 self.app_files
                     .open_app(bundle_id, name)
                     .map(Message::AppFiles)
+            }
+            Message::AppFiles(app_files::Message::Back) => {
+                self.browsing_files = false;
+                Task::none()
             }
             Message::AppFiles(msg) => self
                 .app_files
@@ -556,36 +593,10 @@ impl UtilitiesScreen {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let tab_button = |tab: UtilitiesTab, label: String| {
-            button(text(label).align_x(Center))
-                .on_press(Message::SelectTab(tab))
-                .style(if self.tab == tab {
-                    appearance::p_button
-                } else {
-                    appearance::s_button
-                })
-                .width(Fill)
-        };
-        let tabs = row![
-            tab_button(UtilitiesTab::Apps, t!("utilities_tab_apps").to_string()),
-            tab_button(
-                UtilitiesTab::Profiles,
-                t!("utilities_tab_profiles").to_string()
-            ),
-            tab_button(UtilitiesTab::Device, t!("utilities_tab_device").to_string()),
-            tab_button(
-                UtilitiesTab::CrashLogs,
-                t!("utilities_tab_crash_logs").to_string()
-            ),
-            tab_button(
-                UtilitiesTab::AppFiles,
-                t!("utilities_tab_files").to_string()
-            ),
-            tab_button(UtilitiesTab::Syslog, t!("utilities_tab_syslog").to_string()),
-        ]
-        .spacing(appearance::THEME_PADDING);
-
-        let body = match self.tab {
+        match self.tab {
+            UtilitiesTab::Apps if self.browsing_files && self.device_usable() => {
+                self.app_files.view().map(Message::AppFiles)
+            }
             UtilitiesTab::Apps => self.view_apps(),
             UtilitiesTab::Profiles => self
                 .profiles
@@ -599,17 +610,8 @@ impl UtilitiesScreen {
                 .crash_logs
                 .view(self.device_usable())
                 .map(Message::CrashLogs),
-            UtilitiesTab::AppFiles => self
-                .app_files
-                .view(self.device_usable())
-                .map(Message::AppFiles),
             UtilitiesTab::Syslog => self.view_syslog(),
-        };
-
-        column![tabs, body]
-            .spacing(appearance::THEME_PADDING)
-            .height(Fill)
-            .into()
+        }
     }
 
     fn view_syslog(&self) -> Element<'_, Message> {
@@ -656,12 +658,6 @@ impl UtilitiesScreen {
 
         let status = if let Some(ref status) = self.syslog.status {
             Some(text(&status.text).size(small).color(status.color()))
-        } else if !usable {
-            Some(
-                text(t!("utilities_no_device_connected"))
-                    .size(small)
-                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
-            )
         } else if self.syslog.paused && !self.syslog.held.is_empty() {
             Some(text(t!("utilities_syslog_held", count = self.syslog.held.len())).size(small))
         } else {
@@ -709,10 +705,6 @@ impl UtilitiesScreen {
                 ]
                 .spacing(4),
             );
-        } else {
-            content = content.push(
-                text(t!("utilities_no_device_connected")).color(Color::from_rgb(0.7, 0.7, 0.7)),
-            );
         }
 
         if let Some(ref status) = self.status_message {
@@ -754,12 +746,6 @@ impl UtilitiesScreen {
                 .spacing(appearance::THEME_PADDING),
             );
         }
-
-        let toggle = checkbox(self.rppairing_enabled)
-            .label(t!("pairing_include_remote"))
-            .on_toggle(Message::ToggleRPPairing);
-
-        content = content.push(toggle);
 
         // App Store apps are hidden; only sideloaded ones can be managed here.
         let mut listed_apps = self

@@ -1,5 +1,5 @@
 use iced::widget::{button, column, container, row, text};
-use iced::{Center, Color, Element, Fill, Task};
+use iced::{Center, Element, Fill, Task};
 use plume_utils::{Device, DeviceDetails};
 use rust_i18n::t;
 
@@ -135,13 +135,7 @@ impl DeviceTab {
             content = content.push(text(&status.text).size(small).color(status.color()));
         }
         if !usable {
-            return content
-                .push(
-                    text(t!("utilities_no_device_connected"))
-                        .size(small)
-                        .color(Color::from_rgb(0.7, 0.7, 0.7)),
-                )
-                .into();
+            return content.into();
         }
 
         if let Some(ref d) = self.details {

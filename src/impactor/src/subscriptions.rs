@@ -24,6 +24,7 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DeviceEvent>();
 
                 let network_tx = tx.clone();
+                let known_wifi_devices = get_data_path().join("wifi_devices.plist");
                 std::thread::Builder::new()
                     .name("jimpactor-wifi-discovery".into())
                     .spawn(move || {
@@ -31,7 +32,7 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                             .enable_all()
                             .build()
                             .expect("Could not start Wi-Fi discovery runtime");
-                        rt.block_on(watch_network_devices(network_tx));
+                        rt.block_on(watch_network_devices(network_tx, known_wifi_devices));
                     })
                     .expect("Could not start Wi-Fi discovery thread");
 

@@ -33,7 +33,7 @@ On Windows, install Apple's device drivers through [iTunes](https://support.appl
 
 Pair your iPhone or iPad with this computer over USB first and accept **Trust This Computer** on the device. For wireless connections, keep the computer and device on the same Wi-Fi network. Jimpactor automatically discovers paired devices; select the entry labeled `[WiFi]` in the device dropdown to install or refresh apps and manage pairing files wirelessly.
 
-Wi-Fi devices stay in the list for five minutes after disconnecting. Jimpactor reconnects automatically when a device returns, preserving your selection. Before starting a device operation, it waits briefly for a cached device to reconnect. If the device is unavailable, wake and unlock it, check its Wi-Fi connection, and retry.
+Wi-Fi devices stay in the list for five minutes after disconnecting. Jimpactor reconnects automatically when a device returns, preserving your selection. Jimpactor also remembers each device's last Wi-Fi address and tries it once at startup, so a device that is not advertising itself can still appear. Before starting a device operation, it waits briefly for a cached device to reconnect. If the device is unavailable, wake and unlock it, check its Wi-Fi connection, and retry.
 
 ## Signing and troubleshooting
 
@@ -70,7 +70,7 @@ Turn on **Settings → Behavior → Lock installs to a selected device** to tie 
 
 **Close to tray** (on by default) keeps Jimpactor running in the tray when the window closes so Auto Refresh continues. When it is off, closing the window quits, unless an installation or refresh is running.
 
-**Utilities** lists sideloaded apps with their icons and profile expiration dates. Apps without a readable provisioning profile, such as App Store apps, are not listed. Pairing actions are available for supported apps.
+The device sidebar picks the target device and opens its sections. **Apps** lists sideloaded apps with their icons and profile expiration dates. Apps without a readable provisioning profile, such as App Store apps, are not listed. Pairing actions are available for supported apps.
 
 ## Tailscale
 

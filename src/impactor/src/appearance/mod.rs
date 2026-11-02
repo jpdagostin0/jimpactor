@@ -7,8 +7,7 @@ mod picklist;
 pub(crate) use button::{p_button, s_button};
 #[allow(unused)]
 pub(crate) use fonts::{
-    CHEVRON_BACK, DOWNLOAD, FILE, GEAR, MINUS, PLUS, SHARE, STAR, WRENCH, icon, icon_text,
-    load_fonts,
+    CHEVRON_BACK, DOWNLOAD, FILE, GEAR, MINUS, PLUS, SHARE, STAR, icon, icon_text, load_fonts,
 };
 pub(crate) use picklist::s_pick_list;
 

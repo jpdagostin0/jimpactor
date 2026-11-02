@@ -2,7 +2,7 @@
 //! Analytics & Improvements → Analytics Data.
 
 use iced::widget::{button, column, row, scrollable, text, text_input};
-use iced::{Center, Color, Element, Fill, Task};
+use iced::{Center, Element, Fill, Task};
 use plume_utils::Device;
 use rust_i18n::t;
 
@@ -221,13 +221,7 @@ impl CrashLogsTab {
             content = content.push(text(&status.text).size(small).color(status.color()));
         }
         if !usable {
-            return content
-                .push(
-                    text(t!("utilities_no_device_connected"))
-                        .size(small)
-                        .color(Color::from_rgb(0.7, 0.7, 0.7)),
-                )
-                .into();
+            return content.into();
         }
         if !self.loaded {
             return content.into();

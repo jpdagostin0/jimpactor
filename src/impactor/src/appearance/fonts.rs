@@ -15,7 +15,6 @@ pub(crate) const GEAR: &str = "\u{e800}";
 pub(crate) const CHEVRON_BACK: &str = "\u{e801}";
 pub(crate) const DOWNLOAD: &str = "\u{e802}";
 pub(crate) const STAR: &str = "\u{e803}";
-pub(crate) const WRENCH: &str = "\u{e804}";
 pub(crate) const PLUS: &str = "\u{e805}";
 pub(crate) const MINUS: &str = "\u{e806}";
 pub(crate) const SHARE: &str = "\u{e807}";

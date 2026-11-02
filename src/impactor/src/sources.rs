@@ -7,12 +7,11 @@ use serde::{Deserialize, Serialize};
 
 const SOURCES_FILE: &str = "sources.json";
 const USER_AGENT: &str = concat!("Jimpactor/", env!("CARGO_PKG_VERSION"));
-pub(crate) const DEFAULT_SOURCE_URL: &str = "https://github.com/SideStore/SideStore";
-/// Name of the app the one-click install preselects.
+/// Name of the app the one-click install preselects when it is available.
 pub(crate) const SIDESTORE: &str = "SideStore";
-/// Sources added once for every user after SideStore. Unlike SideStore they can be removed,
-/// and a removed one is not added back.
-const EXTRA_DEFAULT_SOURCES: [(&str, &str); 3] = [
+/// Sources added once for every user. A removed one is not added back.
+const DEFAULT_SOURCES: [(&str, &str); 4] = [
+    (SIDESTORE, "https://github.com/SideStore/SideStore"),
     (
         "GoldenNugget",
         "https://github.com/GoldenNugget-Team/GoldenNugget-mobile",
@@ -46,26 +45,12 @@ pub(crate) struct Source {
     pub kind: SourceKind,
 }
 
-impl Source {
-    pub fn default_source() -> Self {
-        Self {
-            name: SIDESTORE.to_string(),
-            url: DEFAULT_SOURCE_URL.to_string(),
-            kind: SourceKind::GitHub,
-        }
-    }
-
-    pub fn is_default(&self) -> bool {
-        self.url == DEFAULT_SOURCE_URL
-    }
-}
-
-/// The user's sources, stored in `sources.json`. The default SideStore source is always first.
+/// The user's sources, stored in `sources.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SourcesStore {
     #[serde(default)]
     sources: Vec<Source>,
-    /// Extra default sources already added once, so removing one is remembered.
+    /// Default sources already added once, so removing one is remembered.
     #[serde(default)]
     seeded_defaults: Vec<String>,
 }
@@ -80,15 +65,12 @@ impl SourcesStore {
             .ok()
             .and_then(|contents| serde_json::from_str(&contents).ok())
             .unwrap_or_default();
-        if !store.sources.iter().any(Source::is_default) {
-            store.sources.insert(0, Source::default_source());
-        }
-        store.seed_extra_defaults();
+        store.seed_defaults();
         store
     }
 
-    fn seed_extra_defaults(&mut self) {
-        for (name, url) in EXTRA_DEFAULT_SOURCES {
+    fn seed_defaults(&mut self) {
+        for (name, url) in DEFAULT_SOURCES {
             if self.seeded_defaults.iter().any(|seeded| seeded == url) {
                 continue;
             }
@@ -121,7 +103,7 @@ impl SourcesStore {
     }
 
     pub fn remove(&mut self, url: &str) {
-        self.sources.retain(|s| s.is_default() || s.url != url);
+        self.sources.retain(|s| s.url != url);
     }
 }
 
@@ -459,21 +441,22 @@ pub(crate) async fn download(
 
 #[cfg(test)]
 mod tests {
-    use super::{EXTRA_DEFAULT_SOURCES, SourcesStore, github_repo};
+    use super::{DEFAULT_SOURCES, SourcesStore, github_repo};
 
     #[test]
-    fn extra_defaults_are_added_once_and_stay_removed() {
+    fn defaults_are_added_once_and_stay_removed() {
         let directory =
             std::env::temp_dir().join(format!("jimpactor-sources-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let _ = std::fs::remove_file(directory.join(super::SOURCES_FILE));
 
         let mut store = SourcesStore::load(&directory);
-        assert!(store.sources()[0].is_default());
-        for (_, url) in EXTRA_DEFAULT_SOURCES {
+        assert_eq!(store.sources()[0].name, super::SIDESTORE);
+        for (_, url) in DEFAULT_SOURCES {
             assert!(store.sources().iter().any(|source| source.url == url));
         }
-        store.remove(EXTRA_DEFAULT_SOURCES[0].1);
+        // SideStore is the first default, so this also covers removing it.
+        store.remove(DEFAULT_SOURCES[0].1);
         store.save(&directory).unwrap();
 
         let reloaded = SourcesStore::load(&directory);
@@ -481,9 +464,9 @@ mod tests {
             !reloaded
                 .sources()
                 .iter()
-                .any(|source| source.url == EXTRA_DEFAULT_SOURCES[0].1)
+                .any(|source| source.url == DEFAULT_SOURCES[0].1)
         );
-        assert_eq!(reloaded.sources().len(), EXTRA_DEFAULT_SOURCES.len());
+        assert_eq!(reloaded.sources().len(), DEFAULT_SOURCES.len() - 1);
         let _ = std::fs::remove_dir_all(&directory);
     }
 

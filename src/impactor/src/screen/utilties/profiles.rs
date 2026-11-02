@@ -144,13 +144,7 @@ impl ProfilesTab {
         if let Some(ref status) = self.status {
             content = content.push(text(&status.text).size(small).color(status.color()));
         }
-        if !usable {
-            content = content.push(
-                text(t!("utilities_no_device_connected"))
-                    .size(small)
-                    .color(Color::from_rgb(0.7, 0.7, 0.7)),
-            );
-        } else if self.loaded && self.profiles.is_empty() {
+        if usable && self.loaded && self.profiles.is_empty() {
             content = content.push(text(t!("utilities_profiles_empty")).size(small));
         }
 

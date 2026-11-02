@@ -1,4 +1,4 @@
-use iced::widget::{button, column, pick_list, row, text};
+use iced::widget::{button, pick_list, row};
 use iced::{Alignment, Element, Fill, Task};
 use rust_i18n::t;
 
@@ -126,17 +126,9 @@ impl QuickInstall {
         .on_press_maybe(install)
         .style(appearance::p_button);
 
-        let mut content = column![
-            row![app_pick, version_pick, install_button]
-                .spacing(appearance::THEME_PADDING)
-                .align_y(Alignment::Center),
-        ]
-        .spacing(appearance::THEME_PADDING);
-        if !has_device {
-            content = content.push(
-                text(t!("utilities_no_device_connected")).size(appearance::THEME_FONT_SIZE - 1.0),
-            );
-        }
-        content.into()
+        row![app_pick, version_pick, install_button]
+            .spacing(appearance::THEME_PADDING)
+            .align_y(Alignment::Center)
+            .into()
     }
 }

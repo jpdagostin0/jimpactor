@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV6};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use idevice::heartbeat::HeartbeatClient;
@@ -21,6 +22,54 @@ use crate::{Device, DeviceEvent, Error, NetworkConnection};
 
 const APPLE_MOBILE_SERVICE: &str = "_apple-mobdev2._tcp.local.";
 const WIFI_DEVICE_CACHE_DURATION: Duration = Duration::from_secs(5 * 60);
+// Below the tailnet range and far above what the DNS-SD counter reaches.
+const KNOWN_DEVICE_FIRST_ID: u32 = 0xA000_0000;
+
+/// The last authenticated LAN address of each device, by UDID, kept across launches.
+#[derive(Clone)]
+struct KnownWifiDevices {
+    path: PathBuf,
+    addresses: Arc<Mutex<HashMap<String, SocketAddr>>>,
+}
+
+impl KnownWifiDevices {
+    fn load(path: PathBuf) -> Self {
+        let addresses = plist::Value::from_file(&path)
+            .ok()
+            .and_then(plist::Value::into_dictionary)
+            .into_iter()
+            .flatten()
+            .filter_map(|(udid, address)| Some((udid, address.as_string()?.parse().ok()?)))
+            .collect();
+        Self {
+            path,
+            addresses: Arc::new(Mutex::new(addresses)),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<(String, SocketAddr)> {
+        let addresses = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        addresses
+            .iter()
+            .map(|(udid, address)| (udid.clone(), *address))
+            .collect()
+    }
+
+    fn remember(&self, udid: &str, address: SocketAddr) {
+        let mut addresses = self.addresses.lock().unwrap_or_else(|e| e.into_inner());
+        if addresses.get(udid) == Some(&address) {
+            return;
+        }
+        addresses.insert(udid.to_owned(), address);
+        let contents: plist::Dictionary = addresses
+            .iter()
+            .map(|(udid, address)| (udid.clone(), plist::Value::String(address.to_string())))
+            .collect();
+        if let Err(error) = plist::Value::Dictionary(contents).to_file_xml(&self.path) {
+            log::warn!("Could not save known Wi-Fi devices: {error}");
+        }
+    }
+}
 
 struct CachedDevice {
     display_id: u32,
@@ -152,23 +201,33 @@ struct NetworkService {
 /// locate endpoints; a saved pairing must authenticate before a device is shown.
 /// Previously authenticated devices remain in the list for five minutes after
 /// losing their connection, retaining their selection when they reconnect.
-pub async fn watch_network_devices(output: UnboundedSender<DeviceEvent>) {
+/// Their addresses are saved to `known_devices`, and each is tried once at startup
+/// so a device that is not advertising can still connect.
+pub async fn watch_network_devices(output: UnboundedSender<DeviceEvent>, known_devices: PathBuf) {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::join!(
-        watch_network_connections(tx),
+        watch_network_connections(tx, KnownWifiDevices::load(known_devices)),
         forward_cached_devices(rx, output)
     );
 }
 
-async fn watch_network_connections(output: UnboundedSender<DeviceEvent>) {
+async fn watch_network_connections(output: UnboundedSender<DeviceEvent>, known: KnownWifiDevices) {
     // Keep raw IDs unique across browser restarts so late disconnects cannot
     // invalidate another device's cached entry.
     let mut next_id = 0x8000_0000u32;
     let connections = NetworkConnections::default();
+    // Owns any devices the check connects, so it lives as long as discovery.
+    let _startup_check = {
+        let (known, output, connections) = (known.clone(), output.clone(), connections.clone());
+        DeviceWorker::spawn("jimpactor-wifi-startup-check".into(), move || {
+            check_known_devices(known, output, connections)
+        })
+    }
+    .inspect_err(|error| log::error!("Could not start the Wi-Fi startup check: {error}"));
     loop {
         tokio::select! {
             _ = output.closed() => return,
-            result = watch_browser(&output, &mut next_id, &connections) => {
+            result = watch_browser(&output, &mut next_id, &connections, &known) => {
                 log::warn!("Wi-Fi discovery interrupted: {result:?}; retrying in 2 seconds");
             }
         }
@@ -183,6 +242,7 @@ async fn watch_browser(
     output: &UnboundedSender<DeviceEvent>,
     next_id: &mut u32,
     connections: &NetworkConnections,
+    known: &KnownWifiDevices,
 ) -> Result<(), Error> {
     let browser = Browser(ServiceDaemon::new().map_err(|error| Error::Other(error.to_string()))?);
     let events = browser
@@ -220,6 +280,7 @@ async fn watch_browser(
                 let worker_addresses = addresses.clone();
                 let worker_output = output.clone();
                 let connections = connections.clone();
+                let known = known.clone();
                 let task = DeviceWorker::spawn(format!("jimpactor-wifi-device-{id}"), move || {
                     run_network_device(
                         worker_name,
@@ -227,6 +288,7 @@ async fn watch_browser(
                         id,
                         worker_output,
                         connections,
+                        known,
                     )
                 })?;
                 services.insert(
@@ -281,6 +343,7 @@ async fn run_network_device(
     id: u32,
     output: UnboundedSender<DeviceEvent>,
     connections: NetworkConnections,
+    known: KnownWifiDevices,
 ) {
     log::info!(
         "Device worker started on {}",
@@ -288,30 +351,8 @@ async fn run_network_device(
     );
     loop {
         match connect_network_device(&service, &addresses, id, Route::Lan).await {
-            Ok((mut device, mut heartbeat, lockdown)) => {
-                let provider = device
-                    .network
-                    .as_ref()
-                    .expect("initialized network transport")
-                    .provider(CONNECTION_LABEL);
-                let (connection, session) = connections.connected(&device.udid, provider);
-                device.network = Some(connection);
-                // Retain the authenticated lockdown session alongside heartbeat.
-                let _lockdown = lockdown;
-                log::info!("Wi-Fi device connected: {device}");
-                if output.send(DeviceEvent::Connected(device)).is_err() {
-                    return;
-                }
-                let result = keep_alive(&mut heartbeat).await;
-                let replaced = !session.is_current();
-                drop(session);
-                log::debug!("Wi-Fi connection ended for {service}: {result:?}");
-                if output.send(DeviceEvent::Disconnected(id)).is_err() {
-                    return;
-                }
-                if replaced {
-                    // A newer advertisement already owns this device. Do not
-                    // reconnect the old worker and compete for its heartbeat.
+            Ok(authenticated) => {
+                if serve_network_device(authenticated, id, &output, &connections, &known).await {
                     return;
                 }
             }
@@ -322,6 +363,80 @@ async fn run_network_device(
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
     }
+}
+
+/// Reports an authenticated device and holds it until the connection ends.
+/// Returns whether the worker should stop instead of reconnecting.
+async fn serve_network_device(
+    (mut device, mut heartbeat, lockdown): (Device, HeartbeatClient, LockdownClient),
+    id: u32,
+    output: &UnboundedSender<DeviceEvent>,
+    connections: &NetworkConnections,
+    known: &KnownWifiDevices,
+) -> bool {
+    let provider = device
+        .network
+        .as_ref()
+        .expect("initialized network transport")
+        .provider(CONNECTION_LABEL);
+    known.remember(
+        &device.udid,
+        provider.socket_addr(LockdownClient::LOCKDOWND_PORT),
+    );
+    let (connection, session) = connections.connected(&device.udid, provider);
+    device.network = Some(connection);
+    // Retain the authenticated lockdown session alongside heartbeat.
+    let _lockdown = lockdown;
+    log::info!("Wi-Fi device connected: {device}");
+    let udid = device.udid.clone();
+    if output.send(DeviceEvent::Connected(device)).is_err() {
+        return true;
+    }
+    let result = keep_alive(&mut heartbeat).await;
+    let replaced = !session.is_current();
+    drop(session);
+    log::debug!("Wi-Fi connection ended for {udid}: {result:?}");
+    // A newer advertisement already owns a replaced device. Do not reconnect
+    // the old worker and compete for its heartbeat.
+    output.send(DeviceEvent::Disconnected(id)).is_err() || replaced
+}
+
+/// Tries each saved address once. A device that answers is held here until it
+/// drops; after that, only DNS-SD brings it back.
+async fn check_known_devices(
+    known: KnownWifiDevices,
+    output: UnboundedSender<DeviceEvent>,
+    connections: NetworkConnections,
+) {
+    let devices = known.snapshot();
+    if devices.is_empty() {
+        return;
+    }
+    log::info!("Checking {} known Wi-Fi devices", devices.len());
+    let pairings = pairing_candidates().await;
+    let checks =
+        devices
+            .into_iter()
+            .zip(KNOWN_DEVICE_FIRST_ID..)
+            .filter_map(|((udid, address), id)| {
+                let pairing = pairings
+                    .iter()
+                    .find(|pairing| pairing.udid.as_deref() == Some(udid.as_str()))?
+                    .clone();
+                let (known, output, connections) = (&known, &output, &connections);
+                Some(async move {
+                    match connect_with_pairings(&[address], &[pairing], id, Route::Lan).await {
+                        Ok(authenticated) => {
+                            serve_network_device(authenticated, id, output, connections, known)
+                                .await;
+                        }
+                        Err(error) => {
+                            log::debug!("Known Wi-Fi device {udid} did not answer: {error}")
+                        }
+                    }
+                })
+            });
+    futures::future::join_all(checks).await;
 }
 
 pub(crate) async fn keep_alive(heartbeat: &mut HeartbeatClient) -> Result<(), IdeviceError> {
@@ -444,9 +559,18 @@ pub(crate) async fn connect_network_device(
     }
     let advertised_mac = normalize_mac(service.split('@').next().unwrap_or_default());
     pairings.sort_by_key(|pairing| normalize_mac(&pairing.wifi_mac_address) != advertised_mac);
+    connect_with_pairings(addresses, &pairings, id, route).await
+}
+
+async fn connect_with_pairings(
+    addresses: &[SocketAddr],
+    pairings: &[PairingFile],
+    id: u32,
+    route: Route,
+) -> Result<(Device, HeartbeatClient, LockdownClient), Error> {
     let mut last_error = Error::Other("No reachable Wi-Fi addresses".into());
     for address in addresses {
-        for pairing in &pairings {
+        for pairing in pairings {
             let provider = NetworkProvider {
                 addr: address.ip(),
                 scope_id: match address {
@@ -545,6 +669,30 @@ mod tests {
                 ..crate::network_connection::tests::provider("127.0.0.1")
             })),
         }
+    }
+
+    #[test]
+    fn known_addresses_survive_a_restart_and_unreadable_files_start_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wifi_devices.plist");
+        let phone: SocketAddr = "192.168.1.20:62078".parse().unwrap();
+        let tablet: SocketAddr = "[fe80::1%5]:62078".parse().unwrap();
+
+        assert!(KnownWifiDevices::load(path.clone()).snapshot().is_empty());
+        let known = KnownWifiDevices::load(path.clone());
+        known.remember("phone", "192.168.1.19:62078".parse().unwrap());
+        known.remember("phone", phone);
+        known.remember("tablet", tablet);
+
+        let mut reloaded = KnownWifiDevices::load(path.clone()).snapshot();
+        reloaded.sort();
+        assert_eq!(
+            reloaded,
+            vec![("phone".to_owned(), phone), ("tablet".to_owned(), tablet)]
+        );
+
+        std::fs::write(&path, b"not a plist").unwrap();
+        assert!(KnownWifiDevices::load(path).snapshot().is_empty());
     }
 
     #[test]
@@ -686,7 +834,9 @@ mod tests {
             .is_test(true)
             .try_init();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        tokio::join!(watch_network_devices(tx), async move {
+        let known = tempfile::tempdir().unwrap();
+        let known = known.path().join("wifi_devices.plist");
+        tokio::join!(watch_network_devices(tx, known), async move {
             let device = tokio::time::timeout(Duration::from_secs(75), async {
                 while let Some(event) = rx.recv().await {
                     if let DeviceEvent::Connected(device) = event {

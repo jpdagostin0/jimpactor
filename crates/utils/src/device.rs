@@ -102,9 +102,14 @@ impl Device {
             None => operation(self.provider(label)?).await,
         };
         result.map_err(|error| match error {
-            Error::Idevice(idevice::IdeviceError::Socket(source)) if self.network.is_some() => {
-                log::warn!("Wi-Fi operation failed for {}: {source:?}", self.name);
-                Error::Other(format!("Wi-Fi connection to {} failed: {source}. Wake and unlock the iPhone and retry.", self.name))
+            Error::Idevice(idevice::IdeviceError::Socket(source))
+            | Error::Xkit(xkit::Error::Device(idevice::IdeviceError::Socket(source))) => {
+                log::warn!("Device operation failed for {}: {source:?}", self.name);
+                if self.network.is_some() {
+                    Error::Other(format!("Wi-Fi connection to {} failed: {source}. Wake and unlock the iPhone and retry.", self.name))
+                } else {
+                    Error::Other(format!("USB connection to {} failed: {source}. Check that the Apple device service is running, reconnect the cable, and retry.", self.name))
+                }
             }
             Error::Idevice(idevice::IdeviceError::UnexpectedResponse(message)) if message.contains("PairRecordData") => {
                 Error::Other(format!("No usable pairing record was returned by the Apple device service: {message}. Connect the iPhone over USB, unlock it, accept Trust This Computer, and retry pairing."))
