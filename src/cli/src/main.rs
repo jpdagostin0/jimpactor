@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Refresh(args) => commands::refresh::execute(args).await?,
         Commands::Jit(args) => commands::jit::execute(args).await?,
         Commands::AppProfile(args) => commands::app_profile::execute(args)?,
+        Commands::Ipa(args) => commands::ipa::execute(args)?,
         Commands::CheckUpdate => {
             let current = env!("CARGO_PKG_VERSION");
             match plume_utils::sources::check_for_update(current)
@@ -112,6 +113,8 @@ mod tests {
             &["jit", "serve", "--port", "9000"],
             &["app-profile", "export", "a.b", "out.json"],
             &["account", "teams"],
+            &["ipa", "App.ipa", "--json"],
+            &["check-update"],
             &["account", "set-team", "TEAM"],
             &["account", "export-p12", "-o", "a.p12"],
         ] {

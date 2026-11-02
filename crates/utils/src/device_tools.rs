@@ -39,7 +39,7 @@ impl InstalledProfile {
             .is_some_and(|date| date <= SystemTime::now())
     }
 
-    fn parse(data: &[u8]) -> Option<Self> {
+    pub(crate) fn parse(data: &[u8]) -> Option<Self> {
         let start = data.windows(6).position(|w| w == b"<plist")?;
         let end = data.windows(8).rposition(|w| w == b"</plist>")? + 8;
         let plist = Value::from_reader_xml(data.get(start..end)?).ok()?;

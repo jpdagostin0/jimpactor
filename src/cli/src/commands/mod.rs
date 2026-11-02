@@ -7,6 +7,7 @@ pub mod config;
 pub mod developer;
 pub mod device;
 pub mod device_commands;
+pub mod ipa;
 pub mod jit;
 pub mod macho;
 pub mod refresh;
@@ -51,6 +52,8 @@ pub enum Commands {
     Jit(jit::JitArgs),
     /// Manage saved per-app install options
     AppProfile(app_profile::AppProfileArgs),
+    /// Show what an IPA contains
+    Ipa(ipa::IpaArgs),
     /// Check GitHub for a newer Jimpactor release
     CheckUpdate,
 }

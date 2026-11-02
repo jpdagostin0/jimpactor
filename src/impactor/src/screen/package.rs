@@ -2,6 +2,7 @@ use iced::widget::{
     button, checkbox, column, container, image, pick_list, row, scrollable, stack, text, text_input,
 };
 use iced::{Alignment, Center, Element, Fill, Task};
+use plume_utils::inspect::{IpaReport, inspect_ipa};
 use plume_utils::{
     AppProfile, AppProfiles, Package, PlistInfoTrait, SignerInstallMode, SignerMode, SignerOptions,
     TweakLoadPath, TweakLoader,
@@ -47,6 +48,9 @@ pub enum Message {
     ImportProfile,
     ProfileImported(Option<Result<AppProfile, String>>),
     ProfileExported(Option<Result<(), String>>),
+    Inspect,
+    Inspected(Result<Box<IpaReport>, String>),
+    CloseInspector,
     Back,
     RequestInstallation,
 }
@@ -71,6 +75,8 @@ pub struct PackageScreen {
     notes: Vec<String>,
     has_profile: bool,
     profile_status: Option<String>,
+    /// The inspector's findings, shown in place of the options while open.
+    inspection: Option<Result<Box<IpaReport>, String>>,
 }
 
 impl PackageScreen {
@@ -98,6 +104,7 @@ impl PackageScreen {
             notes: Vec::new(),
             has_profile: false,
             profile_status: None,
+            inspection: None,
         }
     }
 
@@ -387,6 +394,29 @@ impl PackageScreen {
                 self.options.custom_entitlements = None;
                 Task::none()
             }
+            Message::Inspect => {
+                let Some(path) = self
+                    .selected_package
+                    .as_ref()
+                    .map(|package| package.package_file().clone())
+                else {
+                    return Task::none();
+                };
+                Task::perform(
+                    crate::subscriptions::run_on_tokio(async move {
+                        inspect_ipa(&path).map(Box::new).map_err(|e| e.to_string())
+                    }),
+                    Message::Inspected,
+                )
+            }
+            Message::Inspected(result) => {
+                self.inspection = Some(result);
+                Task::none()
+            }
+            Message::CloseInspector => {
+                self.inspection = None;
+                Task::none()
+            }
             Message::SaveProfile => {
                 let Some(profile) = self.current_profile() else {
                     return Task::none();
@@ -466,6 +496,10 @@ impl PackageScreen {
             return self.view_no_package();
         };
 
+        if let Some(inspection) = &self.inspection {
+            return self.view_inspection(inspection);
+        }
+
         let content = scrollable(
             row![
                 self.view_package_info_column(pkg),
@@ -484,6 +518,128 @@ impl PackageScreen {
             .into()
     }
 
+    fn view_inspection<'a>(
+        &'a self,
+        inspection: &'a Result<Box<IpaReport>, String>,
+    ) -> Element<'a, Message> {
+        let close = button(appearance::icon_text(
+            appearance::CHEVRON_BACK,
+            t!("back"),
+            None,
+        ))
+        .on_press(Message::CloseInspector)
+        .style(appearance::s_button);
+        let report = match inspection {
+            Ok(report) => report,
+            Err(error) => return column![close, text(error)].spacing(8).into(),
+        };
+
+        let line = |label: std::borrow::Cow<'static, str>, value: String| {
+            row![
+                text(label).size(12).width(130),
+                text(value).size(12).width(Fill)
+            ]
+            .spacing(8)
+        };
+        let optional = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".into());
+        let joined = |values: &[String]| {
+            if values.is_empty() {
+                "-".to_owned()
+            } else {
+                values.join(", ")
+            }
+        };
+        let megabytes = |bytes: u64| format!("{:.1} MB", bytes as f64 / 1_048_576.0);
+
+        let mut lines = column![].spacing(6);
+        for warning in &report.warnings {
+            lines = lines.push(
+                text(warning)
+                    .size(12)
+                    .color(iced::Color::from_rgb(0.95, 0.65, 0.3)),
+            );
+        }
+        let encrypted = match report.encrypted {
+            Some(true) => t!("inspect_yes").into_owned(),
+            Some(false) => t!("inspect_no").into_owned(),
+            None => "-".to_owned(),
+        };
+        let profile = report.profile.as_ref().map_or("-".to_owned(), |profile| {
+            let expires = profile.expiration.map_or("-".to_owned(), |date| {
+                chrono::DateTime::<chrono::Utc>::from(date)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            });
+            format!(
+                "{} · {} · {expires}",
+                profile.name,
+                profile.team.as_deref().unwrap_or("-")
+            )
+        });
+        let extensions: Vec<String> = report
+            .extensions
+            .iter()
+            .map(|extension| match &extension.kind {
+                Some(kind) => format!("{} ({kind})", extension.name),
+                None => extension.name.clone(),
+            })
+            .collect();
+        let permissions: Vec<String> = report
+            .permissions
+            .iter()
+            .map(|(key, _)| {
+                key.trim_end_matches("UsageDescription")
+                    .trim_start_matches("NS")
+            })
+            .map(str::to_owned)
+            .collect();
+
+        lines = lines
+            .push(line(t!("options_name"), optional(&report.name)))
+            .push(line(t!("options_identifier"), optional(&report.bundle_id)))
+            .push(line(
+                t!("options_version"),
+                format!(
+                    "{} ({})",
+                    optional(&report.version),
+                    optional(&report.build)
+                ),
+            ))
+            .push(line(t!("inspect_minimum_os"), optional(&report.minimum_os)))
+            .push(line(t!("inspect_devices"), joined(&report.families)))
+            .push(line(
+                t!("inspect_architectures"),
+                joined(&report.architectures),
+            ))
+            .push(line(t!("inspect_encrypted"), encrypted))
+            .push(line(
+                t!("inspect_size"),
+                format!(
+                    "{} ({} unpacked, {} files)",
+                    megabytes(report.archive_size),
+                    megabytes(report.unpacked_size),
+                    report.files
+                ),
+            ))
+            .push(line(t!("inspect_profile"), profile))
+            .push(line(t!("inspect_extensions"), joined(&extensions)))
+            .push(line(t!("inspect_frameworks"), joined(&report.frameworks)))
+            .push(line(
+                t!("inspect_libraries"),
+                joined(&report.linked_libraries),
+            ))
+            .push(line(t!("inspect_url_schemes"), joined(&report.url_schemes)))
+            .push(line(t!("inspect_permissions"), joined(&permissions)))
+            .push(line(
+                t!("inspect_entitlements"),
+                joined(&report.entitlements),
+            ));
+
+        column![close, scrollable(lines).height(Fill).width(Fill)]
+            .spacing(8)
+            .into()
+    }
+
     fn view_profile_bar(&self) -> Element<'_, Message> {
         let status = self
             .profile_status
@@ -491,6 +647,9 @@ impl PackageScreen {
             .unwrap_or_else(|| t!("options_profile").to_string());
         row![
             text(status).size(12).width(Fill),
+            button(text(t!("inspect")).size(12))
+                .on_press(Message::Inspect)
+                .style(appearance::s_button),
             button(text(t!("options_profile_save")).size(12))
                 .on_press(Message::SaveProfile)
                 .style(appearance::s_button),
