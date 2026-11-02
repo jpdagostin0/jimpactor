@@ -1,7 +1,11 @@
-use iced::widget::{button, column, container, progress_bar, row, rule, scrollable, text};
+use iced::widget::{
+    button, column, container, progress_bar, row, rule, scrollable, text, text_input,
+};
 use iced::{Alignment, Element, Fill, Task};
-use plume_store::GsaAccount;
-use plume_utils::{AccountKind, AccountLimits, Device, FREE_ACTIVE_APP_LIMIT, Meter};
+use plume_store::{AscKey, GsaAccount};
+use plume_utils::{
+    AccountKind, AccountLimits, DeveloperItem, Device, FREE_ACTIVE_APP_LIMIT, Meter, XkitSigner,
+};
 use rust_i18n::t;
 
 use crate::appearance;
@@ -10,11 +14,47 @@ use crate::subscriptions::{confirm, developer_session, run_on_tokio};
 #[derive(Debug, Clone)]
 pub enum Message {
     Load,
-    Loaded(Result<Overview, String>),
+    Loaded(
+        Option<Result<Overview, String>>,
+        Option<Result<KeyOverview, String>>,
+    ),
+    UpdateKeyId(String),
+    UpdateIssuerId(String),
+    PickKeyFile,
+    KeyFilePicked(Option<Result<String, String>>),
+    SaveKey,
+    RemoveKey,
+    /// Handled by the app, which stores the key and reloads this tab.
+    KeyChanged(Option<AscKey>),
+    DeleteItem(Credential, ItemKind, DeveloperItem),
+    RegisterDevice(Credential),
     RevokeCertificate(Certificate),
     DeleteAppId(AppId),
     SetDeviceEnabled(plume_utils::RegisteredDevice, bool),
     ActionDone(Result<bool, String>),
+}
+
+/// Which login an action goes through when both an Apple ID and an API key are set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential {
+    AppleId,
+    Key,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    Certificate,
+    BundleId,
+    Profile,
+}
+
+/// What an App Store Connect key can see of its team.
+#[derive(Debug, Clone)]
+pub struct KeyOverview {
+    certificates: Vec<DeveloperItem>,
+    bundle_ids: Vec<DeveloperItem>,
+    profiles: Vec<DeveloperItem>,
+    devices: Vec<plume_utils::RegisteredDevice>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +79,7 @@ pub struct Overview {
     app_ids: Vec<AppId>,
     devices: Result<Vec<plume_utils::RegisteredDevice>, String>,
     limits: Result<AccountLimits, String>,
+    profiles: Result<Vec<DeveloperItem>, String>,
     /// Name of the selected device and its active sideloaded apps.
     active_apps: Option<(String, Meter)>,
 }
@@ -46,8 +87,44 @@ pub struct Overview {
 #[derive(Debug, Default)]
 pub struct DeveloperTab {
     overview: Option<Overview>,
+    key_overview: Option<KeyOverview>,
     loading: bool,
     error: Option<String>,
+    draft_key_id: String,
+    draft_issuer_id: String,
+    draft_pem: String,
+}
+
+async fn load_key(key: AscKey) -> Result<KeyOverview, String> {
+    let signer = XkitSigner::with_asc_key(&key, &crate::defaults::get_data_path())
+        .map_err(|error| error.to_string())?;
+    let text = |error: plume_utils::Error| error.to_string();
+    Ok(KeyOverview {
+        certificates: signer.certificates().await.map_err(text)?,
+        bundle_ids: signer.bundle_ids().await.map_err(text)?,
+        profiles: signer.profiles().await.map_err(text)?,
+        devices: signer.registered_devices().await.map_err(text)?,
+    })
+}
+
+/// The xkit client for `credential`, which must be available.
+async fn manager_for(
+    credential: Credential,
+    account: Option<GsaAccount>,
+    key: Option<AscKey>,
+) -> Result<XkitSigner, String> {
+    match credential {
+        Credential::Key => {
+            let key = key.ok_or("No App Store Connect key is saved")?;
+            XkitSigner::with_asc_key(&key, &crate::defaults::get_data_path())
+                .map_err(|error| error.to_string())
+        }
+        Credential::AppleId => {
+            let account = account.ok_or("No account is selected")?;
+            let (_, team_id) = developer_session(&account).await?;
+            device_manager(&account, &team_id).await
+        }
+    }
 }
 
 async fn load(account: GsaAccount, device: Option<Device>) -> Result<Overview, String> {
@@ -87,6 +164,10 @@ async fn load(account: GsaAccount, device: Option<Device>) -> Result<Overview, S
     let limits = AccountLimits::fetch(&session, &team_id)
         .await
         .map_err(|error| error.to_string());
+    let profiles = match device_manager(&account, &team_id).await {
+        Ok(manager) => manager.profiles().await.map_err(|error| error.to_string()),
+        Err(error) => Err(error),
+    };
     let free = matches!(&limits, Ok(limits) if limits.kind == AccountKind::Free);
     let mut active_apps = None;
     if let Some(device) = device.filter(|device| !device.is_mac && device.is_available()) {
@@ -104,6 +185,7 @@ async fn load(account: GsaAccount, device: Option<Device>) -> Result<Overview, S
         app_ids,
         devices,
         limits,
+        profiles,
         active_apps,
     })
 }
@@ -183,34 +265,154 @@ impl DeveloperTab {
         &mut self,
         message: Message,
         account: Option<&GsaAccount>,
+        key: Option<&AscKey>,
         device: Option<&Device>,
     ) -> Task<Message> {
         match message {
             Message::Load => {
-                let Some(account) = account.cloned() else {
+                if account.is_none() {
                     self.overview = None;
-                    return Task::none();
-                };
-                if self.loading {
+                }
+                if key.is_none() {
+                    self.key_overview = None;
+                }
+                if self.loading || (account.is_none() && key.is_none()) {
                     return Task::none();
                 }
                 self.loading = true;
                 self.error = None;
+                let (account, key, device) = (account.cloned(), key.cloned(), device.cloned());
                 Task::perform(
-                    run_on_tokio(load(account, device.cloned())),
-                    Message::Loaded,
+                    run_on_tokio(async move {
+                        let overview = match account {
+                            Some(account) => Some(load(account, device).await),
+                            None => None,
+                        };
+                        let key_overview = match key {
+                            Some(key) => Some(load_key(key).await),
+                            None => None,
+                        };
+                        (overview, key_overview)
+                    }),
+                    |(overview, key_overview)| Message::Loaded(overview, key_overview),
                 )
             }
-            Message::Loaded(result) => {
+            Message::Loaded(overview, key_overview) => {
                 self.loading = false;
-                match result {
-                    Ok(overview) => self.overview = Some(overview),
-                    Err(e) => {
-                        log::error!("Failed to load developer account details: {e}");
-                        self.error = Some(e);
-                    }
+                for error in [
+                    overview.as_ref().and_then(|r| r.as_ref().err()),
+                    key_overview.as_ref().and_then(|r| r.as_ref().err()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    log::error!("Failed to load developer account details: {error}");
+                    self.error = Some(error.clone());
+                }
+                if let Some(Ok(overview)) = overview {
+                    self.overview = Some(overview);
+                }
+                if let Some(Ok(key_overview)) = key_overview {
+                    self.key_overview = Some(key_overview);
                 }
                 Task::none()
+            }
+            Message::UpdateKeyId(value) => {
+                self.draft_key_id = value;
+                Task::none()
+            }
+            Message::UpdateIssuerId(value) => {
+                self.draft_issuer_id = value;
+                Task::none()
+            }
+            Message::PickKeyFile => Task::perform(
+                async {
+                    let file = rfd::AsyncFileDialog::new()
+                        .add_filter("App Store Connect key", &["p8"])
+                        .set_title("Select .p8 key")
+                        .pick_file()
+                        .await?;
+                    Some(
+                        std::fs::read_to_string(file.path())
+                            .map_err(|e| format!("Could not read the key: {e}")),
+                    )
+                },
+                Message::KeyFilePicked,
+            ),
+            Message::KeyFilePicked(result) => {
+                match result {
+                    Some(Ok(pem)) => {
+                        self.draft_pem = pem;
+                        self.error = None;
+                    }
+                    Some(Err(error)) => self.error = Some(error),
+                    None => {}
+                }
+                Task::none()
+            }
+            Message::SaveKey => {
+                let key = AscKey {
+                    key_id: self.draft_key_id.trim().to_owned(),
+                    issuer_id: self.draft_issuer_id.trim().to_owned(),
+                    pem: self.draft_pem.clone(),
+                };
+                if let Err(error) =
+                    XkitSigner::with_asc_key(&key, &crate::defaults::get_data_path())
+                {
+                    self.error = Some(error.to_string());
+                    return Task::none();
+                }
+                self.error = None;
+                self.draft_pem.clear();
+                Task::done(Message::KeyChanged(Some(key)))
+            }
+            Message::RemoveKey => Task::done(Message::KeyChanged(None)),
+            Message::KeyChanged(_) => Task::none(),
+            Message::DeleteItem(credential, kind, item) => {
+                let (account, key) = (account.cloned(), key.cloned());
+                self.loading = true;
+                Task::perform(
+                    run_on_tokio(async move {
+                        if !confirm(
+                            t!("pairing_delete").to_string(),
+                            t!("developer_delete_item_confirm", name = item.name.clone())
+                                .to_string(),
+                        )
+                        .await
+                        {
+                            return Ok(false);
+                        }
+                        let manager = manager_for(credential, account, key).await?;
+                        match kind {
+                            ItemKind::Certificate => manager.revoke_certificate(&item.id).await,
+                            ItemKind::BundleId => manager.delete_bundle_id(&item.id).await,
+                            ItemKind::Profile => manager.delete_profile(&item.id).await,
+                        }
+                        .map_err(|error| error.to_string())?;
+                        log::info!("Deleted {kind:?} {}", item.id);
+                        Ok(true)
+                    }),
+                    Message::ActionDone,
+                )
+            }
+            Message::RegisterDevice(credential) => {
+                let Some(device) = device.cloned() else {
+                    return Task::none();
+                };
+                let (account, key) = (account.cloned(), key.cloned());
+                self.loading = true;
+                Task::perform(
+                    run_on_tokio(async move {
+                        manager_for(credential, account, key)
+                            .await?
+                            .register_device(&device.udid, &device.name)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        log::info!("Registered {}", device.udid);
+                        Ok(true)
+                    }),
+                    Message::ActionDone,
+                )
             }
             Message::RevokeCertificate(cert) => {
                 let Some(account) = account.cloned() else {
@@ -296,7 +498,7 @@ impl DeveloperTab {
             Message::ActionDone(result) => {
                 self.loading = false;
                 match result {
-                    Ok(true) => return self.update(Message::Load, account, device),
+                    Ok(true) => return self.update(Message::Load, account, key, device),
                     Ok(false) => {}
                     Err(e) => {
                         log::error!("Developer account action failed: {e}");
@@ -308,7 +510,147 @@ impl DeveloperTab {
         }
     }
 
-    pub fn view<'a>(&'a self, account: Option<&'a GsaAccount>) -> Element<'a, Message> {
+    fn view_item<'a>(
+        credential: Credential,
+        kind: ItemKind,
+        item: &'a DeveloperItem,
+        enabled: bool,
+    ) -> Element<'a, Message> {
+        row![
+            column![
+                text(&item.name),
+                text(&item.detail).size(appearance::THEME_FONT_SIZE - 1.0)
+            ]
+            .width(Fill),
+            button(text(t!("pairing_delete")))
+                .on_press_maybe(enabled.then(|| Message::DeleteItem(
+                    credential,
+                    kind,
+                    item.clone()
+                )))
+                .style(appearance::s_button),
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    fn view_key(&self, key: Option<&AscKey>, device: Option<&Device>) -> Element<'_, Message> {
+        let small = appearance::THEME_FONT_SIZE - 1.0;
+        let enabled = !self.loading;
+        let mut content = column![
+            text(t!("developer_key_title")).size(appearance::THEME_FONT_SIZE + 1.0),
+            text(t!("developer_key_desc")).size(small),
+        ]
+        .spacing(appearance::THEME_PADDING);
+
+        let Some(key) = key else {
+            let ready = !self.draft_key_id.trim().is_empty()
+                && !self.draft_issuer_id.trim().is_empty()
+                && !self.draft_pem.is_empty();
+            let file = if self.draft_pem.is_empty() {
+                t!("developer_key_pick")
+            } else {
+                t!("developer_key_picked")
+            };
+            return content
+                .push(
+                    text_input(&t!("developer_key_id"), &self.draft_key_id)
+                        .on_input(Message::UpdateKeyId)
+                        .padding(6),
+                )
+                .push(
+                    text_input(&t!("developer_key_issuer"), &self.draft_issuer_id)
+                        .on_input(Message::UpdateIssuerId)
+                        .padding(6),
+                )
+                .push(
+                    row![
+                        button(text(file))
+                            .on_press(Message::PickKeyFile)
+                            .style(appearance::s_button),
+                        button(text(t!("developer_key_save")))
+                            .on_press_maybe(ready.then_some(Message::SaveKey))
+                            .style(appearance::p_button),
+                    ]
+                    .spacing(appearance::THEME_PADDING),
+                )
+                .into();
+        };
+
+        let mut actions =
+            row![text(t!("developer_key_saved", id = key.key_id.as_str())).width(Fill),]
+                .spacing(appearance::THEME_PADDING)
+                .align_y(Alignment::Center);
+        if let Some(device) = device.filter(|device| !device.is_mac) {
+            actions = actions.push(
+                button(text(t!(
+                    "developer_register",
+                    device = device.name.as_str()
+                )))
+                .on_press_maybe(enabled.then_some(Message::RegisterDevice(Credential::Key)))
+                .style(appearance::s_button),
+            );
+        }
+        actions = actions.push(
+            button(text(t!("developer_key_remove")))
+                .on_press(Message::RemoveKey)
+                .style(appearance::s_button),
+        );
+        content = content.push(actions);
+
+        let Some(overview) = &self.key_overview else {
+            return content.into();
+        };
+        for (title, kind, items) in [
+            (
+                t!(
+                    "developer_certificates",
+                    count = overview.certificates.len()
+                ),
+                ItemKind::Certificate,
+                &overview.certificates,
+            ),
+            (
+                t!("developer_bundle_ids", count = overview.bundle_ids.len()),
+                ItemKind::BundleId,
+                &overview.bundle_ids,
+            ),
+            (
+                t!("developer_profiles", count = overview.profiles.len()),
+                ItemKind::Profile,
+                &overview.profiles,
+            ),
+        ] {
+            content = content.push(text(title.into_owned()));
+            if items.is_empty() {
+                content = content.push(text(t!("developer_none")).size(small));
+            }
+            for item in items {
+                content = content.push(Self::view_item(Credential::Key, kind, item, enabled));
+            }
+        }
+        content = content.push(text(
+            t!("developer_devices", count = overview.devices.len()).into_owned(),
+        ));
+        for device in &overview.devices {
+            content = content.push(
+                text(format!(
+                    "{} · {} · {}",
+                    device.name, device.status, device.udid
+                ))
+                .size(small),
+            );
+        }
+        content.into()
+    }
+
+    pub fn view<'a>(
+        &'a self,
+        account: Option<&'a GsaAccount>,
+        key: Option<&'a AscKey>,
+        device: Option<&'a Device>,
+    ) -> Element<'a, Message> {
         let header = match account {
             Some(account) => {
                 let team = self
@@ -347,7 +689,9 @@ impl DeveloperTab {
         }
 
         let Some(overview) = &self.overview else {
-            return scrollable(content).height(Fill).into();
+            return scrollable(content.push(self.view_key(key, device)))
+                .height(Fill)
+                .into();
         };
         let enabled = !self.loading;
         let small = appearance::THEME_FONT_SIZE - 1.0;
@@ -448,6 +792,40 @@ impl DeveloperTab {
             ));
         }
 
+        content = content.push(divider());
+        match &overview.profiles {
+            Ok(profiles) => {
+                content = content.push(section(t!("developer_profiles", count = profiles.len())));
+                if profiles.is_empty() {
+                    content = content.push(text(t!("developer_none")).size(small));
+                }
+                for profile in profiles {
+                    content = content.push(Self::view_item(
+                        Credential::AppleId,
+                        ItemKind::Profile,
+                        profile,
+                        enabled,
+                    ));
+                }
+            }
+            Err(error) => {
+                content = content.push(
+                    text(t!("developer_profiles_unavailable", error = error.as_str())).size(small),
+                );
+            }
+        }
+        if let Some(device) = device.filter(|device| !device.is_mac) {
+            content = content.push(
+                button(text(t!(
+                    "developer_register",
+                    device = device.name.as_str()
+                )))
+                .on_press_maybe(enabled.then_some(Message::RegisterDevice(Credential::AppleId)))
+                .style(appearance::s_button),
+            );
+        }
+
+        content = content.push(divider()).push(self.view_key(key, device));
         scrollable(content).height(Fill).into()
     }
 }

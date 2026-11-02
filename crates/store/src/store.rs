@@ -112,6 +112,31 @@ impl Default for JitServerSettings {
     }
 }
 
+/// An App Store Connect API key, which signs for a paid team without an Apple ID.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AscKey {
+    pub key_id: String,
+    pub issuer_id: String,
+    /// The `.p8` contents. Empty on disk while it is in the OS keyring.
+    #[serde(default)]
+    pub pem: String,
+}
+
+impl std::fmt::Debug for AscKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AscKey")
+            .field("key_id", &self.key_id)
+            .field("issuer_id", &self.issuer_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AscKey {
+    fn keyring_name(&self) -> String {
+        format!("asc-key-{}", self.key_id)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccountStore {
     selected_account: Option<String>,      // Email
@@ -140,6 +165,8 @@ pub struct AccountStore {
     refresh_alerts: bool, // Notify about expiring apps on devices that are reachable
     #[serde(default = "default_refresh_alert_days")]
     refresh_alert_days: u32, // How long before expiration to notify
+    #[serde(default)]
+    asc_key: Option<AscKey>,
     #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
@@ -163,6 +190,7 @@ impl Default for AccountStore {
             jit_server: JitServerSettings::default(),
             refresh_alerts: true,
             refresh_alert_days: default_refresh_alert_days(),
+            asc_key: None,
             path: None,
             secrets_on_disk: false,
         }
@@ -231,6 +259,13 @@ impl AccountStore {
                 account.set_xcode_gs_token(token);
             }
         }
+        if let Some(key) = &mut store.asc_key {
+            if !key.pem.is_empty() {
+                store.secrets_on_disk = true;
+            } else if let Some(pem) = secrets::load_token(&key.keyring_name()) {
+                key.pem = pem;
+            }
+        }
         Ok(store)
     }
 
@@ -248,6 +283,16 @@ impl AccountStore {
                     || secrets::store_token(email, token);
                 if stored {
                     account.set_xcode_gs_token(String::new());
+                }
+            }
+            if let Some(key) = &mut on_disk.asc_key {
+                let name = key.keyring_name();
+                if !self.use_keyring {
+                    secrets::delete_token(&name);
+                } else if secrets::load_token(&name).as_ref() == Some(&key.pem)
+                    || secrets::store_token(&name, &key.pem)
+                {
+                    key.pem.clear();
                 }
             }
         }
@@ -350,6 +395,20 @@ impl AccountStore {
 
     pub fn set_refresh_alert_days_sync(&mut self, days: u32) -> Result<(), Error> {
         self.refresh_alert_days = days;
+        self.save_sync()
+    }
+
+    pub fn asc_key(&self) -> Option<&AscKey> {
+        self.asc_key.as_ref()
+    }
+
+    pub fn set_asc_key_sync(&mut self, key: Option<AscKey>) -> Result<(), Error> {
+        if let Some(previous) = &self.asc_key
+            && key.as_ref().is_none_or(|key| key.key_id != previous.key_id)
+        {
+            secrets::delete_token(&previous.keyring_name());
+        }
+        self.asc_key = key;
         self.save_sync()
     }
 

@@ -52,7 +52,7 @@ pub use tailnet::{
 #[cfg(tailnet)]
 pub use tailnet::tailnet_listen;
 pub use tweak::Tweak; // Tweak helper
-pub use xkit_bridge::{ConfirmRevocation, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
+pub use xkit_bridge::{ConfirmRevocation, DeveloperItem, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
 
 use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]

@@ -35,5 +35,6 @@ reqwest.workspace = true
 tailscale = "0.6.1"
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 env_logger.workspace = true

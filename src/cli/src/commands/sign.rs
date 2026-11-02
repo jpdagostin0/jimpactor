@@ -4,13 +4,14 @@ use anyhow::Result;
 use clap::Args;
 
 use plume_core::{CertificateIdentity, MobileProvision};
+use plume_store::AccountStore;
 use plume_utils::{
     Bundle, ConfirmRevocation, Package, Signer, SignerMode, SignerOptions, XkitSigner,
 };
 
 use crate::{
     commands::{
-        account::{get_authenticated_account, select_team},
+        account::{get_authenticated_account, get_settings_path, select_team},
         device::select_device,
     },
     get_data_path,
@@ -28,6 +29,9 @@ pub struct SignArgs {
     /// Use Apple ID credentials for signing
     #[arg(long = "apple-id")]
     pub apple_id: bool,
+    /// Sign with the App Store Connect key saved by `developer set-key`
+    #[arg(long, conflicts_with_all = ["apple_id", "pem_files"])]
+    pub asc_key: bool,
     /// Developer team to use for Apple ID signing (required for multiple teams without a terminal)
     #[arg(
         long = "team-id",
@@ -56,7 +60,7 @@ pub struct SignArgs {
     #[arg(long)]
     pub remove_url_schemes: bool,
     /// Apply modifications without signing (IPA input requires --output)
-    #[arg(long, conflicts_with_all = ["apple_id", "pem_files", "provisioning_files", "register_and_install"])]
+    #[arg(long, conflicts_with_all = ["apple_id", "asc_key", "pem_files", "provisioning_files", "register_and_install"])]
     pub modify_only: bool,
     /// Loader to bundle for injected tweaks
     #[arg(long, value_parser = ["ellekit", "none"], default_value = "ellekit")]
@@ -89,7 +93,7 @@ pub struct SignArgs {
 }
 
 pub async fn execute(args: SignArgs) -> Result<()> {
-    if !args.package.is_dir() && !args.apple_id && args.output.is_none() {
+    if !args.package.is_dir() && !args.apple_id && !args.asc_key && args.output.is_none() {
         return Err(anyhow::anyhow!(
             "-o/--output is required when signing an .ipa without --apple-id (ad-hoc mode)."
         ));
@@ -175,6 +179,18 @@ pub async fn execute(args: SignArgs) -> Result<()> {
                 None,
             )
         }
+    } else if args.asc_key {
+        let store = AccountStore::load(&Some(get_settings_path())).await?;
+        let key = store.asc_key().ok_or_else(|| {
+            anyhow::anyhow!("No key is saved. Add one with 'jimpactor-cli developer set-key'")
+        })?;
+        let xkit_signer = XkitSigner::with_asc_key(key, &get_data_path())?;
+        options.mode = SignerMode::DeveloperKey;
+        anyhow::ensure!(
+            XkitSigner::supports(&options),
+            "This app needs Apple ID signing; use --apple-id"
+        );
+        (Signer::new(None, options), None, Some(xkit_signer))
     } else {
         options.mode = if args.modify_only {
             SignerMode::ModifyOnly
@@ -272,6 +288,29 @@ pub async fn execute(args: SignArgs) -> Result<()> {
                 .await?;
             }
 
+            log::info!("Installation complete!");
+        }
+    } else if let Some(xkit_signer) = &xkit_signer {
+        let confirm: Box<ConfirmRevocation> = Box::new(|_certificates| Box::pin(async { false }));
+        let team_id = xkit_signer.signing_team(&*confirm).await?;
+        signer.modify_bundle(&bundle, &Some(team_id)).await?;
+
+        let device_info = device
+            .as_ref()
+            .filter(|d| !d.udid.is_empty())
+            .map(|d| (d.udid.as_str(), d.name.as_str()));
+        xkit_signer
+            .provision_and_sign(&bundle, device_info, &*confirm, &|stage, _| {
+                log::info!("{stage}...")
+            })
+            .await?;
+
+        if let Some(dev) = device {
+            log::info!("Installing to device: {}", dev.name);
+            dev.install_app(bundle.bundle_dir(), |progress| async move {
+                log::info!("Installation progress: {}%", progress);
+            })
+            .await?;
             log::info!("Installation complete!");
         }
     } else {

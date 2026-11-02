@@ -534,6 +534,54 @@ pub(crate) async fn run_installation(
                 package_file = bundle;
             }
         }
+        SignerMode::DeveloperKey => {
+            let key = store
+                .as_ref()
+                .and_then(|store| store.asc_key().cloned())
+                .ok_or("Add an App Store Connect key in Settings > Developer first.")?;
+            if !XkitSigner::supports(&options) {
+                return Err(format!(
+                    "{} or custom entitlements need Apple ID signing, not an App Store Connect key.",
+                    options.app
+                ));
+            }
+
+            let xkit_signer = XkitSigner::with_asc_key(&key, &crate::defaults::get_data_path())
+                .map_err(|e| e.to_string())?;
+            // Paid teams are never asked to revoke; the certificate limit is reported by Apple.
+            let confirm: Box<ConfirmRevocation> =
+                Box::new(|_certificates| Box::pin(async { false }));
+
+            send("Ensuring certificate...".to_string(), 20);
+            let team_id = xkit_signer
+                .signing_team(&*confirm)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            send("Preparing package...".to_string(), 50);
+            let bundle = package.get_package_bundle().map_err(|e| e.to_string())?;
+            let mut signer = Signer::new(None, options.clone());
+            signer
+                .modify_bundle(&bundle, &Some(team_id))
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let status_tx = tx.clone();
+            let status = move |stage: &str, progress: Option<f64>| {
+                let percent = 50 + (progress.unwrap_or(0.0).clamp(0.0, 1.0) * 40.0) as i32;
+                let _ = status_tx.send((format!("{stage}..."), percent));
+            };
+            let device_info = device
+                .filter(|d| !d.udid.is_empty())
+                .map(|d| (d.udid.as_str(), d.name.as_str()));
+            xkit_signer
+                .provision_and_sign(&bundle, device_info, &*confirm, &status)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            options = signer.options.clone();
+            package_file = bundle;
+        }
         SignerMode::Adhoc | SignerMode::ModifyOnly => {
             send("Extracting package...".to_string(), 50);
 
@@ -942,7 +990,11 @@ pub(crate) async fn run_source_install(
 
     let mut options = SignerOptions::default();
     package.load_into_signer_options(&mut options);
-    options.mode = SignerMode::Pem;
+    options.mode = if account.is_none() && store.as_ref().is_some_and(|s| s.asc_key().is_some()) {
+        SignerMode::DeveloperKey
+    } else {
+        SignerMode::Pem
+    };
     options.install_mode = SignerInstallMode::Install;
 
     let result = run_installation(&package, device, &options, account, store, tx).await;

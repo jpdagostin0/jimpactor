@@ -89,6 +89,30 @@ impl DeveloperAPIClient {
         Ok(device)
     }
 
+    pub async fn certificates(&self) -> Result<Vec<Resource>> {
+        self.collection("v1/certificates", &[]).await
+    }
+
+    pub async fn revoke_certificate(&self, id: &str) -> Result<()> {
+        self.delete(&resource_path("certificates", id)?).await
+    }
+
+    pub async fn bundle_ids(&self) -> Result<Vec<Resource>> {
+        self.collection("v1/bundleIds", &[]).await
+    }
+
+    pub async fn delete_bundle_id(&self, id: &str) -> Result<()> {
+        self.delete(&resource_path("bundleIds", id)?).await
+    }
+
+    pub async fn profiles(&self) -> Result<Vec<Resource>> {
+        self.collection("v1/profiles", &[]).await
+    }
+
+    pub async fn delete_profile(&self, id: &str) -> Result<()> {
+        self.delete(&resource_path("profiles", id)?).await
+    }
+
     pub async fn register_device(&self, target: Option<&TargetDevice>) -> Result<()> {
         let Some(target) = target else {
             return Ok(());

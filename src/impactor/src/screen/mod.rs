@@ -849,6 +849,21 @@ impl Impactor {
                             }
                             Task::none()
                         }
+                        settings::Message::Developer(settings::DeveloperMessage::KeyChanged(
+                            key,
+                        )) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_asc_key_sync(key)
+                            {
+                                log::error!("Failed to save the App Store Connect key: {err}");
+                            }
+                            screen
+                                .update(
+                                    settings::Message::Developer(settings::DeveloperMessage::Load),
+                                    self.account_store.as_ref(),
+                                )
+                                .map(Message::SettingsScreen)
+                        }
                         settings::Message::ToggleRefreshAlerts(enabled) => {
                             if let Some(store) = &mut self.account_store
                                 && let Err(err) = store.set_refresh_alerts_sync(enabled)
@@ -1509,8 +1524,7 @@ impl Impactor {
         if self
             .account_store
             .as_ref()
-            .and_then(|s| s.selected_account())
-            .is_none()
+            .is_none_or(|store| store.selected_account().is_none() && store.asc_key().is_none())
         {
             self.pending_source_install = Some((app, version));
             let (login_window, task) = login_window::LoginWindow::new();

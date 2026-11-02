@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod account;
+pub mod developer;
 pub mod device;
 pub mod macho;
 pub mod sign;
@@ -29,4 +30,6 @@ pub enum Commands {
     Account(account::AccountArgs),
     /// Device management commands
     Device(device::DeviceArgs),
+    /// Manage developer resources and App Store Connect API keys
+    Developer(developer::DeveloperArgs),
 }

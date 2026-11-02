@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::MachO(args) => commands::macho::execute(args).await?,
         Commands::Account(args) => commands::account::execute(args).await?,
         Commands::Device(args) => commands::device::execute(args).await?,
+        Commands::Developer(args) => commands::developer::execute(args).await?,
     }
 
     Ok(())
@@ -73,6 +74,19 @@ mod tests {
                 ])
                 .is_err()
             );
+        }
+    }
+    #[test]
+    fn asc_key_signing_excludes_other_identities() {
+        let args = ["jimpactor-cli", "sign", "--package", "App.ipa", "--asc-key"];
+        assert!(matches!(
+            Cli::try_parse_from(args).unwrap().command,
+            Commands::Sign(args) if args.asc_key
+        ));
+        for other in ["--apple-id", "--modify-only"] {
+            let mut args = args.to_vec();
+            args.push(other);
+            assert!(Cli::try_parse_from(args).is_err());
         }
     }
     #[test]

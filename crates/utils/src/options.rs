@@ -109,6 +109,8 @@ impl std::fmt::Display for SignerInstallMode {
 pub enum SignerMode {
     #[default]
     Pem,
+    /// Signs with a saved App Store Connect API key instead of an Apple ID.
+    DeveloperKey,
     Adhoc,
     ModifyOnly,
     None,
@@ -118,6 +120,7 @@ impl std::fmt::Display for SignerMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SignerMode::Pem => write!(f, "Apple ID"),
+            SignerMode::DeveloperKey => write!(f, "App Store Connect key"),
             SignerMode::Adhoc => write!(f, "Adhoc"),
             SignerMode::ModifyOnly => write!(f, "Modify without signing"),
             SignerMode::None => write!(f, "No Modify"),

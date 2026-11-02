@@ -7,6 +7,7 @@ mod server_info;
 mod source_manager;
 mod tailscale;
 
+pub(crate) use developer::Message as DeveloperMessage;
 pub(crate) use logs::Message as LogsMessage;
 pub(crate) use pairing::Message as PairingMessage;
 pub(crate) use tailscale::Change as TailscaleChange;
@@ -421,8 +422,9 @@ impl SettingsScreen {
             }
             Message::Developer(msg) => {
                 let account = store.and_then(|s| s.selected_account());
+                let key = store.and_then(|s| s.asc_key());
                 self.developer
-                    .update(msg, account, self.device.as_ref())
+                    .update(msg, account, key, self.device.as_ref())
                     .map(Message::Developer)
             }
             Message::Sources(msg) => self.sources.update(msg).map(Message::Sources),
@@ -942,7 +944,14 @@ impl SettingsScreen {
                 .pairing
                 .view(remote_pairing, selected_device, devices)
                 .map(Message::Pairing),
-            SettingsTab::Developer => self.developer.view(account).map(Message::Developer),
+            SettingsTab::Developer => self
+                .developer
+                .view(
+                    account,
+                    account_store.as_ref().and_then(|s| s.asc_key()),
+                    selected_device,
+                )
+                .map(Message::Developer),
             SettingsTab::Sources => self.sources.view().map(Message::Sources),
             SettingsTab::Tailscale => self.tailscale.view().map(Message::Tailscale),
             SettingsTab::Jit => self.jit.view().map(Message::Jit),

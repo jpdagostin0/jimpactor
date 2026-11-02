@@ -489,6 +489,7 @@ impl PackageScreen {
             pick_list(
                 &[
                     SignerMode::Pem,
+                    SignerMode::DeveloperKey,
                     SignerMode::Adhoc,
                     SignerMode::ModifyOnly,
                     SignerMode::None

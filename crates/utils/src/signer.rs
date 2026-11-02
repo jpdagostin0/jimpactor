@@ -82,8 +82,10 @@ impl Signer {
 
         let identifier = bundle.get_bundle_identifier();
 
-        if self.options.mode == SignerMode::Pem
-            && self.options.custom_identifier.is_none()
+        if matches!(
+            self.options.mode,
+            SignerMode::Pem | SignerMode::DeveloperKey
+        ) && self.options.custom_identifier.is_none()
             && let (Some(identifier), Some(team_id)) = (identifier.as_ref(), team_id.as_ref())
         {
             self.options.custom_identifier = Some(format!("{identifier}.{team_id}"));

@@ -120,7 +120,7 @@ pub async fn execute(args: AccountArgs) -> Result<()> {
     }
 }
 
-fn get_settings_path() -> PathBuf {
+pub(crate) fn get_settings_path() -> PathBuf {
     get_data_path().join("accounts.json")
 }
 
