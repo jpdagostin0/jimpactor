@@ -46,7 +46,7 @@ pub enum Message {
     DeleteProfile,
     ExportProfile,
     ImportProfile,
-    ProfileImported(Option<Result<AppProfile, String>>),
+    ProfileImported(Option<Result<Box<AppProfile>, String>>),
     ProfileExported(Option<Result<(), String>>),
     Inspect,
     Inspected(Result<Box<IpaReport>, String>),
@@ -475,7 +475,11 @@ impl PackageScreen {
                         .add_filter("Jimpactor profile", &["json"])
                         .pick_file()
                         .await?;
-                    Some(AppProfile::read(file.path()).map_err(|e| e.to_string()))
+                    Some(
+                        AppProfile::read(file.path())
+                            .map(Box::new)
+                            .map_err(|e| e.to_string()),
+                    )
                 },
                 Message::ProfileImported,
             ),

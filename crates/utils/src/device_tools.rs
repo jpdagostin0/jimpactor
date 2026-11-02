@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn crash_reports_sort_by_trailing_timestamp() {
-        let mut names = vec![
+        let mut names = [
             "Zebra-2026-01-02-101010.ips".to_owned(),
             "Alpha-2026-03-04-090000.ips".to_owned(),
         ];

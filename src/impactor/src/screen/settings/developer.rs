@@ -15,8 +15,8 @@ use crate::subscriptions::{confirm, developer_session, run_on_tokio};
 pub enum Message {
     Load,
     Loaded(
-        Option<Result<Overview, String>>,
-        Option<Result<KeyOverview, String>>,
+        Option<Result<Box<Overview>, String>>,
+        Option<Result<Box<KeyOverview>, String>>,
     ),
     UpdateKeyId(String),
     UpdateIssuerId(String),
@@ -285,11 +285,11 @@ impl DeveloperTab {
                 Task::perform(
                     run_on_tokio(async move {
                         let overview = match account {
-                            Some(account) => Some(load(account, device).await),
+                            Some(account) => Some(load(account, device).await.map(Box::new)),
                             None => None,
                         };
                         let key_overview = match key {
-                            Some(key) => Some(load_key(key).await),
+                            Some(key) => Some(load_key(key).await.map(Box::new)),
                             None => None,
                         };
                         (overview, key_overview)
@@ -310,10 +310,10 @@ impl DeveloperTab {
                     self.error = Some(error.clone());
                 }
                 if let Some(Ok(overview)) = overview {
-                    self.overview = Some(overview);
+                    self.overview = Some(*overview);
                 }
                 if let Some(Ok(key_overview)) = key_overview {
-                    self.key_overview = Some(key_overview);
+                    self.key_overview = Some(*key_overview);
                 }
                 Task::none()
             }

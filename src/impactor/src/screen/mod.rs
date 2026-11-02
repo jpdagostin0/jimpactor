@@ -312,10 +312,8 @@ impl Impactor {
             return Task::none();
         }
         let tab = self.utilities.tab();
-        self.utilities = Box::new(utilties::UtilitiesScreen::new(
-            self.selected_device.clone(),
-            self.remote_pairing(),
-        ));
+        *self.utilities =
+            utilties::UtilitiesScreen::new(self.selected_device.clone(), self.remote_pairing());
         self.utilities.set_source_apps(self.quick_install.apps());
         let select = Task::done(Message::UtilitiesScreen(utilties::Message::SelectTab(tab)));
         // Load the app list right away so app updates are found as the device connects.

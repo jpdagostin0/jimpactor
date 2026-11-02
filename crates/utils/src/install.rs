@@ -374,37 +374,37 @@ pub async fn run_installation(
                 None
             };
 
-            if let Some(prov_path) = provision_path {
-                if let Ok(provision) = MobileProvision::load_with_path(&prov_path) {
-                    let scheduled_refresh = refresh_time(&provision);
+            if let Some(prov_path) = provision_path
+                && let Ok(provision) = MobileProvision::load_with_path(&prov_path)
+            {
+                let scheduled_refresh = refresh_time(&provision);
 
-                    let refresh_app = RefreshApp {
-                        name: package_file.get_name(),
-                        bundle_id: package_file.get_bundle_identifier(),
-                        path: dest_path.clone(),
-                        scheduled_refresh,
-                    };
+                let refresh_app = RefreshApp {
+                    name: package_file.get_name(),
+                    bundle_id: package_file.get_bundle_identifier(),
+                    path: dest_path.clone(),
+                    scheduled_refresh,
+                };
 
-                    let mut refresh_device = store
-                        .get_refresh_device(&dev.udid)
-                        .cloned()
-                        .unwrap_or_else(|| RefreshDevice {
-                            udid: dev.udid.clone(),
-                            name: dev.name.clone(),
-                            account: account.email().clone(),
-                            apps: Vec::new(),
-                            is_mac: dev.is_mac,
-                        });
+                let mut refresh_device = store
+                    .get_refresh_device(&dev.udid)
+                    .cloned()
+                    .unwrap_or_else(|| RefreshDevice {
+                        udid: dev.udid.clone(),
+                        name: dev.name.clone(),
+                        account: account.email().clone(),
+                        apps: Vec::new(),
+                        is_mac: dev.is_mac,
+                    });
 
-                    refresh_device.name = dev.name.clone();
-                    refresh_device.is_mac = dev.is_mac;
+                refresh_device.name = dev.name.clone();
+                refresh_device.is_mac = dev.is_mac;
 
-                    refresh_device.record_install(account.email().clone(), refresh_app);
+                refresh_device.record_install(account.email().clone(), refresh_app);
 
-                    store
-                        .add_or_update_refresh_device_sync(refresh_device)
-                        .map_err(|e| e.to_string())?;
-                }
+                store
+                    .add_or_update_refresh_device_sync(refresh_device)
+                    .map_err(|e| e.to_string())?;
             }
         }
     }
