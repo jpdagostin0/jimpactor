@@ -26,6 +26,10 @@ pub struct QuickInstall {
 }
 
 impl QuickInstall {
+    pub fn apps(&self) -> &[SourceApp] {
+        &self.apps
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Load => {

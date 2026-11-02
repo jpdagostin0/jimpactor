@@ -3,6 +3,7 @@
 rust_i18n::i18n!("../../locales", fallback = "en");
 
 use crate::refresh::spawn_refresh_daemon;
+pub(crate) use plume_utils::sources;
 
 mod appearance;
 mod certificate_reset;
@@ -13,7 +14,6 @@ mod macos_app;
 mod refresh;
 mod relaunch;
 mod screen;
-mod sources;
 mod startup;
 mod subscriptions;
 mod tray;

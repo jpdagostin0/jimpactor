@@ -7,7 +7,7 @@ pub(crate) mod settings;
 pub(crate) mod utilties;
 mod windows;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use iced::Length::Fill;
 use iced::event::{self, Event, Status};
@@ -127,6 +127,8 @@ pub struct Impactor {
     quick_install: quick_install::QuickInstall,
     pending_source_install: Option<(crate::sources::SourceApp, crate::sources::AppVersion)>,
     system_theme: iced::theme::Mode,
+    /// (UDID, bundle ID, version) of app updates already announced.
+    announced_updates: HashSet<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +200,7 @@ impl Impactor {
                 quick_install: quick_install::QuickInstall::default(),
                 pending_source_install: None,
                 system_theme: iced::theme::Mode::None,
+                announced_updates: HashSet::new(),
             },
             Task::batch([
                 open_task,
@@ -296,12 +299,86 @@ impl Impactor {
             self.selected_device.clone(),
             self.remote_pairing(),
         ));
+        self.utilities.set_source_apps(self.quick_install.apps());
         let select = Task::done(Message::UtilitiesScreen(utilties::Message::SelectTab(tab)));
-        if matches!(self.current_screen, ImpactorScreen::Utilities) {
-            Task::batch([select, self.refresh_apps()])
-        } else {
-            select
+        // Load the app list right away so app updates are found as the device connects.
+        Task::batch([select, self.refresh_apps()])
+    }
+
+    /// Tells the user about app updates that have not been mentioned yet.
+    fn announce_updates(&mut self) {
+        let Some(device) = self.utilities.device() else {
+            return;
+        };
+        let new: Vec<String> = self
+            .utilities
+            .updates()
+            .iter()
+            .filter(|update| {
+                self.announced_updates.insert((
+                    device.udid.clone(),
+                    update.bundle_id.clone(),
+                    update.version.version.clone(),
+                ))
+            })
+            .map(|update| update.name.clone())
+            .collect();
+        if new.is_empty() {
+            return;
         }
+        let body = rust_i18n::t!(
+            "app_updates_available",
+            apps = new.join(", "),
+            device = device.name.as_str()
+        )
+        .into_owned();
+        // Showing a notification can block; never do that on the UI thread.
+        std::thread::spawn(move || {
+            notify_rust::Notification::new()
+                .summary(crate::APP_NAME)
+                .body(&body)
+                .show()
+                .ok();
+        });
+    }
+
+    /// Lines shown above the install options, comparing `package` with the device and sources.
+    fn install_notes(&self, package: &plume_utils::Package) -> Vec<String> {
+        use plume_utils::PlistInfoTrait;
+
+        let Some(bundle_id) = package.get_bundle_identifier() else {
+            return Vec::new();
+        };
+        let name = package.get_name();
+        let version = package.get_version();
+        let check = plume_utils::updates::check_install(
+            &bundle_id,
+            name.as_deref(),
+            version.as_deref(),
+            self.utilities.installed_apps(),
+            self.quick_install.apps(),
+        );
+
+        let mut notes = Vec::new();
+        if let Some(installed) = &check.installed {
+            let key = if check.downgrade {
+                "install_note_downgrade"
+            } else {
+                "install_note_installed"
+            };
+            notes.push(rust_i18n::t!(key, version = installed.as_str()).into_owned());
+        }
+        if let Some((version, source)) = &check.newer {
+            notes.push(
+                rust_i18n::t!(
+                    "install_note_newer",
+                    version = version.as_str(),
+                    source = source.as_str()
+                )
+                .into_owned(),
+            );
+        }
+        notes
     }
 
     fn refresh_apps(&self) -> Task<Message> {
@@ -692,10 +769,18 @@ impl Impactor {
                 quick_install::Message::Install(app, version) => {
                     self.request_source_install(app, version)
                 }
-                msg => self
-                    .quick_install
-                    .update(msg)
-                    .map(|m| Message::MainScreen(general::Message::QuickInstall(m))),
+                msg => {
+                    let loaded = matches!(msg, quick_install::Message::Loaded(_));
+                    let task = self
+                        .quick_install
+                        .update(msg)
+                        .map(|m| Message::MainScreen(general::Message::QuickInstall(m)));
+                    if loaded {
+                        self.utilities.set_source_apps(self.quick_install.apps());
+                        self.announce_updates();
+                    }
+                    task
+                }
             },
             Message::MainScreen(msg) => {
                 if let ImpactorScreen::Main(ref mut screen) = self.current_screen {
@@ -704,9 +789,10 @@ impl Impactor {
                     if let general::Message::NavigateToInstaller(package) = msg {
                         let mut options = SignerOptions::default();
                         package.load_into_signer_options(&mut options);
-                        self.current_screen = ImpactorScreen::Installer(Box::new(
-                            package::PackageScreen::new(Some(package), options),
-                        ));
+                        let notes = self.install_notes(&package);
+                        let mut installer = package::PackageScreen::new(Some(package), options);
+                        installer.set_notes(notes);
+                        self.current_screen = ImpactorScreen::Installer(Box::new(installer));
                     }
 
                     task
@@ -714,8 +800,13 @@ impl Impactor {
                     Task::none()
                 }
             }
+            Message::UtilitiesScreen(utilties::Message::InstallUpdate(update)) => {
+                self.request_source_install(update.app, update.version)
+            }
             Message::UtilitiesScreen(msg) => {
-                self.utilities.update(msg).map(Message::UtilitiesScreen)
+                let task = self.utilities.update(msg).map(Message::UtilitiesScreen);
+                self.announce_updates();
+                task
             }
             Message::SettingsScreen(msg) => {
                 if let Some(screen) = &mut self.settings {

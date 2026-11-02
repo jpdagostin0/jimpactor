@@ -163,6 +163,11 @@ impl Device {
                     app_name.as_deref(),
                 );
                 app.installed_name = app_name;
+                app.version = info
+                    .as_dictionary()
+                    .and_then(|info| info.get("CFBundleShortVersionString"))
+                    .and_then(Value::as_string)
+                    .map(str::to_owned);
                 app.expiration = installed_profile_expiration(&bundle_id, &info, &profiles);
                 app.sideloaded = app.expiration.is_some() || is_sideloaded(&info);
                 found_apps.push(app);

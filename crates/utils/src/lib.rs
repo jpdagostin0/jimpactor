@@ -12,8 +12,10 @@ mod network_discovery;
 mod options;
 mod package;
 mod signer;
+pub mod sources;
 mod tailnet;
 mod tweak;
+pub mod updates;
 mod xkit_bridge;
 
 use std::path::Path;

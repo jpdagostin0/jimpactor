@@ -61,6 +61,8 @@ pub struct PackageScreen {
     custom_icon_path: Option<PathBuf>,
     url_schemes_input: String,
     custom_icon_handle: Option<image::Handle>,
+    /// How this IPA compares with the device and the app sources.
+    notes: Vec<String>,
 }
 
 impl PackageScreen {
@@ -85,7 +87,12 @@ impl PackageScreen {
             package_icon_handle,
             custom_icon_path,
             custom_icon_handle,
+            notes: Vec::new(),
         }
+    }
+
+    pub fn set_notes(&mut self, notes: Vec<String>) {
+        self.notes = notes;
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -337,12 +344,14 @@ impl PackageScreen {
             .spacing(appearance::THEME_PADDING),
         );
 
-        column![
-            container(content).width(Fill).height(Fill),
-            self.view_buttons(has_device)
-        ]
-        .spacing(appearance::THEME_PADDING)
-        .into()
+        let mut screen = column![].spacing(appearance::THEME_PADDING);
+        for note in &self.notes {
+            screen = screen.push(text(note).size(12));
+        }
+        screen
+            .push(container(content).width(Fill).height(Fill))
+            .push(self.view_buttons(has_device))
+            .into()
     }
 
     fn view_no_package(&self) -> Element<'_, Message> {

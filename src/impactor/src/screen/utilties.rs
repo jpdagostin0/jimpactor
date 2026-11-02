@@ -4,6 +4,8 @@ use rust_i18n::t;
 
 use crate::appearance;
 use crate::defaults::get_data_path;
+use plume_utils::sources::SourceApp;
+use plume_utils::updates::{self, AppUpdate};
 use plume_utils::{Device, SignerAppReal};
 use std::collections::{HashMap, VecDeque};
 
@@ -64,6 +66,8 @@ pub enum Message {
     Profiles(profiles::Message),
     Device(device_info::Message),
     CrashLogs(crash_logs::Message),
+    /// Handled by the app, which starts the installation.
+    InstallUpdate(AppUpdate),
     BrowseFiles(SignerAppReal),
     AppFiles(app_files::Message),
     SyslogStart,
@@ -161,6 +165,9 @@ pub struct UtilitiesScreen {
     app_files: Box<app_files::AppFiles>,
     /// Whether Apps shows the chosen app's files instead of the app list.
     browsing_files: bool,
+    /// What the app sources offer, to compare installed apps against.
+    source_apps: Vec<SourceApp>,
+    updates: Vec<AppUpdate>,
 }
 
 impl UtilitiesScreen {
@@ -181,6 +188,8 @@ impl UtilitiesScreen {
             crash_logs: Box::default(),
             app_files: Box::default(),
             browsing_files: false,
+            source_apps: Vec::new(),
+            updates: Vec::new(),
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
@@ -190,6 +199,23 @@ impl UtilitiesScreen {
         }
 
         screen
+    }
+
+    pub fn set_source_apps(&mut self, apps: &[SourceApp]) {
+        self.source_apps = apps.to_vec();
+        self.updates = updates::find_updates(&self.installed_apps, &self.source_apps);
+    }
+
+    pub fn updates(&self) -> &[AppUpdate] {
+        &self.updates
+    }
+
+    pub fn installed_apps(&self) -> &[SignerAppReal] {
+        &self.installed_apps
+    }
+
+    pub fn device(&self) -> Option<&Device> {
+        self.device.as_ref()
     }
 
     pub fn tab(&self) -> UtilitiesTab {
@@ -255,6 +281,8 @@ impl UtilitiesScreen {
                 match result {
                     Ok(apps) => {
                         self.installed_apps = apps;
+                        self.updates =
+                            updates::find_updates(&self.installed_apps, &self.source_apps);
                         self.status_message = None;
                         return self.load_icons();
                     }
@@ -449,6 +477,7 @@ impl UtilitiesScreen {
                 .crash_logs
                 .update(self.device.as_ref(), msg)
                 .map(Message::CrashLogs),
+            Message::InstallUpdate(_) => Task::none(),
             Message::BrowseFiles(app) => {
                 let Some(bundle_id) = app.bundle_id.clone() else {
                     return Task::none();
@@ -783,6 +812,23 @@ impl UtilitiesScreen {
                             .style(appearance::s_button),
                     );
                 }
+                if let Some(update) = self
+                    .updates
+                    .iter()
+                    .find(|update| Some(&update.bundle_id) == app.bundle_id.as_ref())
+                {
+                    header = header.push(
+                        button(
+                            text(t!(
+                                "utilities_update_to",
+                                version = update.version.version.as_str()
+                            ))
+                            .align_x(Center),
+                        )
+                        .on_press(Message::InstallUpdate(update.clone()))
+                        .style(appearance::p_button),
+                    );
+                }
                 if app.bundle_id.is_some() {
                     header = header.push(
                         button(text(t!("utilities_files")).align_x(Center))
@@ -797,6 +843,9 @@ impl UtilitiesScreen {
                 }
                 let mut app_row = column![header].spacing(4);
 
+                if let Some(version) = &app.version {
+                    app_row = app_row.push(text(format!("Version {version}")).size(13));
+                }
                 if let Some(date) = app.expiration {
                     let expired = std::time::SystemTime::from(date) <= std::time::SystemTime::now();
                     app_row = app_row.push(

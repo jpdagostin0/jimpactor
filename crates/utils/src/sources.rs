@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 const SOURCES_FILE: &str = "sources.json";
 const USER_AGENT: &str = concat!("Jimpactor/", env!("CARGO_PKG_VERSION"));
 /// Name of the app the one-click install preselects when it is available.
-pub(crate) const SIDESTORE: &str = "SideStore";
+pub const SIDESTORE: &str = "SideStore";
 /// Sources added once for every user. A removed one is not added back.
 const DEFAULT_SOURCES: [(&str, &str); 4] = [
     (SIDESTORE, "https://github.com/SideStore/SideStore"),
@@ -24,7 +24,7 @@ const DEFAULT_SOURCES: [(&str, &str); 4] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum SourceKind {
+pub enum SourceKind {
     GitHub,
     AltStore,
 }
@@ -39,7 +39,7 @@ impl std::fmt::Display for SourceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Source {
+pub struct Source {
     pub name: String,
     pub url: String,
     pub kind: SourceKind,
@@ -47,7 +47,7 @@ pub(crate) struct Source {
 
 /// The user's sources, stored in `sources.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct SourcesStore {
+pub struct SourcesStore {
     #[serde(default)]
     sources: Vec<Source>,
     /// Default sources already added once, so removing one is remembered.
@@ -108,7 +108,7 @@ impl SourcesStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AppVersion {
+pub struct AppVersion {
     pub version: String,
     pub download_url: String,
     pub prerelease: bool,
@@ -125,7 +125,7 @@ impl std::fmt::Display for AppVersion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceApp {
+pub struct SourceApp {
     pub name: String,
     pub source_name: String,
     pub bundle_id: Option<String>,
@@ -186,7 +186,7 @@ fn github_repo(url: &str) -> Option<(String, String)> {
 }
 
 /// Works out what kind of source `url` points to and returns it ready to save.
-pub(crate) async fn identify(url: &str) -> Result<Source, String> {
+pub async fn identify(url: &str) -> Result<Source, String> {
     let url = url.trim();
     if let Some((owner, repo)) = github_repo(url) {
         let api = format!("https://api.github.com/repos/{owner}/{repo}");
@@ -223,7 +223,7 @@ pub(crate) async fn identify(url: &str) -> Result<Source, String> {
 }
 
 /// Lists the apps a source offers.
-pub(crate) async fn fetch_apps(source: &Source) -> Result<Vec<SourceApp>, String> {
+pub async fn fetch_apps(source: &Source) -> Result<Vec<SourceApp>, String> {
     match source.kind {
         SourceKind::GitHub => fetch_github_apps(source).await,
         SourceKind::AltStore => {
@@ -238,7 +238,7 @@ pub(crate) async fn fetch_apps(source: &Source) -> Result<Vec<SourceApp>, String
 }
 
 /// Apps from every source; sources that fail are logged and skipped.
-pub(crate) async fn fetch_all(sources: Vec<Source>) -> Vec<SourceApp> {
+pub async fn fetch_all(sources: Vec<Source>) -> Vec<SourceApp> {
     let results = futures::future::join_all(sources.iter().map(fetch_apps)).await;
     sources
         .iter()
@@ -400,7 +400,7 @@ async fn fetch_altstore_feed(url: &str) -> Result<AltStoreFeed, String> {
 }
 
 /// Downloads `url` into `dest`, reporting progress from 0 to 100 when the size is known.
-pub(crate) async fn download(
+pub async fn download(
     url: &str,
     dest: &Path,
     mut on_progress: impl FnMut(i32),

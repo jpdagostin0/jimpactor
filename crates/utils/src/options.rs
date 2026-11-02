@@ -133,6 +133,8 @@ pub struct SignerAppReal {
     pub app: SignerApp,
     pub bundle_id: Option<String>,
     pub installed_name: Option<String>,
+    /// `CFBundleShortVersionString` of the installed app.
+    pub version: Option<String>,
     pub expiration: Option<plist::Date>,
     /// Signed with a development or enterprise certificate rather than by the App Store.
     pub sideloaded: bool,
@@ -145,6 +147,7 @@ impl SignerAppReal {
             app,
             bundle_id: identifier.map(|s| s.to_string()),
             installed_name: None,
+            version: None,
             expiration: None,
             sideloaded: false,
         }
@@ -156,6 +159,7 @@ impl SignerAppReal {
             app,
             bundle_id: identifier.map(|s| s.to_string()),
             installed_name: None,
+            version: None,
             expiration: None,
             sideloaded: false,
         }
