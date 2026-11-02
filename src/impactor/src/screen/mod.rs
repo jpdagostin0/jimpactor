@@ -719,6 +719,7 @@ impl Impactor {
             }
             Message::SettingsScreen(msg) => {
                 if let Some(screen) = &mut self.settings {
+                    screen.device = self.selected_device.clone();
                     match msg {
                         settings::Message::ShowLogin(email) => {
                             if let Some(id) = self.login_windows.keys().next().copied() {

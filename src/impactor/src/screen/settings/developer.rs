@@ -1,6 +1,7 @@
-use iced::widget::{button, column, container, row, rule, scrollable, text};
+use iced::widget::{button, column, container, progress_bar, row, rule, scrollable, text};
 use iced::{Alignment, Element, Fill, Task};
 use plume_store::GsaAccount;
+use plume_utils::{AccountKind, AccountLimits, Device, FREE_ACTIVE_APP_LIMIT, Meter};
 use rust_i18n::t;
 
 use crate::appearance;
@@ -37,6 +38,9 @@ pub struct Overview {
     certificates: Vec<Certificate>,
     app_ids: Vec<AppId>,
     devices: Result<Vec<plume_utils::RegisteredDevice>, String>,
+    limits: Result<AccountLimits, String>,
+    /// Name of the selected device and its active sideloaded apps.
+    active_apps: Option<(String, Meter)>,
 }
 
 #[derive(Debug, Default)]
@@ -46,7 +50,7 @@ pub struct DeveloperTab {
     error: Option<String>,
 }
 
-async fn load(account: GsaAccount) -> Result<Overview, String> {
+async fn load(account: GsaAccount, device: Option<Device>) -> Result<Overview, String> {
     let (session, team_id) = developer_session(&account).await?;
     let certificates = session
         .qh_list_certs(&team_id)
@@ -80,12 +84,83 @@ async fn load(account: GsaAccount) -> Result<Overview, String> {
             .map_err(|error| error.to_string()),
         Err(error) => Err(error),
     };
+    let limits = AccountLimits::fetch(&session, &team_id)
+        .await
+        .map_err(|error| error.to_string());
+    let free = matches!(&limits, Ok(limits) if limits.kind == AccountKind::Free);
+    let mut active_apps = None;
+    if let Some(device) = device.filter(|device| !device.is_mac && device.is_available()) {
+        match device.active_sideloaded_apps().await {
+            Ok(used) => {
+                let limit = free.then_some(FREE_ACTIVE_APP_LIMIT);
+                active_apps = Some((device.name.clone(), Meter { used, limit }));
+            }
+            Err(error) => log::debug!("Could not count apps on {}: {error}", device.name),
+        }
+    }
     Ok(Overview {
         team_id,
         certificates,
         app_ids,
         devices,
+        limits,
+        active_apps,
     })
+}
+
+fn view_meter<'a>(label: String, meter: Meter) -> Element<'a, Message> {
+    let small = appearance::THEME_FONT_SIZE - 1.0;
+    let mut title = text(format!("{label}: {meter}")).size(small);
+    if meter.is_full() {
+        title = title.color(iced::Color::from_rgb(0.9, 0.35, 0.35));
+    }
+    let mut column = column![title].spacing(2);
+    if let Some(limit) = meter.limit {
+        column = column
+            .push(progress_bar(0.0..=limit.max(1) as f32, meter.used.min(limit) as f32).girth(6));
+    }
+    column.into()
+}
+
+fn view_limits(overview: &Overview) -> Element<'_, Message> {
+    let small = appearance::THEME_FONT_SIZE - 1.0;
+    let limits = match &overview.limits {
+        Ok(limits) => limits,
+        Err(error) => {
+            return text(t!("developer_limits_unavailable", error = error.as_str()))
+                .size(small)
+                .into();
+        }
+    };
+    let kind = match limits.kind {
+        AccountKind::Free => t!("developer_kind_free"),
+        AccountKind::Paid => t!("developer_kind_paid"),
+    };
+    let mut meters = column![
+        text(format!("{kind} · {}", limits.team_name)),
+        view_meter(t!("developer_meter_app_ids").into_owned(), limits.app_ids),
+        view_meter(
+            t!("developer_meter_devices").into_owned(),
+            limits.registered_devices
+        ),
+    ]
+    .spacing(appearance::THEME_PADDING / 2.0);
+    if let Some((device, meter)) = &overview.active_apps {
+        meters = meters.push(view_meter(
+            t!("developer_meter_active_apps", device = device.as_str()).into_owned(),
+            *meter,
+        ));
+    }
+    meters =
+        meters.push(text(t!("developer_profile_validity", days = limits.profile_days)).size(small));
+    if limits.kind == AccountKind::Free {
+        meters = meters.push(text(t!("developer_free_note")).size(small));
+    }
+    container(meters)
+        .padding(appearance::THEME_PADDING)
+        .style(container::rounded_box)
+        .width(Fill)
+        .into()
 }
 
 async fn device_manager(
@@ -104,7 +179,12 @@ async fn device_manager(
 }
 
 impl DeveloperTab {
-    pub fn update(&mut self, message: Message, account: Option<&GsaAccount>) -> Task<Message> {
+    pub fn update(
+        &mut self,
+        message: Message,
+        account: Option<&GsaAccount>,
+        device: Option<&Device>,
+    ) -> Task<Message> {
         match message {
             Message::Load => {
                 let Some(account) = account.cloned() else {
@@ -116,7 +196,10 @@ impl DeveloperTab {
                 }
                 self.loading = true;
                 self.error = None;
-                Task::perform(run_on_tokio(load(account)), Message::Loaded)
+                Task::perform(
+                    run_on_tokio(load(account, device.cloned())),
+                    Message::Loaded,
+                )
             }
             Message::Loaded(result) => {
                 self.loading = false;
@@ -213,7 +296,7 @@ impl DeveloperTab {
             Message::ActionDone(result) => {
                 self.loading = false;
                 match result {
-                    Ok(true) => return self.update(Message::Load, account),
+                    Ok(true) => return self.update(Message::Load, account, device),
                     Ok(false) => {}
                     Err(e) => {
                         log::error!("Developer account action failed: {e}");
@@ -268,6 +351,7 @@ impl DeveloperTab {
         };
         let enabled = !self.loading;
         let small = appearance::THEME_FONT_SIZE - 1.0;
+        content = content.push(view_limits(overview));
 
         let section = |title: std::borrow::Cow<'static, str>| {
             text(title.into_owned()).size(appearance::THEME_FONT_SIZE + 1.0)

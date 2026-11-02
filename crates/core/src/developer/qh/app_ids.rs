@@ -116,6 +116,12 @@ impl DeveloperSession {
 #[serde(rename_all = "camelCase")]
 pub struct AppIDsResponse {
     pub app_ids: Vec<AppID>,
+    /// App IDs the team may hold, when Apple reports it.
+    #[serde(default)]
+    pub max_quantity: Option<Integer>,
+    /// App IDs the team can still create, when Apple reports it.
+    #[serde(default)]
+    pub available_quantity: Option<Integer>,
     #[serde(flatten)]
     pub meta: QHResponseMeta,
 }

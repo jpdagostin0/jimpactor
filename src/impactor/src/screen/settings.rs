@@ -266,6 +266,8 @@ pub struct SettingsScreen {
     sideloadly_patreon_pending: bool,
     sideloadly_completion: PatreonLoginInput,
     pub tab: SettingsTab,
+    /// The device installs go to; its app count feeds the account meter.
+    pub device: Option<Device>,
     pairing: pairing::PairingTab,
     developer: developer::DeveloperTab,
     sources: source_manager::SourcesTab,
@@ -303,6 +305,7 @@ impl SettingsScreen {
             sideloadly_patreon_pending: false,
             sideloadly_completion: PatreonLoginInput::default(),
             tab: SettingsTab::General,
+            device: None,
             pairing: pairing::PairingTab::new(),
             developer: developer::DeveloperTab::default(),
             sources: source_manager::SourcesTab::new(),
@@ -418,7 +421,9 @@ impl SettingsScreen {
             }
             Message::Developer(msg) => {
                 let account = store.and_then(|s| s.selected_account());
-                self.developer.update(msg, account).map(Message::Developer)
+                self.developer
+                    .update(msg, account, self.device.as_ref())
+                    .map(Message::Developer)
             }
             Message::Sources(msg) => self.sources.update(msg).map(Message::Sources),
             Message::Logs(msg) => self.logs.update(msg).map(Message::Logs),

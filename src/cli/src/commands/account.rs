@@ -7,6 +7,7 @@ use dialoguer::Select;
 
 use plume_core::{auth::Account, developer::DeveloperSession};
 use plume_store::AccountStore;
+use plume_utils::{AccountKind, AccountLimits, FREE_ACTIVE_APP_LIMIT};
 
 use crate::get_data_path;
 
@@ -36,6 +37,8 @@ pub enum AccountCommands {
     RegisterDevice(RegisterDeviceArgs),
     /// List all app IDs for a team
     AppIds(AppIdsArgs),
+    /// Show whether the account is free or paid and how much of its limits are used
+    Limits(LimitsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -90,6 +93,13 @@ pub struct AppIdsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct LimitsArgs {
+    /// Team ID to show limits for
+    #[arg(short = 't', long = "team", value_name = "TEAM_ID")]
+    pub team_id: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct SwitchArgs {
     /// Email of the account to switch to
     #[arg(value_name = "EMAIL", required = true)]
@@ -106,6 +116,7 @@ pub async fn execute(args: AccountArgs) -> Result<()> {
         AccountCommands::Devices(device_args) => devices(device_args).await,
         AccountCommands::RegisterDevice(register_args) => register_device(register_args).await,
         AccountCommands::AppIds(app_id_args) => app_ids(app_id_args).await,
+        AccountCommands::Limits(limits_args) => limits(limits_args).await,
     }
 }
 
@@ -369,6 +380,27 @@ pub async fn app_ids(args: AppIdsArgs) -> Result<()> {
     let p = session.v1_list_app_ids(&team_id, None).await?.data;
 
     log::info!("{:#?}", p);
+
+    Ok(())
+}
+
+async fn limits(args: LimitsArgs) -> Result<()> {
+    let session = get_authenticated_account().await?;
+    let team_id = select_team(&session, args.team_id.as_deref()).await?;
+    let limits = AccountLimits::fetch(&session, &team_id).await?;
+
+    let kind = match limits.kind {
+        AccountKind::Free => "Free",
+        AccountKind::Paid => "Apple Developer Program",
+    };
+    println!("Account:        {kind} ({})", limits.team_name);
+    println!("App IDs:        {}", limits.app_ids);
+    println!("Devices:        {}", limits.registered_devices);
+    println!("Certificates:   {}", limits.certificates);
+    println!("Profile length: {} days", limits.profile_days);
+    if limits.kind == AccountKind::Free {
+        println!("Active apps:    {FREE_ACTIVE_APP_LIMIT} per device");
+    }
 
     Ok(())
 }

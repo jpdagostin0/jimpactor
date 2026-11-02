@@ -43,6 +43,13 @@ pub struct Team {
     team_provisioning_settings: Option<TeamProvisionSettings>,
 }
 
+impl Team {
+    /// Whether this is a free Xcode team rather than a paid program membership.
+    pub fn is_free(&self) -> bool {
+        self.xcode_free_only || self.memberships.is_empty()
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
