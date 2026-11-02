@@ -27,6 +27,8 @@ pub enum Message {
     Saved(Result<bool, String>),
     Backup,
     BackupTo(Option<PathBuf>),
+    ExportAll,
+    ExportTo(Option<PathBuf>),
     Restore,
     RestoreFrom(Option<PathBuf>),
     RestoreConfirmed(PathBuf),
@@ -181,7 +183,46 @@ impl AppFiles {
                     Message::BackupTo,
                 )
             }
-            Message::BackupTo(None) | Message::RestoreFrom(None) => Task::none(),
+            Message::ExportAll => {
+                let Some((bundle_id, _)) = &self.app else {
+                    return Task::none();
+                };
+                let file_name = format!("{bundle_id}-files.zip");
+                Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .add_filter("Zip", &["zip"])
+                            .set_file_name(file_name)
+                            .save_file()
+                            .await
+                            .map(|file| file.path().to_owned())
+                    },
+                    Message::ExportTo,
+                )
+            }
+            Message::ExportTo(Some(path)) => {
+                let (Some(device), Some((bundle_id, _))) = (device.cloned(), self.app.clone())
+                else {
+                    return Task::none();
+                };
+                self.begin_transfer(move |progress| async move {
+                    device
+                        .archive_app_files(
+                            &bundle_id,
+                            None,
+                            ArchiveScope::Everything,
+                            &path,
+                            move |file| {
+                                let _ = progress.send(file.to_owned());
+                            },
+                        )
+                        .await
+                        .map_err(|e| format!("Export failed: {e}"))
+                })
+            }
+            Message::BackupTo(None) | Message::ExportTo(None) | Message::RestoreFrom(None) => {
+                Task::none()
+            }
             Message::BackupTo(Some(path)) => {
                 let (Some(device), Some((bundle_id, _))) = (device.cloned(), self.app.clone())
                 else {
@@ -352,6 +393,9 @@ impl AppFiles {
                 .style(appearance::s_button),
             button(text(t!("utilities_files_restore")).align_x(Center))
                 .on_press_maybe((!self.busy).then_some(Message::Restore))
+                .style(appearance::s_button),
+            button(text(t!("utilities_files_export_all")).align_x(Center))
+                .on_press_maybe((!self.busy).then_some(Message::ExportAll))
                 .style(appearance::s_button),
         ]
         .spacing(appearance::THEME_PADDING)

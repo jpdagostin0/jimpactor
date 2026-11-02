@@ -391,3 +391,5 @@ utilities_profiles_ascending = "Ascending"
 utilities_profiles_descending = "Descending"
 
 utilities_crash_logs_dump_ips = "Dump all .ips"
+
+utilities_files_export_all = "Export all (.zip)"
