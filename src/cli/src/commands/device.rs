@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Error, Ok, Result};
@@ -220,7 +221,18 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
         ));
     }
 
+    if devices.len() == 1 {
+        return Ok(devices.remove(0));
+    }
+
     let device_names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
+    if !std::io::stdin().is_terminal() {
+        let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();
+        return Err(anyhow::anyhow!(
+            "Several devices are connected. Choose one with --udid: {}",
+            udids.join(", ")
+        ));
+    }
 
     let selection = Select::new()
         .with_prompt("Select a device to register and install to")

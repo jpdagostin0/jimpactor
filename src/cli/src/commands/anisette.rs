@@ -72,7 +72,14 @@ pub async fn execute(args: AnisetteArgs) -> Result<()> {
     match args.command {
         AnisetteCommands::Show => {
             println!("Mode:   {:?}", settings.mode);
-            println!("Server: {}", settings.remote_server);
+            // Sideloadly URLs carry a private token, so only the host is shown.
+            let address = &settings.remote_server.address;
+            let host = address
+                .split("://")
+                .nth(1)
+                .and_then(|rest| rest.split(['/', '?']).next())
+                .unwrap_or(address);
+            println!("Server: {} ({host})", settings.remote_server.name);
             if let Some(session) = &settings.sideloadly_session {
                 println!("Sideloadly: {:?}", session.account);
             }
