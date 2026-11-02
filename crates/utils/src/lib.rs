@@ -36,7 +36,7 @@ pub use device::{
     install_app_mac,
 }; // Device helper
 pub use device_discovery::{DeviceEvent, watch_devices};
-pub use device_tools::{DeviceDetails, InstalledProfile};
+pub use device_tools::{DeviceDetails, InstalledProfile, ProfileSort, sort_profiles};
 pub use network_connection::NetworkConnection;
 pub use network_discovery::watch_network_devices;
 pub use options::{

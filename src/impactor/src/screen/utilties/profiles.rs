@@ -1,6 +1,6 @@
-use iced::widget::{button, column, row, scrollable, text};
+use iced::widget::{button, column, pick_list, row, scrollable, text};
 use iced::{Center, Color, Element, Fill, Task};
-use plume_utils::{Device, InstalledProfile};
+use plume_utils::{Device, InstalledProfile, ProfileSort, sort_profiles};
 use rust_i18n::t;
 
 use super::StatusMessage;
@@ -14,6 +14,22 @@ pub enum Message {
     Remove(Vec<String>),
     RemoveConfirmed(Vec<String>, bool),
     Removed(Result<(), String>),
+    SelectSort(SortChoice),
+    ToggleDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortChoice(ProfileSort);
+
+impl std::fmt::Display for SortChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&match self.0 {
+            ProfileSort::Expiration => t!("utilities_profiles_sort_expiration"),
+            ProfileSort::Name => t!("utilities_profiles_sort_name"),
+            ProfileSort::AppId => t!("utilities_profiles_sort_app_id"),
+            ProfileSort::Team => t!("utilities_profiles_sort_team"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -22,6 +38,8 @@ pub struct ProfilesTab {
     loaded: bool,
     busy: bool,
     status: Option<StatusMessage>,
+    sort: ProfileSort,
+    descending: bool,
 }
 
 impl ProfilesTab {
@@ -46,7 +64,8 @@ impl ProfilesTab {
                 self.busy = false;
                 self.loaded = true;
                 match result {
-                    Ok(profiles) => {
+                    Ok(mut profiles) => {
+                        sort_profiles(&mut profiles, self.sort, self.descending);
                         self.profiles = profiles;
                         self.status = None;
                     }
@@ -83,6 +102,16 @@ impl ProfilesTab {
                 )
             }
             Message::RemoveConfirmed(_, false) => Task::none(),
+            Message::SelectSort(SortChoice(sort)) => {
+                self.sort = sort;
+                sort_profiles(&mut self.profiles, self.sort, self.descending);
+                Task::none()
+            }
+            Message::ToggleDirection => {
+                self.descending = !self.descending;
+                sort_profiles(&mut self.profiles, self.sort, self.descending);
+                Task::none()
+            }
             Message::Removed(result) => {
                 self.busy = false;
                 match result {
@@ -130,6 +159,22 @@ impl ProfilesTab {
             text(t!("utilities_profiles_count", count = self.profiles.len()))
                 .size(small)
                 .width(Fill),
+            pick_list(
+                ProfileSort::ALL.map(SortChoice),
+                Some(SortChoice(self.sort)),
+                Message::SelectSort,
+            )
+            .style(appearance::s_pick_list),
+            button(
+                text(if self.descending {
+                    t!("utilities_profiles_descending")
+                } else {
+                    t!("utilities_profiles_ascending")
+                })
+                .align_x(Center)
+            )
+            .on_press(Message::ToggleDirection)
+            .style(appearance::s_button),
             button(text(t!("utilities_profiles_remove_expired")).align_x(Center))
                 .on_press_maybe(
                     (usable && !self.busy && !expired.is_empty())

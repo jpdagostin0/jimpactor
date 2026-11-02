@@ -2,6 +2,7 @@
 //! status, power, and crash reports. None of these need Developer Mode or a
 //! developer disk image.
 
+use std::cmp::Ordering;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -63,6 +64,52 @@ impl InstalledProfile {
                 .map(SystemTime::from),
         })
     }
+}
+
+/// How a list of provisioning profiles is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProfileSort {
+    #[default]
+    Expiration,
+    Name,
+    AppId,
+    Team,
+}
+
+impl ProfileSort {
+    pub const ALL: [ProfileSort; 4] = [
+        ProfileSort::Expiration,
+        ProfileSort::Name,
+        ProfileSort::AppId,
+        ProfileSort::Team,
+    ];
+}
+
+/// Orders `profiles` by `sort`. Text ignores case, and profiles missing the value stay last
+/// in either direction so the useful rows are on top.
+pub fn sort_profiles(profiles: &mut [InstalledProfile], sort: ProfileSort, descending: bool) {
+    fn text(value: Option<&String>) -> Option<String> {
+        value.filter(|v| !v.is_empty()).map(|v| v.to_lowercase())
+    }
+    fn missing_last<T: Ord>(a: Option<T>, b: Option<T>, descending: bool) -> Ordering {
+        match (a, b) {
+            (Some(a), Some(b)) if descending => b.cmp(&a),
+            (Some(a), Some(b)) => a.cmp(&b),
+            (a, b) => b.is_some().cmp(&a.is_some()),
+        }
+    }
+    profiles.sort_by(|a, b| match sort {
+        ProfileSort::Expiration => missing_last(a.expiration, b.expiration, descending),
+        ProfileSort::Name => missing_last(text(Some(&a.name)), text(Some(&b.name)), descending),
+        ProfileSort::AppId => {
+            missing_last(text(a.app_id.as_ref()), text(b.app_id.as_ref()), descending)
+        }
+        ProfileSort::Team => missing_last(
+            text(a.team_name.as_ref()),
+            text(b.team_name.as_ref()),
+            descending,
+        ),
+    });
 }
 
 #[derive(Debug, Clone, Default)]
@@ -332,6 +379,44 @@ mod tests {
         );
         assert!(name_has_extension("Retired/Foo.ips"));
         assert!(!name_has_extension("Retired"));
+    }
+
+    fn profile(name: &str, team: Option<&str>, days: Option<u64>) -> InstalledProfile {
+        InstalledProfile {
+            uuid: name.into(),
+            name: name.into(),
+            app_id: None,
+            team_name: team.map(str::to_owned),
+            expiration: days
+                .map(|days| SystemTime::UNIX_EPOCH + Duration::from_secs(days * 86_400)),
+        }
+    }
+
+    fn names(profiles: &[InstalledProfile]) -> Vec<&str> {
+        profiles.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    #[test]
+    fn profiles_sort_in_both_directions_with_missing_values_last() {
+        let mut profiles = vec![
+            profile("b", None, Some(1)),
+            profile("A", Some("Zed"), Some(3)),
+            profile("c", Some("amy"), None),
+        ];
+        sort_profiles(&mut profiles, ProfileSort::Name, false);
+        assert_eq!(names(&profiles), ["A", "b", "c"]);
+        sort_profiles(&mut profiles, ProfileSort::Name, true);
+        assert_eq!(names(&profiles), ["c", "b", "A"]);
+
+        sort_profiles(&mut profiles, ProfileSort::Expiration, false);
+        assert_eq!(names(&profiles), ["b", "A", "c"]);
+        sort_profiles(&mut profiles, ProfileSort::Expiration, true);
+        assert_eq!(names(&profiles), ["A", "b", "c"]);
+
+        sort_profiles(&mut profiles, ProfileSort::Team, false);
+        assert_eq!(names(&profiles), ["c", "A", "b"]);
+        sort_profiles(&mut profiles, ProfileSort::Team, true);
+        assert_eq!(names(&profiles), ["A", "c", "b"]);
     }
 
     #[test]
