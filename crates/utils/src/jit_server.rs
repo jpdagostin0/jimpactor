@@ -6,7 +6,9 @@
 //! - `GET /{udid}/{bundle_id}` launches the app with JIT enabled.
 //! - `GET /{udid}/attach/{pid}` enables JIT for a running process.
 
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use plume_store::{JitListen, JitServerSettings};
@@ -14,10 +16,13 @@ use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, watch};
 
-use crate::refresh::ConnectedDevices;
+use crate::Device;
+
+/// Devices the server can reach, by UDID.
+pub type ConnectedDevices = Arc<std::sync::Mutex<HashMap<String, Device>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum JitServerStatus {
+pub enum JitServerStatus {
     Off,
     Starting,
     Listening(String),
@@ -37,12 +42,12 @@ fn server() -> &'static Server {
     })
 }
 
-pub(crate) fn status() -> JitServerStatus {
+pub fn status() -> JitServerStatus {
     server().status.borrow().clone()
 }
 
 /// Starts, restarts or stops the server to match `settings`.
-pub(crate) fn apply(settings: &JitServerSettings, devices: ConnectedDevices) {
+pub fn apply(settings: &JitServerSettings, devices: ConnectedDevices, ddi_dir: PathBuf) {
     let server = server();
     if let Some(stop) = server.stop.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let _ = stop.send(());
@@ -74,7 +79,7 @@ pub(crate) fn apply(settings: &JitServerSettings, devices: ConnectedDevices) {
             runtime.block_on(async move {
                 tokio::select! {
                     _ = stopped => {}
-                    _ = serve(settings, devices) => {}
+                    _ = serve(settings, devices, ddi_dir) => {}
                 }
             });
         });
@@ -85,7 +90,7 @@ pub(crate) fn apply(settings: &JitServerSettings, devices: ConnectedDevices) {
     }
 }
 
-async fn serve(settings: JitServerSettings, devices: ConnectedDevices) {
+async fn serve(settings: JitServerSettings, devices: ConnectedDevices, ddi_dir: PathBuf) {
     let status = &server().status;
     match settings.listen {
         JitListen::Local | JitListen::Network => {
@@ -117,24 +122,24 @@ async fn serve(settings: JitServerSettings, devices: ConnectedDevices) {
                 match listener.accept().await {
                     Ok((stream, peer)) => {
                         log::debug!("JIT request from {peer}");
-                        tokio::spawn(handle(stream, devices.clone()));
+                        tokio::spawn(handle(stream, devices.clone(), ddi_dir.clone()));
                     }
                     Err(error) => log::warn!("JIT server accept failed: {error}"),
                 }
             }
         }
-        JitListen::Tailnet => serve_tailnet(settings.port, devices).await,
+        JitListen::Tailnet => serve_tailnet(settings.port, devices, ddi_dir).await,
     }
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-async fn serve_tailnet(port: u16, devices: ConnectedDevices) {
+#[cfg(tailnet)]
+async fn serve_tailnet(port: u16, devices: ConnectedDevices, ddi_dir: PathBuf) {
     let status = &server().status;
     loop {
-        match plume_utils::tailnet_listen(port).await {
+        match crate::tailnet_listen(port).await {
             Ok(listener) => {
-                let address = match plume_utils::tailnet_status() {
-                    plume_utils::TailnetStatus::Connected { address } => {
+                let address = match crate::tailnet_status() {
+                    crate::TailnetStatus::Connected { address } => {
                         format!("{address}:{port}")
                     }
                     _ => format!("tailnet port {port}"),
@@ -144,7 +149,7 @@ async fn serve_tailnet(port: u16, devices: ConnectedDevices) {
                 loop {
                     match listener.accept().await {
                         Ok(stream) => {
-                            tokio::spawn(handle(stream, devices.clone()));
+                            tokio::spawn(handle(stream, devices.clone(), ddi_dir.clone()));
                         }
                         Err(error) => {
                             log::warn!("Tailnet JIT listener stopped: {error}");
@@ -163,16 +168,20 @@ async fn serve_tailnet(port: u16, devices: ConnectedDevices) {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-async fn serve_tailnet(_port: u16, _devices: ConnectedDevices) {
+#[cfg(not(tailnet))]
+async fn serve_tailnet(_port: u16, _devices: ConnectedDevices, _ddi_dir: PathBuf) {
     server().status.send_replace(JitServerStatus::Failed(
         "Tailscale is not supported on Intel Macs".into(),
     ));
 }
 
-async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S, devices: ConnectedDevices) {
+async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    devices: ConnectedDevices,
+    ddi_dir: PathBuf,
+) {
     let (status, body) = match read_request_path(&mut stream).await {
-        Ok(path) => route(&path, devices).await,
+        Ok(path) => route(&path, devices, ddi_dir).await,
         Err(error) => (400, json!({ "ok": false, "error": error })),
     };
     let body = body.to_string();
@@ -216,7 +225,11 @@ async fn read_request_path<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Strin
     }
 }
 
-async fn route(path: &str, devices: ConnectedDevices) -> (u16, serde_json::Value) {
+async fn route(
+    path: &str,
+    devices: ConnectedDevices,
+    ddi_dir: PathBuf,
+) -> (u16, serde_json::Value) {
     let segments: Vec<String> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -238,7 +251,6 @@ async fn route(path: &str, devices: ConnectedDevices) -> (u16, serde_json::Value
             json!({ "ok": false, "error": format!("Device {udid} is not connected") }),
         );
     };
-    let ddi_dir = crate::defaults::get_data_path().join("ddi");
 
     match segments.as_slice() {
         [_] => match device.installed_apps().await {
@@ -271,7 +283,7 @@ async fn route(path: &str, devices: ConnectedDevices) -> (u16, serde_json::Value
     }
 }
 
-fn jit_result(result: Result<u64, plume_utils::Error>, device: &str) -> (u16, serde_json::Value) {
+fn jit_result(result: Result<u64, crate::Error>, device: &str) -> (u16, serde_json::Value) {
     match result {
         Ok(pid) => {
             log::info!("Enabled JIT for process {pid} on {device}");
@@ -285,7 +297,7 @@ fn jit_result(result: Result<u64, plume_utils::Error>, device: &str) -> (u16, se
 }
 
 /// Available devices, preferring USB connections, one entry per UDID.
-fn connected(devices: &ConnectedDevices) -> Vec<plume_utils::Device> {
+fn connected(devices: &ConnectedDevices) -> Vec<crate::Device> {
     let mut list: Vec<_> = devices
         .lock()
         .map(|devices| {
@@ -344,10 +356,10 @@ mod tests {
     #[tokio::test]
     async fn lists_no_devices_and_reports_unknown_ones() {
         let devices = ConnectedDevices::default();
-        let (status, body) = route("/", devices.clone()).await;
+        let (status, body) = route("/", devices.clone(), PathBuf::new()).await;
         assert_eq!(status, 200);
         assert_eq!(body["devices"].as_array().unwrap().len(), 0);
-        let (status, _) = route("/00008130-0123/com.example.app", devices).await;
+        let (status, _) = route("/00008130-0123/com.example.app", devices, PathBuf::new()).await;
         assert_eq!(status, 404);
     }
 }

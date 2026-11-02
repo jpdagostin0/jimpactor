@@ -12,7 +12,7 @@ idevice.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 plist.workspace = true
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "sync", "time"] }
 futures.workspace = true
 mdns-sd = "0.21"
 log.workspace = true

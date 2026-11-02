@@ -5,15 +5,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
-use plume_core::{CertificateIdentity, MobileProvision, developer::DeveloperSession};
-use plume_store::{AccountStore, AnisetteSettings, RefreshDevice};
-use plume_utils::{
-    Bundle, ConfirmRevocation, Device, Signer, SignerMode, SignerOptions, XkitSigner,
-};
+use plume_store::{AccountStore, RefreshDevice};
+use plume_utils::Device;
 
 use crate::defaults::get_data_path;
 
-pub type ConnectedDevices = Arc<Mutex<HashMap<String, Device>>>;
+pub use plume_utils::jit_server::ConnectedDevices;
 
 /// How often each reachable device is asked which apps are about to expire.
 const ALERT_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -272,99 +269,15 @@ impl RefreshDaemon {
             ));
         }
 
-        let account = store
-            .get_account(&refresh_device.account)
-            .ok_or_else(|| format!("Account {} not found", refresh_device.account))?;
-
-        let session = DeveloperSession::new(
-            account.adsid().clone(),
-            account.xcode_gs_token().clone(),
-            AnisetteSettings::load_configuration(&get_data_path()),
+        plume_utils::refresh::refresh_app(
+            store,
+            refresh_device,
+            app,
+            device,
+            &get_data_path(),
+            Arc::new(crate::certificate_reset::confirm),
         )
-        .await
-        .map_err(|e| format!("Failed to create session: {}", e))?;
-
-        let teams_response = session
-            .qh_list_teams()
-            .await
-            .map_err(|e| format!("Failed to list teams: {}", e))?;
-
-        if teams_response.teams.is_empty() {
-            return Err("No teams available for this account".to_string());
-        }
-
-        let team_id = if account.team_id().is_empty() {
-            &teams_response.teams[0].team_id
-        } else {
-            account.team_id()
-        };
-
-        // SideStore-family apps embed their signing certificate and must keep the legacy signer.
-        let xkit_signer = if embeds_certificate(&app.path) {
-            None
-        } else {
-            Some(
-                XkitSigner::new(
-                    account.adsid(),
-                    account.xcode_gs_token(),
-                    AnisetteSettings::load_configuration(&get_data_path()),
-                    team_id,
-                    &get_data_path(),
-                )
-                .await
-                .map_err(|e| format!("Failed to create signing context: {}", e))?,
-            )
-        };
-
-        let identity_is_new = if let Some(xkit_signer) = &xkit_signer {
-            xkit_signer
-                .ensure_certificate(&*confirm_revocation())
-                .await
-                .map_err(|e| format!("Failed to create identity: {}", e))?
-        } else {
-            let mut on_certificate_reset = crate::certificate_reset::confirm;
-            let identity = CertificateIdentity::new_with_session(
-                &session,
-                get_data_path(),
-                None,
-                team_id,
-                false,
-                Some(&mut on_certificate_reset),
-            )
-            .await
-            .map_err(|e| format!("Failed to create identity: {}", e))?;
-            identity.new
-        };
-
-        let is_installed = if let Some(bundle_id) = app.bundle_id.as_deref() {
-            device
-                .is_app_installed(bundle_id)
-                .await
-                .map_err(|e| format!("Failed to check if app is installed: {}", e))?
-        } else {
-            false
-        };
-
-        // Determine if we need to reinstall:
-        // - Mac devices always need reinstalling
-        // - If the identity is new, we need to reinstall
-        // - If the app is not installed, we need to reinstall
-        // - If the app is installed and identity is not new, we can just update profiles
-        let needs_reinstall = device.is_mac || identity_is_new || !is_installed;
-
-        if needs_reinstall {
-            self.resign_and_reinstall(app, device, &session, team_id, xkit_signer.as_ref())
-                .await?;
-        } else {
-            log::info!(
-                "Certificate exists and app is installed, updating provisioning profiles..."
-            );
-            self.update_provisioning_profiles(app, device, &session, team_id)
-                .await?;
-        }
-
-        self.update_refresh_schedule(store, refresh_device, app)
-            .await?;
+        .await?;
 
         log::info!("Successfully refreshed app at {:?}", app.path);
 
@@ -373,159 +286,6 @@ impl RefreshDaemon {
             app.name.as_deref().unwrap_or("???"),
             refresh_device.name
         ));
-
-        Ok(())
-    }
-
-    async fn resign_and_reinstall(
-        &self,
-        app: &plume_store::RefreshApp,
-        device: &Device,
-        session: &DeveloperSession,
-        team_id: &str,
-        xkit_signer: Option<&XkitSigner>,
-    ) -> Result<(), String> {
-        let bundle =
-            Bundle::new(app.path.clone()).map_err(|e| format!("Failed to create bundle: {}", e))?;
-
-        if let Some(xkit_signer) = xkit_signer {
-            let device_info =
-                (!device.is_mac).then_some((device.udid.as_str(), device.name.as_str()));
-            xkit_signer
-                .provision_and_sign(&bundle, device_info, &*confirm_revocation(), &|_, _| {})
-                .await
-                .map_err(|e| format!("Failed to sign bundle: {}", e))?;
-        } else {
-            let team_id_string = team_id.to_string();
-            session
-                .qh_ensure_device(&team_id_string, &device.name, &device.udid)
-                .await
-                .map_err(|e| format!("Failed to ensure device: {}", e))?;
-            self.legacy_sign(&bundle, session, team_id).await?;
-        }
-
-        self.install(app, device).await
-    }
-
-    async fn legacy_sign(
-        &self,
-        bundle: &Bundle,
-        session: &DeveloperSession,
-        team_id: &str,
-    ) -> Result<(), String> {
-        let options = SignerOptions {
-            mode: SignerMode::Pem,
-            ..Default::default()
-        };
-
-        let team_id_string = team_id.to_string();
-        let mut on_certificate_reset = crate::certificate_reset::confirm;
-        let signing_identity = CertificateIdentity::new_with_session(
-            session,
-            get_data_path(),
-            None,
-            &team_id_string,
-            false,
-            Some(&mut on_certificate_reset),
-        )
-        .await
-        .map_err(|e| format!("Failed to create signing identity: {}", e))?;
-
-        let mut signer = Signer::new(Some(signing_identity), options);
-
-        signer
-            .register_bundle(bundle, session, team_id, true)
-            .await
-            .map_err(|e| format!("Failed to register bundle: {}", e))?;
-
-        signer
-            .sign_bundle(bundle)
-            .await
-            .map_err(|e| format!("Failed to sign bundle: {}", e))?;
-
-        Ok(())
-    }
-
-    async fn install(&self, app: &plume_store::RefreshApp, device: &Device) -> Result<(), String> {
-        if !device.is_mac {
-            device
-                .install_app(&app.path, |_| async {})
-                .await
-                .map_err(|e| format!("Failed to install app: {}", e))?;
-        } else {
-            plume_utils::install_app_mac(&app.path)
-                .await
-                .map_err(|e| format!("Failed to install app on Mac: {}", e))?;
-        }
-
-        Ok(())
-    }
-
-    async fn update_provisioning_profiles(
-        &self,
-        app: &plume_store::RefreshApp,
-        device: &Device,
-        session: &DeveloperSession,
-        team_id: &str,
-    ) -> Result<(), String> {
-        let bundle =
-            Bundle::new(app.path.clone()).map_err(|e| format!("Failed to create bundle: {}", e))?;
-
-        let options = SignerOptions {
-            mode: SignerMode::Pem,
-            ..Default::default()
-        };
-
-        let mut signer = Signer::new(None, options);
-
-        signer
-            .register_bundle(&bundle, session, team_id, true)
-            .await
-            .map_err(|e| format!("Failed to register bundle: {}", e))?;
-
-        for provision in &signer.provisioning_files {
-            device
-                .install_profile(provision)
-                .await
-                .map_err(|e| format!("Failed to install profile: {}", e))?;
-        }
-
-        Ok(())
-    }
-
-    async fn update_refresh_schedule(
-        &self,
-        store: &AccountStore,
-        refresh_device: &RefreshDevice,
-        app: &plume_store::RefreshApp,
-    ) -> Result<(), String> {
-        let embedded_prov_path = app.path.join("embedded.mobileprovision");
-        if !embedded_prov_path.exists() {
-            return Err("embedded.mobileprovision not found".to_string());
-        }
-
-        let provision = MobileProvision::load_with_path(&embedded_prov_path)
-            .map_err(|e| format!("Failed to load mobile provision: {}", e))?;
-
-        let expiration_date = *provision.expiration_date();
-        let scheduled_refresh = expiration_date
-            .to_xml_format()
-            .parse::<chrono::DateTime<chrono::Utc>>()
-            .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(4));
-        let scheduled_refresh = scheduled_refresh - chrono::Duration::days(3);
-
-        let mut store = store.clone();
-        let mut updated_device = refresh_device.clone();
-
-        if let Some(existing_app) = updated_device.apps.iter_mut().find(|a| a.path == app.path) {
-            existing_app.scheduled_refresh = scheduled_refresh;
-        }
-
-        store
-            .add_or_update_refresh_device_sync(updated_device)
-            .map_err(|e| format!("Failed to update refresh schedule: {}", e))?;
-
-        log::info!("Next refresh scheduled for: {}", scheduled_refresh);
 
         Ok(())
     }
@@ -546,26 +306,6 @@ fn alert_text(app: &plume_utils::ExpiringApp, device: &str, now: SystemTime) -> 
         ),
     }
     .into_owned()
-}
-
-fn confirm_revocation() -> Box<ConfirmRevocation> {
-    Box::new(|_certificates| {
-        Box::pin(async {
-            tokio::task::spawn_blocking(crate::certificate_reset::confirm)
-                .await
-                .unwrap_or(false)
-        })
-    })
-}
-
-/// SideStore-family apps ship the signing certificate as a p12 next to their executable.
-fn embeds_certificate(app: &std::path::Path) -> bool {
-    ["ALTCertificate.p12", "Certificate.p12"]
-        .iter()
-        .any(|name| app.join(name).exists())
-        || app
-            .join("SideStoreApp.framework/ALTCertificate.p12")
-            .exists()
 }
 
 pub fn spawn_refresh_daemon() -> (thread::JoinHandle<()>, ConnectedDevices) {

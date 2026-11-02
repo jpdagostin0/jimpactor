@@ -1,7 +1,4 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use iced::window;
 
@@ -57,15 +54,5 @@ fn load_window_icon() -> window::Icon {
 }
 
 pub fn get_data_path() -> PathBuf {
-    let base = if cfg!(windows) {
-        env::var("APPDATA").unwrap()
-    } else {
-        env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| env::var("HOME").unwrap() + "/.config")
-    };
-
-    let dir = Path::new(&base).join("Jimpactor");
-
-    fs::create_dir_all(&dir).ok();
-
-    dir
+    plume_store::data_path()
 }

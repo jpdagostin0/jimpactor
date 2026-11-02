@@ -39,6 +39,12 @@ pub enum AccountCommands {
     AppIds(AppIdsArgs),
     /// Show whether the account is free or paid and how much of its limits are used
     Limits(LimitsArgs),
+    /// List the selected account's developer teams
+    Teams,
+    /// Choose the selected account's developer team
+    SetTeam(SetTeamArgs),
+    /// Export the signing certificate as a .p12
+    ExportP12(ExportP12Args),
 }
 
 #[derive(Debug, Args)]
@@ -100,6 +106,18 @@ pub struct LimitsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct SetTeamArgs {
+    #[arg(value_name = "TEAM_ID")]
+    pub team_id: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportP12Args {
+    #[arg(short = 'o', long, value_name = "PATH")]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct SwitchArgs {
     /// Email of the account to switch to
     #[arg(value_name = "EMAIL", required = true)]
@@ -117,6 +135,9 @@ pub async fn execute(args: AccountArgs) -> Result<()> {
         AccountCommands::RegisterDevice(register_args) => register_device(register_args).await,
         AccountCommands::AppIds(app_id_args) => app_ids(app_id_args).await,
         AccountCommands::Limits(limits_args) => limits(limits_args).await,
+        AccountCommands::Teams => list_teams().await,
+        AccountCommands::SetTeam(team_args) => set_team(team_args).await,
+        AccountCommands::ExportP12(export_args) => export_p12(export_args).await,
     }
 }
 
@@ -402,6 +423,53 @@ async fn limits(args: LimitsArgs) -> Result<()> {
         println!("Active apps:    {FREE_ACTIVE_APP_LIMIT} per device");
     }
 
+    Ok(())
+}
+
+async fn selected_account() -> Result<(AccountStore, plume_store::GsaAccount)> {
+    let store = AccountStore::load(&Some(get_settings_path())).await?;
+    let account = store
+        .selected_account()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("No account selected"))?;
+    Ok((store, account))
+}
+
+async fn list_teams() -> Result<()> {
+    let (_, account) = selected_account().await?;
+    let teams = plume_utils::session::list_teams(&account, &get_data_path())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    for (name, id) in teams {
+        let selected = if &id == account.team_id() {
+            " (selected)"
+        } else {
+            ""
+        };
+        println!("{id}\t{name}{selected}");
+    }
+    Ok(())
+}
+
+async fn set_team(args: SetTeamArgs) -> Result<()> {
+    let (mut store, account) = selected_account().await?;
+    store
+        .update_account_team(account.email(), args.team_id)
+        .await?;
+    Ok(())
+}
+
+async fn export_p12(args: ExportP12Args) -> Result<()> {
+    let (_, account) = selected_account().await?;
+    let (_, data) = plume_utils::session::export_certificate(
+        &account,
+        &get_data_path(),
+        crate::commands::device_commands::reset_prompt(),
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    std::fs::write(&args.output, data)?;
+    println!("Saved {}", args.output.display());
     Ok(())
 }
 

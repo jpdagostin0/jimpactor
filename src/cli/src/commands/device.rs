@@ -6,13 +6,17 @@ use dialoguer::Select;
 use idevice::{
     IdeviceService, installation_proxy::InstallationProxyClient, usbmuxd::UsbmuxdConnection,
 };
-use plume_utils::{Device, Package, get_device_for_id};
+use plume_utils::{Device, DeviceEvent, Package, get_device_for_id, watch_network_devices};
+
+use crate::{commands::device_commands::DeviceCommands, get_data_path};
 
 #[derive(Debug, Args)]
 #[command(arg_required_else_help = true)]
 pub struct DeviceArgs {
+    #[command(subcommand)]
+    pub command: Option<DeviceCommands>,
     /// Device UDID to target (optional, will prompt if not provided)
-    #[arg(short = 'u', long = "udid", value_name = "UDID")]
+    #[arg(short = 'u', long = "udid", value_name = "UDID", global = true)]
     pub udid: Option<String>,
     /// Install app at specified path to device (.ipa, .app)
     #[arg(short = 'i', long = "install", value_name = "PATH")]
@@ -71,6 +75,10 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
             select_device(args.udid).await?
         }
     };
+
+    if let Some(command) = args.command {
+        return crate::commands::device_commands::execute(command, device).await;
+    }
 
     if let Some(app_path) = args.install {
         let mut app_path = app_path;
@@ -154,23 +162,63 @@ fn remote_file_name(path: &str) -> Result<&str> {
         .ok_or_else(|| anyhow::anyhow!("{path} does not name a file"))
 }
 
+/// Looks for paired devices on Wi-Fi. Their connections live on the discovery thread, which
+/// is left running for as long as the command needs them.
+async fn discover_network_devices(wait: std::time::Duration) -> Vec<Device> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let known = get_data_path().join("wifi_devices.plist");
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Could not start Wi-Fi discovery");
+        runtime.block_on(watch_network_devices(tx, known));
+    });
+
+    let mut found = Vec::new();
+    let _ = tokio::time::timeout(wait, async {
+        while let Some(event) = rx.recv().await {
+            if let DeviceEvent::Connected(device) = event {
+                found.push(device);
+            }
+        }
+    })
+    .await;
+    found
+}
+
 pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
+    const WIFI_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
     if let Some(udid) = device_udid {
-        return Ok(get_device_for_id(&udid).await?);
+        return match get_device_for_id(&udid).await {
+            std::result::Result::Ok(device) => Ok(device),
+            Err(error) => discover_network_devices(WIFI_WAIT)
+                .await
+                .into_iter()
+                .find(|device| device.udid == udid)
+                .ok_or_else(|| error.into()),
+        };
     }
 
-    let mut muxer = UsbmuxdConnection::default().await?;
-    let devices = muxer.get_devices().await?;
+    // usbmuxd may be missing entirely on a machine that only uses Wi-Fi.
+    let devices = match UsbmuxdConnection::default().await {
+        std::result::Result::Ok(mut muxer) => muxer.get_devices().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    let device_futures: Vec<_> = devices.into_iter().map(Device::new).collect();
+
+    let mut devices = futures::future::join_all(device_futures).await;
+    if devices.is_empty() {
+        devices = discover_network_devices(WIFI_WAIT).await;
+    }
 
     if devices.is_empty() {
         return Err(anyhow::anyhow!(
             "No devices connected. Please connect a device or specify a UDID with --udid"
         ));
     }
-
-    let device_futures: Vec<_> = devices.into_iter().map(Device::new).collect();
-
-    let devices = futures::future::join_all(device_futures).await;
 
     let device_names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
 

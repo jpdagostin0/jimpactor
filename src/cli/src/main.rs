@@ -1,16 +1,13 @@
 mod commands;
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use clap::Parser;
 use commands::{Cli, Commands};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
 
@@ -20,23 +17,19 @@ async fn main() -> anyhow::Result<()> {
         Commands::Account(args) => commands::account::execute(args).await?,
         Commands::Device(args) => commands::device::execute(args).await?,
         Commands::Developer(args) => commands::developer::execute(args).await?,
+        Commands::Sources(args) => commands::sources::execute(args).await?,
+        Commands::Anisette(args) => commands::anisette::execute(args).await?,
+        Commands::Config(args) => commands::config::execute(args).await?,
+        Commands::Refresh(args) => commands::refresh::execute(args).await?,
+        Commands::Jit(args) => commands::jit::execute(args).await?,
+        Commands::AppProfile(args) => commands::app_profile::execute(args)?,
     }
 
     Ok(())
 }
 
 pub fn get_data_path() -> PathBuf {
-    let base = if cfg!(windows) {
-        env::var("APPDATA").unwrap()
-    } else {
-        env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| env::var("HOME").unwrap() + "/.config")
-    };
-
-    let dir = Path::new(&base).join("Jimpactor");
-
-    fs::create_dir_all(&dir).ok();
-
-    dir
+    plume_store::data_path()
 }
 
 #[cfg(test)]
@@ -89,6 +82,36 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_err());
         }
     }
+    #[test]
+    fn every_gui_area_has_a_command() {
+        for args in [
+            &["device", "--udid", "x", "info"][..],
+            &["device", "backup", "a.b", "-o", "a.zip"],
+            &["device", "restore", "a.b", "a.zip"],
+            &["device", "dump-files", "a.b", "-o", "a.zip"],
+            &["device", "profiles", "--sort", "app-id", "--descending"],
+            &["device", "remove-profiles", "--expired"],
+            &["device", "dump-ips", "folder"],
+            &["device", "update"],
+            &["sources", "install", "SideStore", "--version", "1.0"],
+            &["anisette", "use", "https://example.com"],
+            &["config", "set", "refresh-alert-days", "3"],
+            &["config", "jit", "--port", "9000", "--listen", "tailnet"],
+            &["refresh", "now", "udid", "a.b"],
+            &["jit", "--udid", "x", "launch", "a.b"],
+            &["jit", "serve", "--port", "9000"],
+            &["app-profile", "export", "a.b", "out.json"],
+            &["account", "teams"],
+            &["account", "set-team", "TEAM"],
+            &["account", "export-p12", "-o", "a.p12"],
+        ] {
+            let args = std::iter::once(&"jimpactor-cli").chain(args);
+            if let Err(error) = Cli::try_parse_from(args) {
+                panic!("{error}");
+            }
+        }
+    }
+
     #[test]
     fn command_schema_and_device_udid_are_valid_on_this_platform() {
         Cli::command().debug_assert();

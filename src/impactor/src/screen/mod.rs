@@ -165,7 +165,11 @@ impl Impactor {
             .flatten();
         Self::apply_tailscale(store.tailscale(), None, true);
         if let Some(devices) = REFRESH_DAEMON_DEVICES.get() {
-            crate::jit_server::apply(store.jit_server(), devices.clone());
+            crate::jit_server::apply(
+                store.jit_server(),
+                devices.clone(),
+                defaults::get_data_path().join("ddi"),
+            );
         }
         if let Some(code) = &selected_locale {
             rust_i18n::set_locale(code);
@@ -1010,7 +1014,11 @@ impl Impactor {
                                 log::error!("Failed to save JIT server settings: {err}");
                             }
                             if let Some(devices) = REFRESH_DAEMON_DEVICES.get() {
-                                crate::jit_server::apply(&settings, devices.clone());
+                                crate::jit_server::apply(
+                                    &settings,
+                                    devices.clone(),
+                                    defaults::get_data_path().join("ddi"),
+                                );
                             }
                             Task::none()
                         }
@@ -1656,13 +1664,16 @@ impl Impactor {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async move {
-                let result = subscriptions::run_source_install(
+                let host: std::sync::Arc<dyn plume_utils::install::InstallHost> =
+                    std::sync::Arc::new(subscriptions::GuiInstallHost { tx: tx.clone() });
+                let result = plume_utils::install::run_source_install(
                     &app,
                     &version,
                     device.as_ref(),
                     account.as_ref(),
                     store.as_mut(),
-                    &tx,
+                    &defaults::get_data_path(),
+                    &host,
                 )
                 .await;
                 match result {
@@ -1731,13 +1742,16 @@ impl Impactor {
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 let tx_error = tx.clone();
                 rt.block_on(async move {
-                    match subscriptions::run_installation(
+                    let host: std::sync::Arc<dyn plume_utils::install::InstallHost> =
+                        std::sync::Arc::new(subscriptions::GuiInstallHost { tx: tx.clone() });
+                    match plume_utils::install::run_installation(
                         &package,
                         device.as_ref(),
                         &options,
                         account.as_ref(),
                         store.as_mut(),
-                        &tx,
+                        &defaults::get_data_path(),
+                        &host,
                     )
                     .await
                     {
