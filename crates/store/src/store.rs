@@ -96,6 +96,50 @@ pub struct JitServerSettings {
     pub port: u16,
     #[serde(default)]
     pub listen: JitListen,
+    /// Salted hash of the password requests must give. `None` lets anyone in.
+    #[serde(default)]
+    pub password: Option<JitPassword>,
+}
+
+/// A password stored so that it cannot be read back from the settings file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JitPassword {
+    salt: String,
+    hash: String,
+}
+
+const JIT_HASH_ROUNDS: u32 = 10_000;
+
+fn jit_hash(salt: &str, password: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+
+    let mut hash = Sha256::digest(format!("{salt}:{password}").as_bytes()).to_vec();
+    for _ in 1..JIT_HASH_ROUNDS {
+        hash = Sha256::digest(&hash).to_vec();
+    }
+    hash
+}
+
+impl JitPassword {
+    pub fn new(password: &str) -> Self {
+        let salt = hex::encode(rand::random::<[u8; 16]>());
+        let hash = hex::encode(jit_hash(&salt, password));
+        Self { salt, hash }
+    }
+
+    /// Compares every byte, so timing does not reveal how much of a guess was right.
+    pub fn matches(&self, password: &str) -> bool {
+        let Ok(expected) = hex::decode(&self.hash) else {
+            return false;
+        };
+        let actual = jit_hash(&self.salt, password);
+        expected.len() == actual.len()
+            && expected
+                .iter()
+                .zip(&actual)
+                .fold(0, |difference, (a, b)| difference | (a ^ b))
+                == 0
+    }
 }
 
 fn default_jit_port() -> u16 {
@@ -108,6 +152,7 @@ impl Default for JitServerSettings {
             enabled: false,
             port: default_jit_port(),
             listen: JitListen::default(),
+            password: None,
         }
     }
 }
@@ -565,5 +610,27 @@ impl AccountStore {
     pub fn remove_refresh_device_sync(&mut self, udid: &str) -> Result<(), Error> {
         self.refreshes.remove(udid);
         self.save_sync()
+    }
+}
+
+#[cfg(test)]
+mod jit_tests {
+    use super::*;
+
+    #[test]
+    fn passwords_are_salted_and_checked_exactly() {
+        let password = JitPassword::new("hunter2");
+        assert!(password.matches("hunter2"));
+        assert!(!password.matches("hunter3"));
+        assert!(!password.matches(""));
+        assert_ne!(password, JitPassword::new("hunter2"));
+        let json = serde_json::to_string(&password).unwrap();
+        assert!(!json.contains("hunter2"));
+    }
+
+    #[test]
+    fn settings_from_older_versions_have_no_password() {
+        let settings: JitServerSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(settings.password.is_none());
     }
 }

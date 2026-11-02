@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use idevice::usbmuxd::UsbmuxdAddr;
-use plume_store::{AccountStore, JitServerSettings};
+use plume_store::{AccountStore, JitPassword, JitServerSettings};
 use plume_utils::jit_server::{self, ConnectedDevices, JitServerStatus};
 use plume_utils::{
     DeviceEvent, TailnetConfig, set_tailnet_devices, start_tailnet, watch_devices,
@@ -40,6 +40,9 @@ pub enum JitCommands {
         port: Option<u16>,
         #[arg(long, value_enum)]
         listen: Option<Listen>,
+        /// Require this password instead of the saved one
+        #[arg(long, value_name = "PASSWORD")]
+        password: Option<String>,
     },
 }
 
@@ -115,7 +118,11 @@ pub async fn execute(args: JitArgs) -> Result<()> {
             select_device(args.udid).await?.attach_jit(pid, ddi).await?;
             println!("Enabled JIT for process {pid}");
         }
-        JitCommands::Serve { port, listen } => {
+        JitCommands::Serve {
+            port,
+            listen,
+            password,
+        } => {
             let store = AccountStore::load(&Some(get_settings_path())).await?;
             let tailscale = store.tailscale();
             set_tailnet_devices(tailscale.devices.clone());
@@ -133,6 +140,9 @@ pub async fn execute(args: JitArgs) -> Result<()> {
             }
             if let Some(listen) = listen {
                 settings.listen = listen.into();
+            }
+            if let Some(password) = password {
+                settings.password = Some(JitPassword::new(&password));
             }
             serve(settings).await?;
         }

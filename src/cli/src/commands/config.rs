@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Subcommand, ValueEnum};
-use plume_store::{AccountStore, AppearanceMode, JitListen, TailscaleSettings};
+use plume_store::{AccountStore, AppearanceMode, JitListen, JitPassword, TailscaleSettings};
 
 use crate::commands::account::get_settings_path;
 
@@ -75,6 +75,12 @@ pub enum ConfigCommands {
         port: Option<u16>,
         #[arg(long, value_enum)]
         listen: Option<Listen>,
+        /// Require this password on every request
+        #[arg(long, value_name = "PASSWORD", conflicts_with = "no_password")]
+        password: Option<String>,
+        /// Stop requiring a password
+        #[arg(long)]
+        no_password: bool,
     },
 }
 
@@ -108,7 +114,14 @@ pub async fn execute(args: ConfigArgs) -> Result<()> {
             println!("appearance:         {:?}", store.appearance());
             println!("locale:             {}", store.locale().unwrap_or("system"));
             println!("tailscale:          {:?}", store.tailscale());
-            println!("jit:                {:?}", store.jit_server());
+            let jit = store.jit_server();
+            println!(
+                "jit:                enabled={} port={} listen={:?} password={}",
+                jit.enabled,
+                jit.port,
+                jit.listen,
+                jit.password.is_some()
+            );
         }
         ConfigCommands::Set { setting, value } => match setting {
             Setting::Keyring => store.set_use_keyring_sync(switch(&value)?)?,
@@ -151,8 +164,16 @@ pub async fn execute(args: ConfigArgs) -> Result<()> {
             enabled,
             port,
             listen,
+            password,
+            no_password,
         } => {
             let mut settings = store.jit_server().clone();
+            if let Some(password) = password {
+                settings.password = Some(JitPassword::new(&password));
+            }
+            if no_password {
+                settings.password = None;
+            }
             if let Some(enabled) = enabled {
                 settings.enabled = enabled;
             }

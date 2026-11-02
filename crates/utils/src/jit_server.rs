@@ -5,13 +5,16 @@
 //! - `GET /{udid}` lists the device's installed apps.
 //! - `GET /{udid}/{bundle_id}` launches the app with JIT enabled.
 //! - `GET /{udid}/attach/{pid}` enables JIT for a running process.
+//!
+//! With a password set, every request must carry it: `?password=...`, which a Shortcut can
+//! do easily, or an `Authorization: Bearer ...` header. It crosses the network unencrypted.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use plume_store::{JitListen, JitServerSettings};
+use plume_store::{JitListen, JitPassword, JitServerSettings};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, watch};
@@ -90,8 +93,12 @@ pub fn apply(settings: &JitServerSettings, devices: ConnectedDevices, ddi_dir: P
     }
 }
 
+/// Slows password guessing; each wrong one costs an attacker this long.
+const WRONG_PASSWORD_DELAY: Duration = Duration::from_secs(1);
+
 async fn serve(settings: JitServerSettings, devices: ConnectedDevices, ddi_dir: PathBuf) {
     let status = &server().status;
+    let password = settings.password.clone();
     match settings.listen {
         JitListen::Local | JitListen::Network => {
             let host = if settings.listen == JitListen::Local {
@@ -122,18 +129,28 @@ async fn serve(settings: JitServerSettings, devices: ConnectedDevices, ddi_dir: 
                 match listener.accept().await {
                     Ok((stream, peer)) => {
                         log::debug!("JIT request from {peer}");
-                        tokio::spawn(handle(stream, devices.clone(), ddi_dir.clone()));
+                        tokio::spawn(handle(
+                            stream,
+                            devices.clone(),
+                            ddi_dir.clone(),
+                            password.clone(),
+                        ));
                     }
                     Err(error) => log::warn!("JIT server accept failed: {error}"),
                 }
             }
         }
-        JitListen::Tailnet => serve_tailnet(settings.port, devices, ddi_dir).await,
+        JitListen::Tailnet => serve_tailnet(settings.port, devices, ddi_dir, password).await,
     }
 }
 
 #[cfg(tailnet)]
-async fn serve_tailnet(port: u16, devices: ConnectedDevices, ddi_dir: PathBuf) {
+async fn serve_tailnet(
+    port: u16,
+    devices: ConnectedDevices,
+    ddi_dir: PathBuf,
+    password: Option<JitPassword>,
+) {
     let status = &server().status;
     loop {
         match crate::tailnet_listen(port).await {
@@ -149,7 +166,12 @@ async fn serve_tailnet(port: u16, devices: ConnectedDevices, ddi_dir: PathBuf) {
                 loop {
                     match listener.accept().await {
                         Ok(stream) => {
-                            tokio::spawn(handle(stream, devices.clone(), ddi_dir.clone()));
+                            tokio::spawn(handle(
+                                stream,
+                                devices.clone(),
+                                ddi_dir.clone(),
+                                password.clone(),
+                            ));
                         }
                         Err(error) => {
                             log::warn!("Tailnet JIT listener stopped: {error}");
@@ -169,7 +191,12 @@ async fn serve_tailnet(port: u16, devices: ConnectedDevices, ddi_dir: PathBuf) {
 }
 
 #[cfg(not(tailnet))]
-async fn serve_tailnet(_port: u16, _devices: ConnectedDevices, _ddi_dir: PathBuf) {
+async fn serve_tailnet(
+    _port: u16,
+    _devices: ConnectedDevices,
+    _ddi_dir: PathBuf,
+    _password: Option<JitPassword>,
+) {
     server().status.send_replace(JitServerStatus::Failed(
         "Tailscale is not supported on Intel Macs".into(),
     ));
@@ -179,15 +206,25 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     devices: ConnectedDevices,
     ddi_dir: PathBuf,
+    password: Option<JitPassword>,
 ) {
-    let (status, body) = match read_request_path(&mut stream).await {
-        Ok(path) => route(&path, devices, ddi_dir).await,
+    let (status, body) = match read_request(&mut stream).await {
+        Ok(request) if !authorized(password.as_ref(), request.password.as_deref()) => {
+            log::warn!("JIT request with a wrong or missing password");
+            tokio::time::sleep(WRONG_PASSWORD_DELAY).await;
+            (
+                401,
+                json!({ "ok": false, "error": "Wrong or missing password" }),
+            )
+        }
+        Ok(request) => route(&request.path, devices, ddi_dir).await,
         Err(error) => (400, json!({ "ok": false, "error": error })),
     };
     let body = body.to_string();
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         _ => "Internal Server Error",
     };
@@ -199,8 +236,36 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     let _ = stream.shutdown().await;
 }
 
-/// Reads the request head and returns the path of a `GET` request.
-async fn read_request_path<S: AsyncRead + Unpin>(stream: &mut S) -> Result<String, String> {
+fn authorized(expected: Option<&JitPassword>, given: Option<&str>) -> bool {
+    expected.is_none_or(|expected| given.is_some_and(|given| expected.matches(given)))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Request {
+    path: String,
+    password: Option<String>,
+}
+
+/// The password in `?password=...`, or else in an `Authorization: Bearer` header.
+fn request_password(head: &str, query: Option<&str>) -> Option<String> {
+    query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .find_map(|pair| pair.strip_prefix("password="))
+        .map(|value| percent_decode(&value.replace('+', " ")))
+        .or_else(|| {
+            head.lines().skip(1).find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("authorization")
+                    .then(|| value.trim().strip_prefix("Bearer "))?
+                    .map(|token| token.trim().to_owned())
+            })
+        })
+}
+
+/// Reads the head of a `GET` request.
+async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Request, String> {
     let mut head = Vec::new();
     let mut buffer = [0u8; 1024];
     while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -219,7 +284,16 @@ async fn read_request_path<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Strin
     let head = String::from_utf8_lossy(&head);
     let mut request_line = head.lines().next().unwrap_or_default().split_whitespace();
     match (request_line.next(), request_line.next()) {
-        (Some("GET"), Some(target)) => Ok(target.split('?').next().unwrap_or_default().to_owned()),
+        (Some("GET"), Some(target)) => {
+            let (path, query) = match target.split_once('?') {
+                Some((path, query)) => (path, Some(query)),
+                None => (target, None),
+            };
+            Ok(Request {
+                path: path.to_owned(),
+                password: request_password(&head, query),
+            })
+        }
         (Some(_), Some(_)) => Err("Only GET requests are supported".into()),
         _ => Err("Malformed request".into()),
     }
@@ -340,11 +414,37 @@ mod tests {
     async fn parses_get_paths_and_rejects_other_methods() {
         let mut request: &[u8] = b"GET /abc/com.example.app?x=1 HTTP/1.1\r\nHost: x\r\n\r\n";
         assert_eq!(
-            read_request_path(&mut request).await.unwrap(),
+            read_request(&mut request).await.unwrap().path,
             "/abc/com.example.app"
         );
         let mut post: &[u8] = b"POST / HTTP/1.1\r\n\r\n";
-        assert!(read_request_path(&mut post).await.is_err());
+        assert!(read_request(&mut post).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn passwords_come_from_the_query_or_a_bearer_header() {
+        let mut request: &[u8] = b"GET /a?x=1&password=my%20secret HTTP/1.1\r\n\r\n";
+        let request = read_request(&mut request).await.unwrap();
+        assert_eq!(request.path, "/a");
+        assert_eq!(request.password.as_deref(), Some("my secret"));
+
+        let mut request: &[u8] =
+            b"GET /a HTTP/1.1\r\nHost: x\r\nauthorization: Bearer token\r\n\r\n";
+        let request = read_request(&mut request).await.unwrap();
+        assert_eq!(request.password.as_deref(), Some("token"));
+
+        let mut request: &[u8] = b"GET /a HTTP/1.1\r\nAuthorization: Basic abc\r\n\r\n";
+        assert_eq!(read_request(&mut request).await.unwrap().password, None);
+    }
+
+    #[test]
+    fn requests_need_the_password_only_when_one_is_set() {
+        let password = JitPassword::new("secret");
+        assert!(authorized(None, None));
+        assert!(authorized(None, Some("anything")));
+        assert!(authorized(Some(&password), Some("secret")));
+        assert!(!authorized(Some(&password), Some("wrong")));
+        assert!(!authorized(Some(&password), None));
     }
 
     #[test]

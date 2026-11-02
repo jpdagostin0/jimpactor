@@ -30,6 +30,6 @@ pub use sideloadly_auth::{
 };
 pub use sideloadly_import::{load_sideloadly_servers, parse_sessions, sessions_paths};
 pub use store::{
-    AccountStore, AppearanceMode, AscKey, JitListen, JitServerSettings, LockedDevice,
+    AccountStore, AppearanceMode, AscKey, JitListen, JitPassword, JitServerSettings, LockedDevice,
     TailscaleSettings,
 };

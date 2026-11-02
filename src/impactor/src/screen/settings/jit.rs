@@ -2,7 +2,7 @@ use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
 };
 use iced::{Alignment, Element, Fill, Task};
-use plume_store::{JitListen, JitServerSettings};
+use plume_store::{JitListen, JitPassword, JitServerSettings};
 use rust_i18n::t;
 
 use crate::appearance;
@@ -13,6 +13,9 @@ pub enum Message {
     ToggleEnabled(bool),
     SelectListen(ListenChoice),
     UpdatePort(String),
+    UpdatePassword(String),
+    SetPassword,
+    ClearPassword,
     Apply,
 }
 
@@ -34,6 +37,8 @@ impl std::fmt::Display for ListenChoice {
 pub struct JitTab {
     draft: JitServerSettings,
     port: String,
+    /// The password being typed. Never kept once it is set.
+    password: String,
     error: Option<String>,
 }
 
@@ -41,6 +46,7 @@ impl JitTab {
     pub fn new(settings: JitServerSettings) -> Self {
         Self {
             port: settings.port.to_string(),
+            password: String::new(),
             draft: settings,
             error: None,
         }
@@ -60,6 +66,22 @@ impl JitTab {
             Message::UpdatePort(port) => {
                 self.port = port;
                 false
+            }
+            Message::UpdatePassword(password) => {
+                self.password = password;
+                false
+            }
+            Message::SetPassword => {
+                if self.password.is_empty() {
+                    return (Task::none(), None);
+                }
+                self.draft.password = Some(JitPassword::new(&self.password));
+                self.password.clear();
+                true
+            }
+            Message::ClearPassword => {
+                self.draft.password = None;
+                true
             }
             Message::Apply => true,
         };
@@ -110,6 +132,32 @@ impl JitTab {
         ]
         .spacing(appearance::THEME_PADDING);
 
+        let has_password = self.draft.password.is_some();
+        content = content
+            .push(text(if has_password {
+                t!("jit_password_set")
+            } else {
+                t!("jit_password")
+            }))
+            .push(
+                row![
+                    text_input(&t!("jit_password_placeholder"), &self.password)
+                        .secure(true)
+                        .on_input(Message::UpdatePassword)
+                        .on_submit(Message::SetPassword)
+                        .padding(6)
+                        .width(Fill),
+                    button(text(t!("jit_password_save")))
+                        .on_press_maybe((!self.password.is_empty()).then_some(Message::SetPassword))
+                        .style(appearance::s_button),
+                    button(text(t!("jit_password_clear")))
+                        .on_press_maybe(has_password.then_some(Message::ClearPassword))
+                        .style(appearance::s_button),
+                ]
+                .spacing(appearance::THEME_PADDING)
+                .align_y(Alignment::Center),
+            );
+
         if let Some(error) = &self.error {
             content = content.push(text(error).size(small));
         }
@@ -131,7 +179,9 @@ impl JitTab {
                 .push(text(format!("{base}/<UDID>")).size(small))
                 .push(text(format!("{base}/<UDID>/<bundle id>")).size(small))
                 .push(text(format!("{base}/<UDID>/attach/<pid>")).size(small));
-            if self.draft.listen != JitListen::Local {
+            if has_password {
+                info = info.push(text(t!("jit_password_usage")).size(small));
+            } else if self.draft.listen != JitListen::Local {
                 info = info.push(text(t!("jit_security_note")).size(small));
             }
         }
