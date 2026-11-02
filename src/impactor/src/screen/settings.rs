@@ -95,6 +95,8 @@ pub enum Message {
     Logs(logs::Message),
     ToggleLockDevice(bool),
     ToggleCloseToTray(bool),
+    ToggleRefreshAlerts(bool),
+    SelectRefreshAlertDays(AlertDays),
     Tailscale(tailscale::Message),
     TailscaleChanged(tailscale::Change),
     Jit(jit::Message),
@@ -199,6 +201,20 @@ impl std::fmt::Display for AppearanceChoice {
             AppearanceMode::Dark => t!("settings_appearance_dark"),
         };
         write!(f, "{}", name)
+    }
+}
+
+/// How long before expiration a refresh alert is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlertDays(pub u32);
+
+impl AlertDays {
+    const ALL: [AlertDays; 4] = [AlertDays(1), AlertDays(2), AlertDays(3), AlertDays(7)];
+}
+
+impl std::fmt::Display for AlertDays {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&t!("settings_refresh_alert_window", days = self.0))
     }
 }
 
@@ -1014,6 +1030,9 @@ impl SettingsScreen {
         let (lock_device, close_to_tray) = account_store.as_ref().map_or((false, true), |store| {
             (store.lock_device(), store.close_to_tray())
         });
+        let (refresh_alerts, alert_days) = account_store.as_ref().map_or((true, 2), |store| {
+            (store.refresh_alerts(), store.refresh_alert_days())
+        });
         scrollable(
             column![
                 checkbox(lock_device)
@@ -1024,6 +1043,16 @@ impl SettingsScreen {
                     .label(t!("settings_close_to_tray"))
                     .on_toggle(Message::ToggleCloseToTray),
                 text(t!("settings_close_to_tray_desc")).size(small),
+                checkbox(refresh_alerts)
+                    .label(t!("settings_refresh_alerts"))
+                    .on_toggle(Message::ToggleRefreshAlerts),
+                text(t!("settings_refresh_alerts_desc")).size(small),
+                pick_list(
+                    AlertDays::ALL,
+                    Some(AlertDays(alert_days)),
+                    Message::SelectRefreshAlertDays,
+                )
+                .style(appearance::s_pick_list),
             ]
             .spacing(appearance::THEME_PADDING)
             .padding([0.0, appearance::THEME_PADDING])

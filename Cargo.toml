@@ -16,7 +16,7 @@ default-members = ["src/impactor"]
 
 [workspace.package]
 edition = "2024"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["JP D'Agostino"]
 license = "MIT"
 repository = "https://github.com/jpdagostin0/jimpactor"

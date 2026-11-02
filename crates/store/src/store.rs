@@ -11,6 +11,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_refresh_alert_days() -> u32 {
+    2
+}
+
 /// Light or dark appearance; `System` follows the OS setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -132,6 +136,10 @@ pub struct AccountStore {
     tailscale: TailscaleSettings,
     #[serde(default)]
     jit_server: JitServerSettings,
+    #[serde(default = "default_true")]
+    refresh_alerts: bool, // Notify about expiring apps on devices that are reachable
+    #[serde(default = "default_refresh_alert_days")]
+    refresh_alert_days: u32, // How long before expiration to notify
     #[serde(skip)]
     path: Option<PathBuf>,
     #[serde(skip)]
@@ -153,6 +161,8 @@ impl Default for AccountStore {
             close_to_tray: true,
             tailscale: TailscaleSettings::default(),
             jit_server: JitServerSettings::default(),
+            refresh_alerts: true,
+            refresh_alert_days: default_refresh_alert_days(),
             path: None,
             secrets_on_disk: false,
         }
@@ -322,6 +332,24 @@ impl AccountStore {
 
     pub fn set_jit_server_sync(&mut self, settings: JitServerSettings) -> Result<(), Error> {
         self.jit_server = settings;
+        self.save_sync()
+    }
+
+    pub fn refresh_alerts(&self) -> bool {
+        self.refresh_alerts
+    }
+
+    pub fn set_refresh_alerts_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.refresh_alerts = enabled;
+        self.save_sync()
+    }
+
+    pub fn refresh_alert_days(&self) -> u32 {
+        self.refresh_alert_days
+    }
+
+    pub fn set_refresh_alert_days_sync(&mut self, days: u32) -> Result<(), Error> {
+        self.refresh_alert_days = days;
         self.save_sync()
     }
 

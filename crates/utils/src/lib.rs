@@ -1,3 +1,4 @@
+mod alerts;
 mod bundle;
 mod cgbi;
 mod device;
@@ -16,6 +17,7 @@ mod xkit_bridge;
 
 use std::path::Path;
 
+pub use alerts::{ExpiringApp, expiring_apps};
 pub use bundle::{Bundle, BundleType}; // Bundle helper
 pub use device::{
     Device, REMOTE_PAIRING_CACHE_PREFIX, REMOTE_PAIRING_CACHE_SUFFIX, get_device_for_id,

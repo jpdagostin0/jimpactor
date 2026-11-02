@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
 use plume_core::{CertificateIdentity, MobileProvision, developer::DeveloperSession};
@@ -13,6 +14,10 @@ use plume_utils::{
 use crate::defaults::get_data_path;
 
 pub type ConnectedDevices = Arc<Mutex<HashMap<String, Device>>>;
+
+/// How often each reachable device is asked which apps are about to expire.
+const ALERT_INTERVAL: Duration = Duration::from_secs(60 * 60);
+const ALERT_TIMEOUT: Duration = Duration::from_secs(30);
 
 static ACTIVE_REFRESHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) fn has_active_refreshes() -> bool {
@@ -39,6 +44,20 @@ pub struct RefreshDaemon {
     connected_devices: ConnectedDevices,
     active_tasks: Arc<Mutex<HashSet<String>>>,
     check_interval: Duration,
+    /// When each UDID was last asked for expiring apps.
+    alert_checks: Mutex<HashMap<String, Instant>>,
+    /// (UDID, bundle ID, expiration) already notified, so an app alerts once per signature.
+    alerted: Mutex<HashSet<(String, String, SystemTime)>>,
+    /// Apps whose last background refresh failed, so retries stay silent until one works.
+    failing: Mutex<HashSet<PathBuf>>,
+}
+
+fn notify(body: &str) {
+    notify_rust::Notification::new()
+        .summary(crate::APP_NAME)
+        .body(body)
+        .show()
+        .ok();
 }
 
 impl RefreshDaemon {
@@ -48,6 +67,9 @@ impl RefreshDaemon {
             connected_devices: Arc::new(Mutex::new(HashMap::new())),
             active_tasks: Arc::new(Mutex::new(HashSet::new())),
             check_interval: Duration::from_secs(60 * 3), // Check every 3 minutes
+            alert_checks: Mutex::default(),
+            alerted: Mutex::default(),
+            failing: Mutex::default(),
         }
     }
 
@@ -65,11 +87,7 @@ impl RefreshDaemon {
             loop {
                 if let Err(e) = rt.block_on(self.check_and_refresh()) {
                     log::error!("Refresh daemon error: {}", e);
-                    notify_rust::Notification::new()
-                        .summary(crate::APP_NAME)
-                        .body(&format!("Failed to refresh: {}", e))
-                        .show()
-                        .ok();
+                    notify(&format!("Failed to refresh: {e}"));
                 }
 
                 thread::sleep(self.check_interval);
@@ -81,6 +99,10 @@ impl RefreshDaemon {
         let store = AccountStore::load(&Some(self.store_path.clone()))
             .await
             .map_err(|e| format!("Failed to load account store: {}", e))?;
+
+        if store.refresh_alerts() {
+            self.check_alerts(store.refresh_alert_days()).await;
+        }
 
         let now = Utc::now();
 
@@ -103,7 +125,8 @@ impl RefreshDaemon {
                         .connected_devices
                         .lock()
                         .ok()
-                        .and_then(|devices| devices.get(udid).cloned());
+                        .and_then(|devices| devices.get(udid).cloned())
+                        .filter(Device::is_available);
 
                     let Some(device) = device else {
                         log::debug!(
@@ -115,14 +138,87 @@ impl RefreshDaemon {
                         continue;
                     };
 
-                    if let Err(e) = self.refresh_app(&store, refresh_device, app, &device).await {
+                    let result = self.refresh_app(&store, refresh_device, app, &device).await;
+                    let first_failure = self.failing.lock().is_ok_and(|mut failing| {
+                        if result.is_err() {
+                            failing.insert(app.path.clone())
+                        } else {
+                            failing.remove(&app.path);
+                            false
+                        }
+                    });
+                    if let Err(e) = result {
                         log::error!("Error refreshing app: {}", e);
+                        if first_failure && store.refresh_alerts() {
+                            notify(&format!(
+                                "Failed to refresh {} for {}: {e}",
+                                app.name.as_deref().unwrap_or("???"),
+                                refresh_device.name
+                            ));
+                        }
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Notifies about apps expiring within `days` on devices that can be reached right now.
+    /// A notification for an unreachable device could not be acted on, so those are skipped.
+    async fn check_alerts(&self, days: u32) {
+        let devices: Vec<Device> = self
+            .connected_devices
+            .lock()
+            .map(|devices| {
+                devices
+                    .values()
+                    .filter(|device| !device.is_mac && device.is_available())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for device in devices {
+            let due = self.alert_checks.lock().is_ok_and(|mut checks| {
+                let due = checks
+                    .get(&device.udid)
+                    .is_none_or(|last| last.elapsed() >= ALERT_INTERVAL);
+                if due {
+                    checks.insert(device.udid.clone(), Instant::now());
+                }
+                due
+            });
+            if !due {
+                continue;
+            }
+
+            let apps = match tokio::time::timeout(ALERT_TIMEOUT, device.installed_apps()).await {
+                Ok(Ok(apps)) => apps,
+                result => {
+                    log::debug!(
+                        "Could not check {} for expiring apps: {result:?}",
+                        device.name
+                    );
+                    // Try again on the next pass instead of waiting out the interval.
+                    if let Ok(mut checks) = self.alert_checks.lock() {
+                        checks.remove(&device.udid);
+                    }
+                    continue;
+                }
+            };
+
+            let window = Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+            let now = SystemTime::now();
+            for app in plume_utils::expiring_apps(&apps, now, window) {
+                let first = self.alerted.lock().is_ok_and(|mut alerted| {
+                    alerted.insert((device.udid.clone(), app.bundle_id.clone(), app.expiration))
+                });
+                if first {
+                    notify(&alert_text(&app, &device.name, now));
+                }
+            }
+        }
     }
 
     fn is_busy(&self, udid: &str) -> bool {
@@ -164,15 +260,17 @@ impl RefreshDaemon {
 
         log::info!("Starting refresh for app at {:?}", app.path);
 
-        notify_rust::Notification::new()
-            .summary(crate::APP_NAME)
-            .body(&format!(
+        let retrying = self
+            .failing
+            .lock()
+            .is_ok_and(|failing| failing.contains(&app.path));
+        if !retrying {
+            notify(&format!(
                 "Started refreshing {} for {}",
                 app.name.as_deref().unwrap_or("???"),
                 refresh_device.name
-            ))
-            .show()
-            .ok();
+            ));
+        }
 
         let account = store
             .get_account(&refresh_device.account)
@@ -270,15 +368,11 @@ impl RefreshDaemon {
 
         log::info!("Successfully refreshed app at {:?}", app.path);
 
-        notify_rust::Notification::new()
-            .summary(crate::APP_NAME)
-            .body(&format!(
-                "Successfully refreshed {} for {}",
-                app.name.as_deref().unwrap_or("???"),
-                refresh_device.name
-            ))
-            .show()
-            .ok();
+        notify(&format!(
+            "Successfully refreshed {} for {}",
+            app.name.as_deref().unwrap_or("???"),
+            refresh_device.name
+        ));
 
         Ok(())
     }
@@ -435,6 +529,23 @@ impl RefreshDaemon {
 
         Ok(())
     }
+}
+
+fn alert_text(app: &plume_utils::ExpiringApp, device: &str, now: SystemTime) -> String {
+    let name = app.name.as_str();
+    match app.expiration.duration_since(now) {
+        Err(_) => rust_i18n::t!("refresh_alert_expired", app = name, device = device),
+        Ok(left) if left.as_secs() < 24 * 60 * 60 => {
+            rust_i18n::t!("refresh_alert_today", app = name, device = device)
+        }
+        Ok(left) => rust_i18n::t!(
+            "refresh_alert_days",
+            app = name,
+            device = device,
+            days = left.as_secs() / (24 * 60 * 60)
+        ),
+    }
+    .into_owned()
 }
 
 fn confirm_revocation() -> Box<ConfirmRevocation> {

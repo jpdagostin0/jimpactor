@@ -848,6 +848,22 @@ impl Impactor {
                             }
                             Task::none()
                         }
+                        settings::Message::ToggleRefreshAlerts(enabled) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_refresh_alerts_sync(enabled)
+                            {
+                                log::error!("Failed to save refresh alerts: {err}");
+                            }
+                            Task::none()
+                        }
+                        settings::Message::SelectRefreshAlertDays(settings::AlertDays(days)) => {
+                            if let Some(store) = &mut self.account_store
+                                && let Err(err) = store.set_refresh_alert_days_sync(days)
+                            {
+                                log::error!("Failed to save the refresh alert window: {err}");
+                            }
+                            Task::none()
+                        }
                         settings::Message::TailscaleChanged(change) => {
                             let Some(store) = &mut self.account_store else {
                                 return Task::none();
