@@ -19,9 +19,33 @@ Report Jimpactor issues and request features in [this repository](https://github
 - Browse app sources and install release IPAs.
 - Export signing certificates and generate or install device pairing files.
 - Manage accounts, developer teams, registered devices, app identifiers, and logs.
-- Customize apps and inject supported tweaks and frameworks.
+- Customize apps and inject supported tweaks and frameworks, and save those options per app.
+- Sign for paid teams with an App Store Connect API key instead of an Apple ID.
+- See whether an account is free or paid, and how much of its limits are used.
+- Get alerts when apps on a reachable device are about to expire, and when sources have app updates.
+- Back up and restore one app's data, or export all of its files to a zip.
+- Sort provisioning profiles, dump `.ips` crash logs, and inspect an IPA before installing it.
+- Protect the JIT server with a password.
 
 Jimpactor can supply pairing files to apps such as StikDebug, and its JIT server can enable JIT directly.
+
+## Command line
+
+`jimpactor-cli` covers what the app does. Run any command with `--help` for its options.
+
+| Command | Purpose |
+| --- | --- |
+| `sign` | Sign and install. `--asc-key` uses an App Store Connect key; `--use-profile` and `--save-profile` use saved options |
+| `device` | `info`, `apps`, `updates`, `update`, `uninstall`, `backup`, `restore`, `dump-files`, `profiles`, `remove-profiles`, `crash-logs`, `dump-ips`, `syslog`, `trust`, `pairing-file`, `install-pairing`, `restart`, `shutdown` |
+| `account` | Sign in, switch accounts and teams, `limits`, `export-p12` |
+| `developer` | App Store Connect keys, registered devices, certificates, bundle IDs and profiles |
+| `sources` | Manage sources and install from them |
+| `refresh` | List, run and forget Auto Refresh apps |
+| `jit` | `launch`, `attach` and `serve` |
+| `anisette`, `config` | Choose the anisette provider and change settings |
+| `app-profile`, `ipa`, `check-update` | Saved app options, the IPA inspector and Jimpactor updates |
+
+With several devices connected, scripts must pass `--udid`.
 
 ## Downloads
 
