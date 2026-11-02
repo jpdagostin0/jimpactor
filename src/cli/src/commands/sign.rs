@@ -6,7 +6,8 @@ use clap::Args;
 use plume_core::{CertificateIdentity, MobileProvision};
 use plume_store::AccountStore;
 use plume_utils::{
-    Bundle, ConfirmRevocation, Package, Signer, SignerMode, SignerOptions, XkitSigner,
+    AppProfile, AppProfiles, Bundle, ConfirmRevocation, Package, PlistInfoTrait, Signer,
+    SignerMode, SignerOptions, XkitSigner,
 };
 
 use crate::{
@@ -43,6 +44,12 @@ pub struct SignArgs {
     /// Provisioning profile files to embed
     #[arg(long = "provision", value_name = "PROVISION")]
     pub provisioning_files: Option<PathBuf>,
+    /// Start from the options saved for this app; arguments here override them
+    #[arg(long)]
+    pub use_profile: bool,
+    /// Save these options for this app
+    #[arg(long)]
+    pub save_profile: bool,
     /// Custom bundle identifier to set
     #[arg(long = "custom-identifier", value_name = "BUNDLE_ID")]
     pub bundle_identifier: Option<String>,
@@ -136,6 +143,32 @@ pub async fn execute(args: SignArgs) -> Result<()> {
         let bundle = pkg.get_package_bundle()?;
         (bundle, Some(pkg))
     };
+
+    let bundle_id = bundle.get_bundle_identifier();
+    if args.use_profile
+        && let Some(profile) = bundle_id
+            .as_deref()
+            .and_then(|bundle_id| AppProfiles::new(&get_data_path()).load(bundle_id))
+    {
+        let requested = std::mem::take(&mut options);
+        for path in profile.apply_to(&mut options) {
+            log::warn!("Saved profile file is gone: {}", path.display());
+        }
+        options.custom_identifier = requested.custom_identifier.or(options.custom_identifier);
+        options.custom_name = requested.custom_name.or(options.custom_name);
+        options.custom_version = requested.custom_version.or(options.custom_version);
+        options.custom_url_schemes = requested.custom_url_schemes.or(options.custom_url_schemes);
+        options.tweaks = requested.tweaks.or(options.tweaks);
+        options.features.remove_url_schemes |= requested.features.remove_url_schemes;
+    }
+    if args.save_profile {
+        let bundle_id =
+            bundle_id.ok_or_else(|| anyhow::anyhow!("This app has no bundle identifier"))?;
+        AppProfiles::new(&get_data_path()).save(&AppProfile {
+            bundle_id,
+            options: options.clone(),
+        })?;
+    }
 
     let (mut signer, team_id_opt, xkit_signer) = if let Some(ref pem_files) = args.pem_files {
         let cert_identity = CertificateIdentity::new_with_paths(Some(pem_files.clone())).await?;

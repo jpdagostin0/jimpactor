@@ -3,8 +3,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Center, Element, Fill, Task};
 use plume_utils::{
-    Package, PlistInfoTrait, SignerInstallMode, SignerMode, SignerOptions, TweakLoadPath,
-    TweakLoader,
+    AppProfile, AppProfiles, Package, PlistInfoTrait, SignerInstallMode, SignerMode, SignerOptions,
+    TweakLoadPath, TweakLoader,
 };
 use rust_i18n::t;
 use std::path::PathBuf;
@@ -41,6 +41,12 @@ pub enum Message {
     ClearCustomIcon,
     SetCustomEntitlements,
     ClearCustomEntitlements,
+    SaveProfile,
+    DeleteProfile,
+    ExportProfile,
+    ImportProfile,
+    ProfileImported(Option<Result<AppProfile, String>>),
+    ProfileExported(Option<Result<(), String>>),
     Back,
     RequestInstallation,
 }
@@ -63,6 +69,8 @@ pub struct PackageScreen {
     custom_icon_handle: Option<image::Handle>,
     /// How this IPA compares with the device and the app sources.
     notes: Vec<String>,
+    has_profile: bool,
+    profile_status: Option<String>,
 }
 
 impl PackageScreen {
@@ -88,7 +96,59 @@ impl PackageScreen {
             custom_icon_path,
             custom_icon_handle,
             notes: Vec::new(),
+            has_profile: false,
+            profile_status: None,
         }
+    }
+
+    /// Fills in the options saved for this app, if any.
+    pub fn load_saved_profile(&mut self) {
+        let Some(bundle_id) = self.bundle_id() else {
+            return;
+        };
+        if let Some(profile) = self.profiles().load(&bundle_id) {
+            self.apply_profile(&profile);
+            self.has_profile = true;
+        }
+    }
+
+    fn profiles(&self) -> AppProfiles {
+        AppProfiles::new(&crate::defaults::get_data_path())
+    }
+
+    fn bundle_id(&self) -> Option<String> {
+        self.selected_package.as_ref()?.get_bundle_identifier()
+    }
+
+    fn current_profile(&self) -> Option<AppProfile> {
+        Some(AppProfile {
+            bundle_id: self.bundle_id()?,
+            options: self.options.clone(),
+        })
+    }
+
+    fn apply_profile(&mut self, profile: &AppProfile) {
+        let missing = profile.apply_to(&mut self.options);
+        self.custom_icon_path = self.options.custom_icon.clone();
+        self.custom_icon_handle = self
+            .custom_icon_path
+            .as_ref()
+            .and_then(icon_handle_from_path);
+        self.url_schemes_input = self
+            .options
+            .custom_url_schemes
+            .as_ref()
+            .map(|schemes| schemes.join(", "))
+            .unwrap_or_default();
+        self.profile_status = Some(if missing.is_empty() {
+            t!("options_profile_loaded").to_string()
+        } else {
+            let names: Vec<_> = missing
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            t!("options_profile_missing", files = names.join(", ")).to_string()
+        });
     }
 
     pub fn set_notes(&mut self, notes: Vec<String>) {
@@ -327,6 +387,76 @@ impl PackageScreen {
                 self.options.custom_entitlements = None;
                 Task::none()
             }
+            Message::SaveProfile => {
+                let Some(profile) = self.current_profile() else {
+                    return Task::none();
+                };
+                self.profile_status = Some(match self.profiles().save(&profile) {
+                    Ok(()) => {
+                        self.has_profile = true;
+                        t!("options_profile_saved").to_string()
+                    }
+                    Err(error) => error.to_string(),
+                });
+                Task::none()
+            }
+            Message::DeleteProfile => {
+                let Some(bundle_id) = self.bundle_id() else {
+                    return Task::none();
+                };
+                self.profile_status = Some(match self.profiles().delete(&bundle_id) {
+                    Ok(()) => {
+                        self.has_profile = false;
+                        t!("options_profile_deleted").to_string()
+                    }
+                    Err(error) => error.to_string(),
+                });
+                Task::none()
+            }
+            Message::ExportProfile => {
+                let Some(profile) = self.current_profile() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        let file = rfd::AsyncFileDialog::new()
+                            .add_filter("Jimpactor profile", &["json"])
+                            .set_file_name(format!("{}.json", profile.bundle_id))
+                            .save_file()
+                            .await?;
+                        Some(profile.write(file.path()).map_err(|e| e.to_string()))
+                    },
+                    Message::ProfileExported,
+                )
+            }
+            Message::ProfileExported(result) => {
+                match result {
+                    Some(Ok(())) => {
+                        self.profile_status = Some(t!("options_profile_exported").to_string())
+                    }
+                    Some(Err(error)) => self.profile_status = Some(error),
+                    None => {}
+                }
+                Task::none()
+            }
+            Message::ImportProfile => Task::perform(
+                async {
+                    let file = rfd::AsyncFileDialog::new()
+                        .add_filter("Jimpactor profile", &["json"])
+                        .pick_file()
+                        .await?;
+                    Some(AppProfile::read(file.path()).map_err(|e| e.to_string()))
+                },
+                Message::ProfileImported,
+            ),
+            Message::ProfileImported(result) => {
+                match result {
+                    Some(Ok(profile)) => self.apply_profile(&profile),
+                    Some(Err(error)) => self.profile_status = Some(error),
+                    None => {}
+                }
+                Task::none()
+            }
             _ => Task::none(),
         }
     }
@@ -344,7 +474,7 @@ impl PackageScreen {
             .spacing(appearance::THEME_PADDING),
         );
 
-        let mut screen = column![].spacing(appearance::THEME_PADDING);
+        let mut screen = column![self.view_profile_bar()].spacing(appearance::THEME_PADDING);
         for note in &self.notes {
             screen = screen.push(text(note).size(12));
         }
@@ -352,6 +482,31 @@ impl PackageScreen {
             .push(container(content).width(Fill).height(Fill))
             .push(self.view_buttons(has_device))
             .into()
+    }
+
+    fn view_profile_bar(&self) -> Element<'_, Message> {
+        let status = self
+            .profile_status
+            .clone()
+            .unwrap_or_else(|| t!("options_profile").to_string());
+        row![
+            text(status).size(12).width(Fill),
+            button(text(t!("options_profile_save")).size(12))
+                .on_press(Message::SaveProfile)
+                .style(appearance::s_button),
+            button(text(t!("options_profile_delete")).size(12))
+                .on_press_maybe(self.has_profile.then_some(Message::DeleteProfile))
+                .style(appearance::s_button),
+            button(text(t!("options_profile_import")).size(12))
+                .on_press(Message::ImportProfile)
+                .style(appearance::s_button),
+            button(text(t!("options_profile_export")).size(12))
+                .on_press(Message::ExportProfile)
+                .style(appearance::s_button),
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .align_y(Alignment::Center)
+        .into()
     }
 
     fn view_no_package(&self) -> Element<'_, Message> {

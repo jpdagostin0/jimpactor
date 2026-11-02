@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 /// Settings for the signer process.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SignerOptions {
     /// Custom app name override.
     pub custom_name: Option<String>,
@@ -26,7 +29,8 @@ pub struct SignerOptions {
     pub install_mode: SignerInstallMode,
     /// Tweaks to apply before signing.
     pub tweaks: Option<Vec<PathBuf>>,
-    /// App type.
+    /// App type. Detected from each IPA, so not saved.
+    #[serde(skip)]
     pub app: SignerApp,
     /// Apply autorefresh
     pub refresh: bool,
@@ -71,7 +75,8 @@ impl SignerOptions {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SignerFeatures {
     pub support_minimum_os_version: bool,
     pub support_file_sharing: bool,
@@ -84,12 +89,13 @@ pub struct SignerFeatures {
 }
 
 /// Embedding options.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SignerEmbedding {
     pub single_profile: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SignerInstallMode {
     #[default]
     Install,
@@ -105,7 +111,7 @@ impl std::fmt::Display for SignerInstallMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SignerMode {
     #[default]
     Pem,
@@ -167,8 +173,9 @@ impl SignerAppReal {
 }
 
 /// Supported app types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SignerApp {
+    #[default]
     Default,
     Antrag,
     Feather,
@@ -335,7 +342,7 @@ impl SignerApp {
 }
 
 /// Loader defaults preserve the existing automatic ElleKit behavior.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TweakLoader {
     #[default]
     ElleKit,
@@ -349,7 +356,7 @@ impl std::fmt::Display for TweakLoader {
         })
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TweakLoadPath {
     #[default]
     Rpath,
@@ -363,7 +370,8 @@ impl std::fmt::Display for TweakLoadPath {
         })
     }
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TweakInjection {
     pub loader: TweakLoader,
     /// None keeps legacy Frameworks placement and @rpath/leaf load strings.

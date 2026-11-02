@@ -792,6 +792,7 @@ impl Impactor {
                         let notes = self.install_notes(&package);
                         let mut installer = package::PackageScreen::new(Some(package), options);
                         installer.set_notes(notes);
+                        installer.load_saved_profile();
                         self.current_screen = ImpactorScreen::Installer(Box::new(installer));
                     }
 

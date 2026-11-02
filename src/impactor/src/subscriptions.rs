@@ -990,6 +990,15 @@ pub(crate) async fn run_source_install(
 
     let mut options = SignerOptions::default();
     package.load_into_signer_options(&mut options);
+    // Updates keep whatever was saved for the app, such as its name and tweaks.
+    if let Some(profile) = package
+        .get_bundle_identifier()
+        .and_then(|bundle_id| plume_utils::AppProfiles::new(&get_data_path()).load(&bundle_id))
+    {
+        for path in profile.apply_to(&mut options) {
+            log::warn!("Saved profile file is gone: {}", path.display());
+        }
+    }
     options.mode = if account.is_none() && store.as_ref().is_some_and(|s| s.asc_key().is_some()) {
         SignerMode::DeveloperKey
     } else {
