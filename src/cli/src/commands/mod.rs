@@ -51,4 +51,6 @@ pub enum Commands {
     Jit(jit::JitArgs),
     /// Manage saved per-app install options
     AppProfile(app_profile::AppProfileArgs),
+    /// Check GitHub for a newer Jimpactor release
+    CheckUpdate,
 }

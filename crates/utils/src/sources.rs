@@ -399,6 +399,46 @@ async fn fetch_altstore_feed(url: &str) -> Result<AltStoreFeed, String> {
     response.json().await.map_err(|e| e.to_string())
 }
 
+/// Jimpactor's own repository, checked for new releases.
+pub const REPOSITORY_URL: &str = "https://github.com/jpdagostin0/jimpactor";
+const LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/jpdagostin0/jimpactor/releases/latest";
+
+/// A published Jimpactor release.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Release {
+    #[serde(rename = "tag_name")]
+    pub version: String,
+    #[serde(rename = "html_url")]
+    pub url: String,
+}
+
+impl Release {
+    /// This release, if it is newer than the version running.
+    fn if_newer(self, current: &str) -> Option<Self> {
+        crate::updates::is_newer(&self.version, current).then_some(self)
+    }
+}
+
+/// The latest Jimpactor release, when it is newer than `current`.
+pub async fn check_for_update(current: &str) -> Result<Option<Release>, String> {
+    let response = client()?
+        .get(LATEST_RELEASE_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    // A repository without releases yet answers 404.
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("GitHub returned {}", response.status()));
+    }
+    let release: Release = response.json().await.map_err(|e| e.to_string())?;
+    Ok(release.if_newer(current))
+}
+
 /// Downloads `url` into `dest`, reporting progress from 0 to 100 when the size is known.
 pub async fn download(
     url: &str,
@@ -468,6 +508,17 @@ mod tests {
         );
         assert_eq!(reloaded.sources().len(), DEFAULT_SOURCES.len() - 1);
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn releases_only_count_when_newer() {
+        let release = super::Release {
+            version: "v0.2.0".into(),
+            url: "https://example.com".into(),
+        };
+        assert!(release.clone().if_newer("0.1.9").is_some());
+        assert!(release.clone().if_newer("0.2.0").is_none());
+        assert!(release.if_newer("0.10.0").is_none());
     }
 
     #[test]

@@ -23,6 +23,7 @@ use plume_store::{
     SideloadlyAccount, SideloadlyAuth, SideloadlySession,
 };
 use plume_utils::Device;
+use plume_utils::sources::{self, Release};
 use rust_i18n::t;
 
 use crate::appearance;
@@ -60,6 +61,10 @@ pub enum Message {
         Result<plume_core::remote_probe::ServerInfo, String>,
     ),
     ToggleAutoStart(bool),
+    CheckForUpdates,
+    UpdateChecked(Result<Option<Release>, String>),
+    OpenRelease(String),
+    OpenRepository,
     SelectLocale(Option<String>),
     ResetAnisetteData,
     SelectAnisetteMode(AnisetteModeChoice),
@@ -269,6 +274,10 @@ pub struct SettingsScreen {
     pub tab: SettingsTab,
     /// The device installs go to; its app count feeds the account meter.
     pub device: Option<Device>,
+    /// The newest Jimpactor release, when it is newer than this one.
+    pub app_update: Option<Release>,
+    update_status: Option<String>,
+    checking_update: bool,
     pairing: pairing::PairingTab,
     developer: developer::DeveloperTab,
     sources: source_manager::SourcesTab,
@@ -307,6 +316,9 @@ impl SettingsScreen {
             sideloadly_completion: PatreonLoginInput::default(),
             tab: SettingsTab::General,
             device: None,
+            app_update: None,
+            update_status: None,
+            checking_update: false,
             pairing: pairing::PairingTab::new(),
             developer: developer::DeveloperTab::default(),
             sources: source_manager::SourcesTab::new(),
@@ -476,6 +488,45 @@ impl SettingsScreen {
                 Task::none()
             }
             Message::ToggleAutoStart(_) => Task::none(),
+            Message::CheckForUpdates => {
+                if self.checking_update {
+                    return Task::none();
+                }
+                self.checking_update = true;
+                self.update_status = Some(t!("settings_update_checking").to_string());
+                Task::perform(
+                    run_on_tokio(sources::check_for_update(env!("CARGO_PKG_VERSION"))),
+                    Message::UpdateChecked,
+                )
+            }
+            Message::UpdateChecked(result) => {
+                self.checking_update = false;
+                match result {
+                    Ok(release) => {
+                        self.update_status = release
+                            .is_none()
+                            .then(|| t!("settings_update_current").to_string());
+                        self.app_update = release;
+                    }
+                    Err(error) => {
+                        self.update_status =
+                            Some(t!("settings_update_failed", error = error).to_string());
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenRelease(url) => {
+                if let Err(error) = open::that(url) {
+                    log::error!("Could not open the release page: {error}");
+                }
+                Task::none()
+            }
+            Message::OpenRepository => {
+                if let Err(error) = open::that(sources::REPOSITORY_URL) {
+                    log::error!("Could not open the repository: {error}");
+                }
+                Task::none()
+            }
             Message::SelectTeam(_, _) => Task::none(),
             Message::SelectLocale(_) => Task::none(),
             Message::ResetAnisetteData => {
@@ -1023,6 +1074,7 @@ impl SettingsScreen {
         let mut content = column![].spacing(appearance::THEME_PADDING);
 
         let auto_start_enabled = crate::startup::auto_start_enabled();
+        content = content.push(self.view_app_version());
         content = content.push(self.view_auto_start_toggle(auto_start_enabled));
         content = content.push(self.view_keyring_toggle(store));
         content = content.push(self.view_appearance_and_language(store, selected_locale));
@@ -1318,6 +1370,40 @@ impl SettingsScreen {
             );
         }
         options.into()
+    }
+
+    fn view_app_version(&self) -> Element<'_, Message> {
+        let mut buttons = row![
+            button(text(t!("settings_update_check")))
+                .on_press_maybe((!self.checking_update).then_some(Message::CheckForUpdates))
+                .style(appearance::s_button),
+        ]
+        .spacing(appearance::THEME_PADDING);
+        if let Some(release) = &self.app_update {
+            buttons = buttons.push(
+                button(text(t!(
+                    "settings_update_download",
+                    version = release.version.as_str()
+                )))
+                .on_press(Message::OpenRelease(release.url.clone()))
+                .style(appearance::p_button),
+            );
+        }
+        buttons = buttons.push(
+            button(text(t!("star_me")))
+                .on_press(Message::OpenRepository)
+                .style(appearance::s_button),
+        );
+
+        let mut section = column![
+            text(t!("settings_version", version = env!("CARGO_PKG_VERSION"))),
+            buttons,
+        ]
+        .spacing(appearance::THEME_PADDING);
+        if let Some(status) = &self.update_status {
+            section = section.push(text(status).size(appearance::THEME_FONT_SIZE - 1.0));
+        }
+        section.into()
     }
 
     fn view_auto_start_toggle(&self, auto_start_enabled: bool) -> Element<'_, Message> {

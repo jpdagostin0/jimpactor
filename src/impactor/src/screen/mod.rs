@@ -102,6 +102,10 @@ pub enum Message {
 
     // Appearance
     SystemThemeChanged(iced::theme::Mode),
+
+    // Updates to Jimpactor itself
+    AppUpdateChecked(Result<Option<plume_utils::sources::Release>, String>),
+    OpenAppUpdate,
 }
 
 pub struct Impactor {
@@ -129,6 +133,8 @@ pub struct Impactor {
     system_theme: iced::theme::Mode,
     /// (UDID, bundle ID, version) of app updates already announced.
     announced_updates: HashSet<(String, String, String)>,
+    /// The newest Jimpactor release, when it is newer than this one.
+    app_update: Option<plume_utils::sources::Release>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,11 +211,18 @@ impl Impactor {
                 pending_source_install: None,
                 system_theme: iced::theme::Mode::None,
                 announced_updates: HashSet::new(),
+                app_update: None,
             },
             Task::batch([
                 open_task,
                 iced::system::theme().map(Message::SystemThemeChanged),
                 Self::quick_install_task(quick_install::Message::Load),
+                Task::perform(
+                    subscriptions::run_on_tokio(plume_utils::sources::check_for_update(env!(
+                        "CARGO_PKG_VERSION"
+                    ))),
+                    Message::AppUpdateChecked,
+                ),
             ]),
         )
     }
@@ -540,7 +553,9 @@ impl Impactor {
                 }
             }
             Message::OpenSettings => {
-                self.settings = Some(Box::new(settings::SettingsScreen::new()));
+                let mut screen = Box::new(settings::SettingsScreen::new());
+                screen.app_update = self.app_update.clone();
+                self.settings = Some(screen);
                 Task::done(Message::SettingsScreen(
                     settings::Message::ProbeRemoteServer,
                 ))
@@ -1245,6 +1260,37 @@ impl Impactor {
                 Task::none()
             }
             Message::StartInstallation => Task::none(),
+            Message::AppUpdateChecked(result) => {
+                match result {
+                    Ok(Some(release)) => {
+                        let body = rust_i18n::t!(
+                            "settings_update_available",
+                            version = release.version.as_str()
+                        )
+                        .into_owned();
+                        std::thread::spawn(move || {
+                            notify_rust::Notification::new()
+                                .summary(crate::APP_NAME)
+                                .body(&body)
+                                .show()
+                                .ok();
+                        });
+                        self.app_update = Some(release);
+                    }
+                    Ok(None) => {}
+                    // Being offline at startup is normal; Settings can check again.
+                    Err(error) => log::info!("Could not check for updates: {error}"),
+                }
+                Task::none()
+            }
+            Message::OpenAppUpdate => {
+                if let Some(release) = &self.app_update
+                    && let Err(error) = open::that(&release.url)
+                {
+                    log::error!("Could not open the release page: {error}");
+                }
+                Task::none()
+            }
             Message::SystemThemeChanged(mode) => {
                 self.system_theme = mode;
                 Task::none()
@@ -1485,8 +1531,19 @@ impl Impactor {
             sidebar = sidebar.push(section(tab.label(), active, Message::SelectDeviceTab(tab)));
         }
 
+        let mut sidebar = sidebar.push(container(text("")).height(Fill));
+        if let Some(release) = &self.app_update {
+            sidebar = sidebar.push(
+                button(text(rust_i18n::t!(
+                    "settings_update_download",
+                    version = release.version.as_str()
+                )))
+                .on_press(Message::OpenAppUpdate)
+                .style(appearance::p_button)
+                .width(Fill),
+            );
+        }
         sidebar
-            .push(container(text("")).height(Fill))
             .push(
                 button(appearance::icon_text(
                     appearance::GEAR,

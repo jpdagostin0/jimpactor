@@ -23,6 +23,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Refresh(args) => commands::refresh::execute(args).await?,
         Commands::Jit(args) => commands::jit::execute(args).await?,
         Commands::AppProfile(args) => commands::app_profile::execute(args)?,
+        Commands::CheckUpdate => {
+            let current = env!("CARGO_PKG_VERSION");
+            match plume_utils::sources::check_for_update(current)
+                .await
+                .map_err(anyhow::Error::msg)?
+            {
+                Some(release) => println!("{} is available: {}", release.version, release.url),
+                None => println!("{current} is up to date."),
+            }
+        }
     }
 
     Ok(())
