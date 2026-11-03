@@ -57,6 +57,8 @@ On Windows, install Apple's device drivers through [iTunes](https://support.appl
 
 Pair your iPhone or iPad with this computer over USB first and accept **Trust This Computer** on the device. For wireless connections, keep the computer and device on the same Wi-Fi network. Jimpactor automatically discovers paired devices; select the entry labeled `[WiFi]` in the device dropdown to install or refresh apps and manage pairing files wirelessly.
 
+If a device forwarded through VirtualHere is handled by a separate usbmuxd instance, enter its socket in **Settings → Advanced Settings → USB device service**. Jimpactor reconnects to the new endpoint as soon as you save it. **Check connections** shows the devices listed by usbmuxd and, on Windows, VirtualHere's client. For example, the local service used by Inferno may listen on `127.0.0.1:27016`. You can also set `USBMUXD_SOCKET_ADDRESS` before starting Jimpactor or `jimpactor-cli`; that environment variable takes precedence over the saved GUI setting. The device must be booted into normal iOS mode and visible to that usbmuxd instance; a device shown only in VirtualHere's USB list or in DFU/recovery mode is not yet available for app installation.
+
 Wi-Fi devices stay in the list for five minutes after disconnecting. Jimpactor reconnects automatically when a device returns, preserving your selection. Jimpactor also remembers each device's last Wi-Fi address and tries it once at startup, so a device that is not advertising itself can still appear. Before starting a device operation, it waits briefly for a cached device to reconnect. If the device is unavailable, wake and unlock it, check its Wi-Fi connection, and retry.
 
 ## Signing and troubleshooting

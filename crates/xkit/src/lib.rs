@@ -19,6 +19,9 @@ pub mod integration;
 pub mod model;
 pub mod signer;
 pub mod utilities;
+mod usbmuxd_address;
+
+pub use usbmuxd_address::{parse_usbmuxd_address, set_usbmuxd_address, usbmuxd_address};
 
 pub use developer_services::{
     ASCKey, DeveloperAPIAuthData, DeveloperAPIClient, DeveloperServicesClient,

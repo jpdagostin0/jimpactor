@@ -1,6 +1,7 @@
 use iced::{Subscription, window};
-use idevice::usbmuxd::UsbmuxdAddr;
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::watch;
 #[cfg(target_os = "linux")]
 use tray_icon::MouseButtonState;
 use tray_icon::menu::MenuEvent;
@@ -13,6 +14,60 @@ use crate::{
 use plume_utils::{
     Device, DeviceEvent, watch_devices, watch_network_devices, watch_tailnet_devices,
 };
+
+pub(crate) async fn probe_usb_service() -> Result<Vec<String>, String> {
+    let address = plume_utils::usbmuxd_address();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async move {
+        let mut mux = address.connect(0).await.map_err(|error| error.to_string())?;
+        mux.get_devices()
+            .await
+            .map(|devices| devices.into_iter().map(|device| device.udid).collect())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Connection timed out".to_string())?
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) async fn virtualhere_devices() -> Result<Vec<String>, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::windows::named_pipe::{ClientOptions, PipeMode};
+
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        let mut pipe = ClientOptions::new()
+            .pipe_mode(PipeMode::Message)
+            .open(r"\\.\pipe\vhclient")
+            .map_err(|error| error.to_string())?;
+        pipe.write_all(b"LIST")
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut buffer = vec![0; 16 * 1024];
+        let count = pipe.read(&mut buffer).await.map_err(|error| error.to_string())?;
+        let response = String::from_utf8_lossy(&buffer[..count]);
+        Ok(response
+            .lines()
+            .filter(|line| line.contains("-->"))
+            .map(|line| line.trim().trim_start_matches('*').trim().to_owned())
+            .collect())
+    })
+    .await
+    .map_err(|_| "VirtualHere did not respond".to_string())?
+}
+
+static USB_SERVICE_CHANGE: OnceLock<watch::Sender<u64>> = OnceLock::new();
+
+/// Switches future device connections and wakes the USB discovery thread.
+pub(crate) fn set_usb_service(address: Option<&str>) {
+    let selected = if std::env::var_os("USBMUXD_SOCKET_ADDRESS").is_some() {
+        None
+    } else {
+        address.and_then(plume_utils::parse_usbmuxd_address)
+    };
+    plume_utils::set_usbmuxd_address(selected);
+    if let Some(changes) = USB_SERVICE_CHANGE.get() {
+        changes.send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+}
 
 pub(crate) fn device_listener() -> Subscription<Message> {
     Subscription::run(|| {
@@ -64,14 +119,48 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                                         udid: mac_udid,
                                         device_id: u32::MAX,
                                         usbmuxd_device: None,
+                                        usbmuxd_address: None,
                                         network: None,
                                         is_mac: true,
                                     }));
                                 }
                             }
 
-                            watch_devices(UsbmuxdAddr::from_env_var().unwrap_or_default(), tx)
-                                .await;
+                            let changes = USB_SERVICE_CHANGE
+                                .get_or_init(|| watch::channel(0).0);
+                            let mut changes = changes.subscribe();
+                            let (usb_tx, mut usb_rx) = tokio::sync::mpsc::unbounded_channel();
+                            let mut connected = BTreeSet::new();
+                            loop {
+                                let address = plume_utils::usbmuxd_address();
+                                let mut watcher = Box::pin(watch_devices(address, usb_tx.clone()));
+                                loop {
+                                    tokio::select! {
+                                        _ = tx.closed() => return,
+                                        result = changes.changed() => {
+                                            if result.is_err() { return; }
+                                            break;
+                                        }
+                                        event = usb_rx.recv() => match event {
+                                            Some(DeviceEvent::Connected(device)) => {
+                                                connected.insert(device.device_id);
+                                                let _ = tx.send(DeviceEvent::Connected(device));
+                                            }
+                                            Some(DeviceEvent::Disconnected(id)) => {
+                                                connected.remove(&id);
+                                                let _ = tx.send(DeviceEvent::Disconnected(id));
+                                            }
+                                            None => return,
+                                        },
+                                        _ = &mut watcher => break,
+                                    }
+                                }
+                                drop(watcher);
+                                while usb_rx.try_recv().is_ok() {}
+                                for id in std::mem::take(&mut connected) {
+                                    let _ = tx.send(DeviceEvent::Disconnected(id));
+                                }
+                            }
                         });
                     })
                     .expect("Could not start USB discovery thread");

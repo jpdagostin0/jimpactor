@@ -902,6 +902,32 @@ impl Impactor {
                             }
                             Task::none()
                         }
+                        settings::Message::AdvancedAddressSelected(address) => {
+                            let result = self
+                                .account_store
+                                .as_mut()
+                                .ok_or_else(|| "Account settings are not loaded".to_string())
+                                .and_then(|store| {
+                                    store
+                                        .set_usbmuxd_socket_address_sync(address.clone())
+                                        .map_err(|error| error.to_string())
+                                });
+                            if result.is_ok() {
+                                subscriptions::set_usb_service(address.as_deref());
+                            }
+                            let saved = screen
+                                .update(
+                                    settings::Message::AdvancedAddressSaved(result),
+                                    self.account_store.as_ref(),
+                                )
+                                .map(Message::SettingsScreen);
+                            Task::batch([
+                                saved,
+                                Task::done(Message::SettingsScreen(
+                                    settings::Message::CheckConnections,
+                                )),
+                            ])
+                        }
                         settings::Message::SelectTeam(ref email, ref team_id) => {
                             if let Some(store) = &mut self.account_store {
                                 if let Err(e) =

@@ -53,6 +53,12 @@ fn main() -> iced::Result {
         }
     };
 
+    // Configure the USB endpoint before discovery or refresh threads start.
+    let path = defaults::get_data_path().join("accounts.json");
+    if let Ok(store) = plume_store::AccountStore::load_sync(&Some(path)) {
+        subscriptions::set_usb_service(store.usbmuxd_socket_address());
+    }
+
     // For notifications on macOS.
     #[cfg(target_os = "macos")]
     {

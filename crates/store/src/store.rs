@@ -206,6 +206,9 @@ pub struct AccountStore {
     tailscale: TailscaleSettings,
     #[serde(default)]
     jit_server: JitServerSettings,
+    /// Optional usbmuxd endpoint for USB devices forwarded by another service.
+    #[serde(default)]
+    usbmuxd_socket_address: Option<String>,
     #[serde(default = "default_true")]
     refresh_alerts: bool, // Notify about expiring apps on devices that are reachable
     #[serde(default = "default_refresh_alert_days")]
@@ -233,6 +236,7 @@ impl Default for AccountStore {
             close_to_tray: true,
             tailscale: TailscaleSettings::default(),
             jit_server: JitServerSettings::default(),
+            usbmuxd_socket_address: None,
             refresh_alerts: true,
             refresh_alert_days: default_refresh_alert_days(),
             asc_key: None,
@@ -422,6 +426,18 @@ impl AccountStore {
 
     pub fn set_jit_server_sync(&mut self, settings: JitServerSettings) -> Result<(), Error> {
         self.jit_server = settings;
+        self.save_sync()
+    }
+
+    pub fn usbmuxd_socket_address(&self) -> Option<&str> {
+        self.usbmuxd_socket_address.as_deref()
+    }
+
+    pub fn set_usbmuxd_socket_address_sync(
+        &mut self,
+        address: Option<String>,
+    ) -> Result<(), Error> {
+        self.usbmuxd_socket_address = address;
         self.save_sync()
     }
 
@@ -632,5 +648,16 @@ mod jit_tests {
     fn settings_from_older_versions_have_no_password() {
         let settings: JitServerSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert!(settings.password.is_none());
+    }
+
+    #[test]
+    fn usbmuxd_address_defaults_for_existing_settings() {
+        let mut value = serde_json::to_value(AccountStore::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("usbmuxd_socket_address");
+        let store: AccountStore = serde_json::from_value(value).unwrap();
+        assert_eq!(store.usbmuxd_socket_address(), None);
     }
 }

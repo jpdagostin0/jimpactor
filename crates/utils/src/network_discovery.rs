@@ -9,7 +9,6 @@ use std::time::Duration;
 use idevice::heartbeat::HeartbeatClient;
 use idevice::lockdown::LockdownClient;
 use idevice::pairing_file::PairingFile;
-use idevice::usbmuxd::UsbmuxdAddr;
 use idevice::{IdeviceError, IdeviceService};
 use mdns_sd::{ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -520,7 +519,7 @@ async fn pairing_candidates() -> Vec<PairingFile> {
     // On macOS, enumeration may be denied while usbmuxd can read known records.
     if let Ok(Ok(mut muxer)) = tokio::time::timeout(
         Duration::from_secs(2),
-        UsbmuxdAddr::from_env_var().unwrap_or_default().connect(0),
+        xkit::usbmuxd_address().connect(0),
     )
     .await
         && let Ok(Ok(devices)) =
@@ -640,6 +639,7 @@ async fn initialize_network_device(
             udid: udid.to_owned(),
             device_id: id,
             usbmuxd_device: None,
+            usbmuxd_address: None,
             network: Some(NetworkConnection::new(provider)),
             is_mac: false,
         },
@@ -663,6 +663,7 @@ mod tests {
             udid: udid.into(),
             device_id: id,
             usbmuxd_device: None,
+            usbmuxd_address: None,
             is_mac: false,
             network: Some(NetworkConnection::new(NetworkProvider {
                 label: CONNECTION_LABEL.into(),
@@ -775,6 +776,7 @@ mod tests {
             udid: "test-device".into(),
             device_id: 0x8000_0000,
             usbmuxd_device: None,
+            usbmuxd_address: None,
             is_mac: false,
             network: Some(NetworkConnection::new(NetworkProvider {
                 addr: address.ip(),

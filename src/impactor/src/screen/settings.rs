@@ -29,6 +29,10 @@ use rust_i18n::t;
 use crate::appearance;
 use crate::subscriptions::run_on_tokio;
 
+fn valid_usbmuxd_address(address: &str) -> bool {
+    plume_utils::parse_usbmuxd_address(address).is_some()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Team {
     pub name: String,
@@ -99,6 +103,12 @@ pub enum Message {
     Developer(developer::Message),
     Sources(source_manager::Message),
     Logs(logs::Message),
+    AdvancedAddressChanged(String),
+    SaveAdvancedAddress,
+    AdvancedAddressSaved(Result<(), String>),
+    AdvancedAddressSelected(Option<String>),
+    CheckConnections,
+    ConnectionsChecked(u64, Result<Vec<String>, String>, Option<Result<Vec<String>, String>>),
     ToggleLockDevice(bool),
     ToggleCloseToTray(bool),
     ToggleRefreshAlerts(bool),
@@ -130,10 +140,11 @@ pub enum SettingsTab {
     Tailscale,
     Jit,
     Logs,
+    Advanced,
 }
 
 impl SettingsTab {
-    const ALL: [SettingsTab; 10] = [
+    const ALL: [SettingsTab; 11] = [
         SettingsTab::General,
         SettingsTab::Behavior,
         SettingsTab::RemoteAnisette,
@@ -144,6 +155,7 @@ impl SettingsTab {
         SettingsTab::Tailscale,
         SettingsTab::Jit,
         SettingsTab::Logs,
+        SettingsTab::Advanced,
     ];
 
     fn label(self) -> std::borrow::Cow<'static, str> {
@@ -158,6 +170,7 @@ impl SettingsTab {
             SettingsTab::Tailscale => t!("settings_tab_tailscale"),
             SettingsTab::Jit => t!("settings_tab_jit"),
             SettingsTab::Logs => t!("settings_tab_logs"),
+            SettingsTab::Advanced => t!("settings_tab_advanced"),
         }
     }
 }
@@ -284,6 +297,11 @@ pub struct SettingsScreen {
     tailscale: tailscale::TailscaleTab,
     jit: jit::JitTab,
     logs: logs::LogsTab,
+    advanced_address: String,
+    advanced_status: Option<String>,
+    usb_service_status: Option<String>,
+    virtualhere_status: Option<String>,
+    connection_probe: u64,
 }
 
 impl SettingsScreen {
@@ -325,6 +343,11 @@ impl SettingsScreen {
             tailscale: tailscale::TailscaleTab::new(Default::default()),
             jit: jit::JitTab::new(Default::default()),
             logs: logs::LogsTab::default(),
+            advanced_address: String::new(),
+            advanced_status: None,
+            usb_service_status: None,
+            virtualhere_status: None,
+            connection_probe: 0,
         };
         screen.ensure_selected_server_listed();
         screen
@@ -425,6 +448,14 @@ impl SettingsScreen {
                         }
                         Task::none()
                     }
+                    SettingsTab::Advanced => {
+                        self.advanced_address = store
+                            .and_then(AccountStore::usbmuxd_socket_address)
+                            .unwrap_or_default()
+                            .to_owned();
+                        self.advanced_status = None;
+                        self.update(Message::CheckConnections, store)
+                    }
                     _ => Task::none(),
                 }
             }
@@ -441,6 +472,75 @@ impl SettingsScreen {
             }
             Message::Sources(msg) => self.sources.update(msg).map(Message::Sources),
             Message::Logs(msg) => self.logs.update(msg).map(Message::Logs),
+            Message::AdvancedAddressChanged(address) => {
+                self.advanced_address = address;
+                self.advanced_status = None;
+                Task::none()
+            }
+            Message::SaveAdvancedAddress => {
+                let address = self.advanced_address.trim();
+                if !address.is_empty() && !valid_usbmuxd_address(address) {
+                    self.advanced_status = Some(t!("advanced_usbmuxd_invalid").to_string());
+                    return Task::none();
+                }
+                Task::done(Message::AdvancedAddressSelected(
+                    (!address.is_empty()).then(|| address.to_owned()),
+                ))
+            }
+            Message::AdvancedAddressSaved(result) => {
+                self.advanced_status = Some(match result {
+                    Ok(()) if std::env::var_os("USBMUXD_SOCKET_ADDRESS").is_some() => {
+                        t!("advanced_usbmuxd_env_active").to_string()
+                    }
+                    Ok(()) => t!("advanced_usbmuxd_reconnect").to_string(),
+                    Err(error) => t!("advanced_usbmuxd_failed", error = error).to_string(),
+                });
+                Task::none()
+            }
+            Message::CheckConnections => {
+                self.connection_probe = self.connection_probe.wrapping_add(1);
+                let generation = self.connection_probe;
+                self.usb_service_status = Some(t!("advanced_checking").to_string());
+                #[cfg(target_os = "windows")]
+                {
+                    self.virtualhere_status = Some(t!("advanced_checking").to_string());
+                }
+                Task::perform(
+                    run_on_tokio(async {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let (mux, virtualhere) = tokio::join!(
+                                crate::subscriptions::probe_usb_service(),
+                                crate::subscriptions::virtualhere_devices()
+                            );
+                            (mux, Some(virtualhere))
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            (crate::subscriptions::probe_usb_service().await, None)
+                        }
+                    }),
+                    move |(mux, virtualhere)| {
+                        Message::ConnectionsChecked(generation, mux, virtualhere)
+                    },
+                )
+            }
+            Message::ConnectionsChecked(generation, mux, virtualhere) => {
+                if generation != self.connection_probe {
+                    return Task::none();
+                }
+                self.usb_service_status = Some(match mux {
+                    Ok(devices) if devices.is_empty() => t!("advanced_mux_empty").to_string(),
+                    Ok(devices) => t!("advanced_mux_devices", devices = devices.join(", ")).to_string(),
+                    Err(error) => t!("advanced_mux_error", error = error).to_string(),
+                });
+                self.virtualhere_status = virtualhere.map(|result| match result {
+                    Ok(devices) if devices.is_empty() => t!("advanced_virtualhere_empty").to_string(),
+                    Ok(devices) => t!("advanced_virtualhere_devices", devices = devices.join(", ")).to_string(),
+                    Err(error) => t!("advanced_virtualhere_error", error = error).to_string(),
+                });
+                Task::none()
+            }
             Message::Tailscale(msg) => {
                 let (task, change) = self.tailscale.update(msg);
                 let task = task.map(Message::Tailscale);
@@ -1007,6 +1107,7 @@ impl SettingsScreen {
             SettingsTab::Tailscale => self.tailscale.view().map(Message::Tailscale),
             SettingsTab::Jit => self.jit.view().map(Message::Jit),
             SettingsTab::Logs => self.logs.view().map(Message::Logs),
+            SettingsTab::Advanced => self.view_advanced(),
         };
 
         let account_hero = if let Some(account) = account {
@@ -1053,10 +1154,51 @@ impl SettingsScreen {
             );
         }
 
-        row![sidebar, container(body).width(Fill).height(Fill)]
+        row![
+            scrollable(sidebar).width(210).height(Fill),
+            container(body).width(Fill).height(Fill)
+        ]
             .height(Fill)
             .spacing(appearance::THEME_PADDING)
             .into()
+    }
+
+    fn view_advanced(&self) -> Element<'_, Message> {
+        let mut content = column![
+            text(t!("settings_tab_advanced")),
+            text(t!("advanced_usbmuxd_title")),
+            text(t!("advanced_usbmuxd_desc")).size(appearance::THEME_FONT_SIZE - 1.0),
+            text(t!("advanced_usbmuxd_override")).size(appearance::THEME_FONT_SIZE - 1.0),
+            text(t!("advanced_usbmuxd_address")),
+            row![
+                text_input("127.0.0.1:27016", &self.advanced_address)
+                    .on_input(Message::AdvancedAddressChanged)
+                    .on_submit(Message::SaveAdvancedAddress)
+                    .padding(6)
+                    .width(Fill),
+                button(text(t!("advanced_usbmuxd_save")))
+                    .on_press(Message::SaveAdvancedAddress)
+                    .style(appearance::p_button),
+            ]
+            .spacing(appearance::THEME_PADDING),
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .padding(appearance::THEME_PADDING);
+        if let Some(status) = &self.advanced_status {
+            content = content.push(text(status));
+        }
+        content = content.push(
+            button(text(t!("advanced_check_connections")))
+                .on_press(Message::CheckConnections)
+                .style(appearance::s_button),
+        );
+        if let Some(status) = &self.usb_service_status {
+            content = content.push(text(status));
+        }
+        if let Some(status) = &self.virtualhere_status {
+            content = content.push(text(status));
+        }
+        scrollable(content).height(Fill).into()
     }
 
     fn view_general<'a>(

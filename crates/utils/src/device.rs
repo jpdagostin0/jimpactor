@@ -21,7 +21,6 @@ use crate::{Bundle, Error, NetworkConnection, PlistInfoTrait};
 use idevice::afc::AfcClient;
 use idevice::afc::opcode::AfcFopenMode;
 use idevice::house_arrest::HouseArrestClient;
-use idevice::usbmuxd::UsbmuxdConnection;
 use plist::Value;
 
 pub const CONNECTION_LABEL: &str = "plume_info";
@@ -35,6 +34,7 @@ pub struct Device {
     pub udid: String,
     pub device_id: u32,
     pub usbmuxd_device: Option<UsbmuxdDevice>,
+    pub usbmuxd_address: Option<UsbmuxdAddr>,
     pub network: Option<NetworkConnection>,
     // On x86_64 macs, `is_mac` variable should never be true
     // since its only true if the device is added manually.
@@ -45,7 +45,7 @@ impl Device {
     pub async fn new(usbmuxd_device: UsbmuxdDevice) -> Self {
         Self::with_address(
             usbmuxd_device,
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
+            xkit::usbmuxd_address(),
         )
         .await
     }
@@ -53,7 +53,7 @@ impl Device {
     pub(crate) async fn with_address(usbmuxd_device: UsbmuxdDevice, address: UsbmuxdAddr) -> Self {
         let name = match tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            Self::get_name_from_usbmuxd_device(&usbmuxd_device, address),
+            Self::get_name_from_usbmuxd_device(&usbmuxd_device, address.clone()),
         )
         .await
         {
@@ -72,6 +72,7 @@ impl Device {
             udid: usbmuxd_device.udid.clone(),
             device_id: usbmuxd_device.device_id,
             usbmuxd_device: Some(usbmuxd_device),
+            usbmuxd_address: Some(address),
             network: None,
             is_mac: false,
         }
@@ -85,7 +86,12 @@ impl Device {
         self.usbmuxd_device
             .as_ref()
             .map(|device| {
-                Box::new(device.to_provider(UsbmuxdAddr::from_env_var().unwrap_or_default(), label))
+                Box::new(device.to_provider(
+                    self.usbmuxd_address
+                        .clone()
+                        .unwrap_or_else(xkit::usbmuxd_address),
+                    label,
+                ))
                     as Box<dyn IdeviceProvider>
             })
             .ok_or_else(|| Error::Other("Device is not connected".into()))
@@ -266,10 +272,14 @@ impl Device {
             return Err(Error::Other("Device is not connected via USB".to_string()));
         }
 
-        let mut usbmuxd = UsbmuxdConnection::default().await?;
+        let address = self
+            .usbmuxd_address
+            .clone()
+            .unwrap_or_else(xkit::usbmuxd_address);
+        let mut usbmuxd = address.connect(0).await?;
 
         let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
+            address,
             INSTALLATION_LABEL,
         );
 
@@ -781,7 +791,7 @@ impl fmt::Display for Device {
 }
 
 pub async fn get_device_for_id(udid: &str) -> Result<Device, Error> {
-    let mut usbmuxd = UsbmuxdConnection::default().await?;
+    let mut usbmuxd = xkit::usbmuxd_address().connect(0).await?;
     let usbmuxd_device = select_device_by_udid(usbmuxd.get_devices().await?, udid)?;
 
     Ok(Device::new(usbmuxd_device).await)

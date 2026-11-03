@@ -55,7 +55,7 @@ pub struct Connection {
     pub client: Mutex<LockdownClient>,
 }
 type ConnectionSlot = Arc<Mutex<Weak<Connection>>>;
-type ConnectionPool = Mutex<HashMap<(String, ConnectionPreferences), ConnectionSlot>>;
+type ConnectionPool = Mutex<HashMap<(String, ConnectionPreferences, u64), ConnectionSlot>>;
 impl Connection {
     pub async fn connection(
         udid: &str,
@@ -72,7 +72,15 @@ impl Connection {
     ) -> Result<Arc<Self>> {
         static POOL: OnceLock<ConnectionPool> = OnceLock::new();
         progress(0.0);
-        let key = (udid.to_owned(), preferences);
+        let (address, revision) = loop {
+            let before = crate::usbmuxd_address::usbmuxd_revision();
+            let address = crate::usbmuxd_address();
+            let after = crate::usbmuxd_address::usbmuxd_revision();
+            if before == after {
+                break (address, after);
+            }
+        };
+        let key = (udid.to_owned(), preferences, revision);
         let slot = {
             let mut pool = POOL.get_or_init(Mutex::default).lock().await;
             pool.retain(|_, slot| {
@@ -88,7 +96,7 @@ impl Connection {
             progress(1.0);
             return Ok(connection);
         }
-        let mut mux = UsbmuxdConnection::default().await?;
+        let mut mux = address.connect(0).await?;
         let device = mux
             .get_devices()
             .await?
@@ -97,7 +105,7 @@ impl Connection {
             .ok_or_else(|| invalid(format!("Device '{udid}' was not found")))?;
         progress(0.5);
         let provider = Arc::new(device.to_provider(
-            idevice::usbmuxd::UsbmuxdAddr::from_env_var().unwrap_or_default(),
+            address,
             "xtool",
         ));
         match provider.get_pairing_file().await {
@@ -215,14 +223,15 @@ impl ClientDevice {
         &self.device.udid
     }
     pub async fn all(mode: SearchMode) -> Result<Vec<Self>> {
-        let mut mux = UsbmuxdConnection::default().await?;
+        let address = crate::usbmuxd_address();
+        let mut mux = address.connect(0).await?;
         let mut devices = Vec::new();
         for device in mux.get_devices().await? {
             if !mode.allows(&device.connection_type) {
                 continue;
             }
             let provider = device.to_provider(
-                idevice::usbmuxd::UsbmuxdAddr::from_env_var().unwrap_or_default(),
+                address.clone(),
                 "xtool",
             );
             let mut client = LockdownClient::connect(&provider).await?;

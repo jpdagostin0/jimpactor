@@ -51,6 +51,7 @@ mod tests {
                 device_id: id,
                 connection_type: idevice::usbmuxd::Connection::Usb,
             }),
+            usbmuxd_address: None,
             network: None,
             is_mac: false,
         }

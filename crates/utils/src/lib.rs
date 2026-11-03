@@ -66,6 +66,7 @@ pub use tailnet::{
 pub use tailnet::tailnet_listen;
 pub use tweak::Tweak; // Tweak helper
 pub use xkit_bridge::{ConfirmRevocation, DeveloperItem, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
+pub use xkit::{parse_usbmuxd_address, set_usbmuxd_address, usbmuxd_address};
 
 use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]

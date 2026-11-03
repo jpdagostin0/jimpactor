@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Error, Ok, Result};
 use clap::Args;
 use dialoguer::Select;
-use idevice::{
-    IdeviceService, installation_proxy::InstallationProxyClient, usbmuxd::UsbmuxdConnection,
-};
+use idevice::{IdeviceService, installation_proxy::InstallationProxyClient, usbmuxd::UsbmuxdAddr};
 use plume_utils::{Device, DeviceEvent, Package, get_device_for_id, watch_network_devices};
 
 use crate::{commands::device_commands::DeviceCommands, get_data_path};
@@ -64,6 +62,7 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
                     udid: String::new(),
                     device_id: 0,
                     usbmuxd_device: None,
+                    usbmuxd_address: None,
                     network: None,
                     is_mac: true,
                 }
@@ -203,7 +202,11 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
     }
 
     // usbmuxd may be missing entirely on a machine that only uses Wi-Fi.
-    let devices = match UsbmuxdConnection::default().await {
+    let devices = match UsbmuxdAddr::from_env_var()
+        .unwrap_or_default()
+        .connect(0)
+        .await
+    {
         std::result::Result::Ok(mut muxer) => muxer.get_devices().await.unwrap_or_default(),
         Err(_) => Vec::new(),
     };
