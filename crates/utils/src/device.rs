@@ -577,6 +577,7 @@ impl Device {
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let bundle = Bundle::new(app_path.to_path_buf())?;
+        let main_bundle_id = bundle.get_bundle_identifier();
         for bundle in bundle.collect_bundles_sorted()? {
             if !bundle.bundle_type().should_have_entitlements() {
                 continue;
@@ -599,7 +600,12 @@ impl Device {
                 let bundle_id = bundle
                     .get_bundle_identifier()
                     .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
-                profile.validate_for(&bundle_id, Some(&self.udid), None)?;
+                let validate_as = profile_validation_id(
+                    |id| profile.matches_bundle_id(id),
+                    &bundle_id,
+                    main_bundle_id.as_deref(),
+                );
+                profile.validate_for(validate_as, Some(&self.udid), None)?;
             }
         }
         let app_path = app_path.to_path_buf();
@@ -666,6 +672,21 @@ pub(crate) async fn open_app_container(
                     ))
                 })
         }
+    }
+}
+
+/// The bundle ID to validate a nested bundle's embedded profile against. Signing with
+/// "only register main bundle" embeds the main app's profile in its extensions, so a
+/// nested profile that covers the main bundle but not its own is checked as the main
+/// bundle's; anything else is still checked against the bundle itself.
+fn profile_validation_id<'a>(
+    covers: impl Fn(&str) -> bool,
+    bundle_id: &'a str,
+    main_bundle_id: Option<&'a str>,
+) -> &'a str {
+    match main_bundle_id {
+        Some(main) if !covers(bundle_id) && covers(main) => main,
+        _ => bundle_id,
     }
 }
 
@@ -983,5 +1004,33 @@ mod selection_tests {
             23
         );
         assert!(select_device_by_udid(devices(7), "1").is_err());
+    }
+
+    #[test]
+    fn extensions_carrying_the_main_profile_validate_as_the_main_bundle() {
+        let main = "com.kdt.livecontainer.3A87L6ZM3L";
+        let extension = "com.kdt.livecontainer.3A87L6ZM3L.LiveProcess";
+        let shared = profile(
+            "3A87L6ZM3L.com.kdt.livecontainer.3A87L6ZM3L",
+            "2031-01-01T00:00:00Z",
+        );
+        let covers = |id: &str| shared.matches_bundle_id(id);
+        assert_eq!(profile_validation_id(covers, extension, Some(main)), main);
+        assert_eq!(profile_validation_id(covers, main, Some(main)), main);
+
+        let own = profile(&format!("3A87L6ZM3L.{extension}"), "2031-01-01T00:00:00Z");
+        let covers = |id: &str| own.matches_bundle_id(id);
+        assert_eq!(
+            profile_validation_id(covers, extension, Some(main)),
+            extension
+        );
+
+        // A profile for some other app is still checked, and rejected, as the bundle's own.
+        let other = profile("3A87L6ZM3L.com.other.app", "2031-01-01T00:00:00Z");
+        let covers = |id: &str| other.matches_bundle_id(id);
+        assert_eq!(
+            profile_validation_id(covers, extension, Some(main)),
+            extension
+        );
     }
 }

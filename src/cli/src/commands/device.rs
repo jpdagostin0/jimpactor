@@ -1,11 +1,15 @@
 use std::io::IsTerminal;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use anyhow::{Error, Ok, Result};
 use clap::Args;
 use dialoguer::Select;
 use idevice::{IdeviceService, installation_proxy::InstallationProxyClient, usbmuxd::UsbmuxdAddr};
-use plume_utils::{Device, DeviceEvent, Package, get_device_for_id, watch_network_devices};
+use plume_utils::{
+    Device, DeviceEvent, Package, connect_wifi_address, get_device_for_id, import_pairing_file,
+    watch_network_devices,
+};
 
 use crate::{commands::device_commands::DeviceCommands, get_data_path};
 
@@ -46,13 +50,39 @@ pub struct DeviceArgs {
     /// Where to save the file from --pull (default: its file name in the current folder)
     #[arg(short = 'o', long = "output", value_name = "PATH", requires = "pull")]
     pub output: Option<PathBuf>,
+    /// Import a lockdown pairing file (.plist or .mobiledevicepairing) so the device can
+    /// connect over Wi-Fi without trusting this computer over USB
+    #[arg(long = "import-pairing", value_name = "PATH")]
+    pub import_pairing: Option<PathBuf>,
+    /// Connect to the device at this IP address over Wi-Fi, e.g. one not advertising itself.
+    /// With --import-pairing, the pairing file is verified against it.
+    #[arg(long = "address", value_name = "IP")]
+    pub address: Option<IpAddr>,
     /// Install to connected Mac (arm64 only)
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with_all = ["udid", "pairing", "ls", "pull"])]
+    #[arg(short = 'm', long = "mac", value_name = "MAC", conflicts_with_all = ["udid", "pairing", "ls", "pull", "address"])]
     pub mac: bool,
 }
 
-pub async fn execute(args: DeviceArgs) -> Result<()> {
+pub async fn execute(mut args: DeviceArgs) -> Result<()> {
+    if let Some(path) = args.import_pairing.take() {
+        let result = import_pairing_file(&path, args.address).await?;
+        match &result.device_name {
+            Some(name) => println!("Paired with {name} ({})", result.pairing.udid),
+            None => println!("Imported the pairing file for {}", result.pairing.udid),
+        }
+        println!("Saved to {}", result.pairing.path.display());
+        let has_action = args.command.is_some()
+            || args.install.is_some()
+            || args.pairing
+            || args.ls.is_some()
+            || args.pull.is_some();
+        if !has_action {
+            return Ok(());
+        }
+        args.udid.get_or_insert(result.pairing.udid);
+    }
+
     let device = {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
@@ -67,12 +97,12 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
                     is_mac: true,
                 }
             } else {
-                select_device(args.udid).await?
+                select_device(args.udid, args.address).await?
             }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            select_device(args.udid).await?
+            select_device(args.udid, args.address).await?
         }
     };
 
@@ -187,8 +217,25 @@ async fn discover_network_devices(wait: std::time::Duration) -> Vec<Device> {
     found
 }
 
-pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
+pub async fn select_device(device_udid: Option<String>, address: Option<IpAddr>) -> Result<Device> {
     const WIFI_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
+    if let Some(address) = address {
+        // Queued until discovery starts, which then connects to it directly.
+        connect_wifi_address(address);
+        let mut devices: Vec<_> = discover_network_devices(WIFI_WAIT * 2)
+            .await
+            .into_iter()
+            .filter(|device| device_udid.as_ref().is_none_or(|udid| &device.udid == udid))
+            .collect();
+        return match devices.len() {
+            0 => Err(anyhow::anyhow!(
+                "No paired device answered at {address}. Unlock it, check it is on the same network, and import its pairing file with --import-pairing if this computer has never trusted it"
+            )),
+            1 => Ok(devices.remove(0)),
+            _ => choose_device(devices),
+        };
+    }
 
     if let Some(udid) = device_udid {
         return match get_device_for_id(&udid).await {
@@ -228,6 +275,10 @@ pub async fn select_device(device_udid: Option<String>) -> Result<Device> {
         return Ok(devices.remove(0));
     }
 
+    choose_device(devices)
+}
+
+fn choose_device(devices: Vec<Device>) -> Result<Device> {
     let device_names: Vec<String> = devices.iter().map(|d| d.to_string()).collect();
     if !std::io::stdin().is_terminal() {
         let udids: Vec<&str> = devices.iter().map(|d| d.udid.as_str()).collect();

@@ -1,7 +1,7 @@
 //! Apple Wi-Fi discovery via DNS-SD and the host's existing lockdown pairings.
 
 use std::collections::HashMap;
-use std::net::{SocketAddr, SocketAddrV6};
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +23,48 @@ const APPLE_MOBILE_SERVICE: &str = "_apple-mobdev2._tcp.local.";
 const WIFI_DEVICE_CACHE_DURATION: Duration = Duration::from_secs(5 * 60);
 // Below the tailnet range and far above what the DNS-SD counter reaches.
 const KNOWN_DEVICE_FIRST_ID: u32 = 0xA000_0000;
+// Devices connected by address, below the known-device range.
+const ADDRESS_DEVICE_FIRST_ID: u32 = 0x9F00_0000;
+/// How many times a device reached by address is tried before giving up.
+const ADDRESS_CONNECT_ATTEMPTS: u32 = 3;
+
+/// Addresses to connect to, queued until a discovery watcher picks them up.
+struct AddressRequests {
+    pending: Vec<SocketAddr>,
+    watcher: Option<UnboundedSender<SocketAddr>>,
+}
+
+static ADDRESS_REQUESTS: Mutex<AddressRequests> = Mutex::new(AddressRequests {
+    pending: Vec::new(),
+    watcher: None,
+});
+
+/// Asks Wi-Fi discovery to connect to the device at `address`, for devices that do not
+/// advertise themselves, such as ones on another subnet or a VPN. Any saved or imported
+/// pairing record may authenticate it. If discovery is not running yet, the request is
+/// kept until it starts. Once connected, the address is remembered for later launches.
+pub fn connect_wifi_address(address: IpAddr) {
+    let address = SocketAddr::new(address, LockdownClient::LOCKDOWND_PORT);
+    let mut requests = ADDRESS_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(watcher) = &requests.watcher
+        && watcher.send(address).is_ok()
+    {
+        return;
+    }
+    requests.watcher = None;
+    requests.pending.push(address);
+}
+
+/// Registers the running watcher for [`connect_wifi_address`] requests.
+fn take_address_requests() -> UnboundedReceiver<SocketAddr> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut requests = ADDRESS_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    for address in requests.pending.drain(..) {
+        let _ = tx.send(address);
+    }
+    requests.watcher = Some(tx);
+    rx
+}
 
 /// The last authenticated LAN address of each device, by UDID, kept across launches.
 #[derive(Clone)]
@@ -223,16 +265,79 @@ async fn watch_network_connections(output: UnboundedSender<DeviceEvent>, known: 
         })
     }
     .inspect_err(|error| log::error!("Could not start the Wi-Fi startup check: {error}"));
-    loop {
-        tokio::select! {
-            _ = output.closed() => return,
-            result = watch_browser(&output, &mut next_id, &connections, &known) => {
-                log::warn!("Wi-Fi discovery interrupted: {result:?}; retrying in 2 seconds");
+    let browse = async {
+        loop {
+            tokio::select! {
+                _ = output.closed() => return,
+                result = watch_browser(&output, &mut next_id, &connections, &known) => {
+                    log::warn!("Wi-Fi discovery interrupted: {result:?}; retrying in 2 seconds");
+                }
             }
+            tokio::select! {
+                _ = output.closed() => return,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+        }
+    };
+    tokio::select! {
+        _ = browse => {}
+        _ = serve_address_requests(&output, &connections, &known) => {}
+    }
+}
+
+/// Connects devices requested with [`connect_wifi_address`]. Each address gets its own
+/// worker, which a repeated request for the same address replaces.
+async fn serve_address_requests(
+    output: &UnboundedSender<DeviceEvent>,
+    connections: &NetworkConnections,
+    known: &KnownWifiDevices,
+) {
+    let mut requests = take_address_requests();
+    let mut workers = HashMap::<SocketAddr, DeviceWorker>::new();
+    let mut ids = ADDRESS_DEVICE_FIRST_ID..KNOWN_DEVICE_FIRST_ID;
+    while let Some(address) = requests.recv().await {
+        if let Some(previous) = workers.remove(&address) {
+            previous.shutdown().await;
+        }
+        let Some(id) = ids.next() else {
+            log::error!("Too many Wi-Fi address requests; ignoring {address}");
+            continue;
+        };
+        log::info!("Connecting to the Wi-Fi device at {address}");
+        let (output, connections, known) = (output.clone(), connections.clone(), known.clone());
+        match DeviceWorker::spawn(format!("jimpactor-wifi-device-{id}"), move || {
+            run_address_device(address, id, output, connections, known)
+        }) {
+            Ok(worker) => {
+                workers.insert(address, worker);
+            }
+            Err(error) => log::error!("Could not start a worker for {address}: {error}"),
+        }
+    }
+}
+
+/// Tries `address` a few times. A device that answers is held until it drops; after
+/// that, DNS-SD or the startup check of known devices brings it back.
+async fn run_address_device(
+    address: SocketAddr,
+    id: u32,
+    output: UnboundedSender<DeviceEvent>,
+    connections: NetworkConnections,
+    known: KnownWifiDevices,
+) {
+    for attempt in 1..=ADDRESS_CONNECT_ATTEMPTS {
+        match connect_network_device("", &[address], id, Route::Lan).await {
+            Ok(authenticated) => {
+                serve_network_device(authenticated, id, &output, &connections, &known).await;
+                return;
+            }
+            Err(error) => log::warn!(
+                "Wi-Fi device at {address} did not connect (attempt {attempt} of {ADDRESS_CONNECT_ATTEMPTS}): {error}"
+            ),
         }
         tokio::select! {
             _ = output.closed() => return,
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
     }
 }
@@ -480,7 +585,7 @@ fn pairing_directories() -> Vec<PathBuf> {
     }
 }
 
-fn read_pairings(directory: &Path) -> Vec<PairingFile> {
+pub(crate) fn read_pairings(directory: &Path) -> Vec<PairingFile> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
     };
@@ -512,16 +617,17 @@ async fn pairing_candidates() -> Vec<PairingFile> {
         pairing_directories()
             .iter()
             .flat_map(|path| read_pairings(path))
+            // Pairing files the user imported, tried after the host's own records.
+            .chain(read_pairings(
+                &crate::imported_pairings::imported_pairings_dir(),
+            ))
             .collect::<Vec<_>>()
     })
     .await
     .unwrap_or_default();
     // On macOS, enumeration may be denied while usbmuxd can read known records.
-    if let Ok(Ok(mut muxer)) = tokio::time::timeout(
-        Duration::from_secs(2),
-        xkit::usbmuxd_address().connect(0),
-    )
-    .await
+    if let Ok(Ok(mut muxer)) =
+        tokio::time::timeout(Duration::from_secs(2), xkit::usbmuxd_address().connect(0)).await
         && let Ok(Ok(devices)) =
             tokio::time::timeout(Duration::from_secs(2), muxer.get_devices()).await
     {
@@ -561,7 +667,7 @@ pub(crate) async fn connect_network_device(
     connect_with_pairings(addresses, &pairings, id, route).await
 }
 
-async fn connect_with_pairings(
+pub(crate) async fn connect_with_pairings(
     addresses: &[SocketAddr],
     pairings: &[PairingFile],
     id: u32,

@@ -95,7 +95,7 @@ pub async fn execute(args: SourcesArgs) -> Result<()> {
             }
             .ok_or_else(|| anyhow!("{name} has no such version"))?;
 
-            let device = select_device(udid).await?;
+            let device = select_device(udid, None).await?;
             let mut store = AccountStore::load(&Some(get_settings_path())).await?;
             let account = store.selected_account().cloned();
             let host: Arc<dyn InstallHost> = Arc::new(CliHost);

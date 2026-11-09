@@ -377,6 +377,7 @@ impl Signer {
         }
 
         let bundles = bundle.collect_bundles_sorted()?;
+        let main_bundle_id = bundle.get_bundle_identifier();
 
         let settings = Self::build_base_settings(self.certificate.as_ref())?;
         let entitlements_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -391,6 +392,7 @@ impl Signer {
             Self::sign_single_bundle(
                 self,
                 bundle,
+                main_bundle_id.as_deref(),
                 &self.provisioning_files,
                 settings.clone(),
                 &entitlements_xml,
@@ -409,6 +411,7 @@ impl Signer {
     fn sign_single_bundle(
         &self,
         bundle: &Bundle,
+        main_bundle_id: Option<&str>,
         provisioning_files: &[MobileProvision],
         mut settings: SigningSettings<'_>,
         entitlements_xml: &str,
@@ -429,21 +432,22 @@ impl Signer {
             let bundle_id = bundle
                 .get_bundle_identifier()
                 .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
-            let prov = provisioning_files.iter().find(|prov| prov.bundle_id().as_deref() == Some(&bundle_id))
-                .or_else(|| provisioning_files.iter().find(|prov| prov.matches_bundle_id(&bundle_id)))
-                .ok_or_else(|| Error::Other(format!(
-                    "No provisioning profile matches {bundle_id}. Re-sign with a profile for this app and team (0xe8008015)."
-                )))?;
+            let (prov, profile_bundle_id) = select_profile(
+                provisioning_files,
+                &bundle_id,
+                main_bundle_id,
+                self.options.embedding.single_profile,
+            )
+            .ok_or_else(|| Error::Other(format!(
+                "No provisioning profile matches {bundle_id}. Re-sign with a profile for this app and team (0xe8008015)."
+            )))?;
             {
-                let bundle_id = bundle
-                    .get_bundle_identifier()
-                    .ok_or_else(|| Error::Other("Missing bundle identifier".into()))?;
                 let cert = self
                     .certificate
                     .as_ref()
                     .and_then(|identity| identity.cert.as_ref())
                     .map(|cert| cert.constructed_data());
-                prov.validate_for(&bundle_id, None, cert)?;
+                prov.validate_for(profile_bundle_id, None, cert)?;
                 let mut prov = prov.clone();
 
                 if let Some(bundle_executable) = bundle.get_executable()
@@ -493,6 +497,44 @@ impl Signer {
 
         Ok(settings)
     }
+}
+
+/// The bundle identifier pattern a provisioning profile covers.
+trait ProfileBundleId {
+    fn profile_bundle_id(&self) -> Option<String>;
+    fn covers(&self, bundle_id: &str) -> bool;
+}
+
+impl ProfileBundleId for MobileProvision {
+    fn profile_bundle_id(&self) -> Option<String> {
+        self.bundle_id()
+    }
+    fn covers(&self, bundle_id: &str) -> bool {
+        self.matches_bundle_id(bundle_id)
+    }
+}
+
+/// Picks the profile for `bundle_id` and returns it with the bundle ID to validate it
+/// against: an exact match first, then a wildcard match. With `single_profile`, only
+/// the main bundle was registered with Apple, so a nested bundle without its own
+/// profile shares the main bundle's (validated against the main bundle ID).
+fn select_profile<'a, 'b, P: ProfileBundleId>(
+    profiles: &'a [P],
+    bundle_id: &'b str,
+    main_bundle_id: Option<&'b str>,
+    single_profile: bool,
+) -> Option<(&'a P, &'b str)> {
+    let find = |id: &str| {
+        profiles
+            .iter()
+            .find(|prov| prov.profile_bundle_id().as_deref() == Some(id))
+            .or_else(|| profiles.iter().find(|prov| prov.covers(id)))
+    };
+    if let Some(prov) = find(bundle_id) {
+        return Some((prov, bundle_id));
+    }
+    let main_bundle_id = main_bundle_id.filter(|main| single_profile && *main != bundle_id)?;
+    find(main_bundle_id).map(|prov| (prov, main_bundle_id))
 }
 
 /// Check every Mach-O before modifying or provisioning the app, including nested dylibs.
@@ -568,5 +610,60 @@ mod layout_tests {
         assert!(error.contains("TestBinary"), "{error}");
         assert!(error.contains("CoreTrust"), "{error}");
         assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[cfg(test)]
+mod profile_selection_tests {
+    use super::*;
+
+    struct Profile(&'static str);
+
+    impl ProfileBundleId for Profile {
+        fn profile_bundle_id(&self) -> Option<String> {
+            Some(self.0.to_owned())
+        }
+        fn covers(&self, bundle_id: &str) -> bool {
+            self.0 == bundle_id
+                || self
+                    .0
+                    .strip_suffix('*')
+                    .is_some_and(|prefix| bundle_id.starts_with(prefix))
+        }
+    }
+
+    const MAIN: &str = "com.kdt.livecontainer.3A87L6ZM3L";
+    const EXTENSION: &str = "com.kdt.livecontainer.3A87L6ZM3L.LiveProcess";
+
+    #[test]
+    fn single_profile_extensions_share_the_main_profile() {
+        let profiles = [Profile(MAIN)];
+        let (prov, validate_as) = select_profile(&profiles, EXTENSION, Some(MAIN), true).unwrap();
+        assert_eq!(prov.0, MAIN);
+        assert_eq!(validate_as, MAIN);
+    }
+
+    #[test]
+    fn extensions_need_their_own_profile_without_single_profile() {
+        let profiles = [Profile(MAIN)];
+        assert!(select_profile(&profiles, EXTENSION, Some(MAIN), false).is_none());
+    }
+
+    #[test]
+    fn a_matching_profile_wins_over_the_main_one() {
+        let profiles = [Profile(MAIN), Profile(EXTENSION)];
+        let (prov, validate_as) = select_profile(&profiles, EXTENSION, Some(MAIN), true).unwrap();
+        assert_eq!(prov.0, EXTENSION);
+        assert_eq!(validate_as, EXTENSION);
+
+        let wildcard = [Profile("com.kdt.*")];
+        let (prov, _) = select_profile(&wildcard, EXTENSION, Some(MAIN), false).unwrap();
+        assert_eq!(prov.0, "com.kdt.*");
+    }
+
+    #[test]
+    fn the_main_bundle_never_borrows_another_profile() {
+        let profiles = [Profile("com.other.app")];
+        assert!(select_profile(&profiles, MAIN, Some(MAIN), true).is_none());
     }
 }

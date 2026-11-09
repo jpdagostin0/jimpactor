@@ -108,14 +108,17 @@ pub async fn execute(args: JitArgs) -> Result<()> {
     let ddi = get_data_path().join("ddi");
     match args.command {
         JitCommands::Launch { bundle_id } => {
-            let pid = select_device(args.udid)
+            let pid = select_device(args.udid, None)
                 .await?
                 .launch_with_jit(&bundle_id, ddi)
                 .await?;
             println!("Enabled JIT for process {pid}");
         }
         JitCommands::Attach { pid } => {
-            select_device(args.udid).await?.attach_jit(pid, ddi).await?;
+            select_device(args.udid, None)
+                .await?
+                .attach_jit(pid, ddi)
+                .await?;
             println!("Enabled JIT for process {pid}");
         }
         JitCommands::Serve {

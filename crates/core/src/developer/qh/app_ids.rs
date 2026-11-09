@@ -117,13 +117,24 @@ impl DeveloperSession {
 pub struct AppIDsResponse {
     pub app_ids: Vec<AppID>,
     /// App IDs the team may hold, when Apple reports it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "some_integer")]
     pub max_quantity: Option<Integer>,
     /// App IDs the team can still create, when Apple reports it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "some_integer")]
     pub available_quantity: Option<Integer>,
     #[serde(flatten)]
     pub meta: QHResponseMeta,
+}
+
+/// Reads a present integer as `Some`. The `flatten` above makes serde read this struct
+/// as a map, where plist expects options in its explicit `{"Some": ..}` form and fails
+/// on a bare integer ("expected StartDictionary, found Integer"). Absent keys fall back
+/// to `None` through `#[serde(default)]`.
+fn some_integer<'de, D>(deserializer: D) -> Result<Option<Integer>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Integer::deserialize(deserializer).map(Some)
 }
 
 #[allow(dead_code)]
@@ -193,4 +204,86 @@ impl Features {
     // pub fn get_feature_for_entitlement(entitlement: &str) -> Option<&'static str> {
 
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response(quantities: bool) -> Value {
+        let mut features = Dictionary::new();
+        for key in [
+            "push",
+            "iCloud",
+            "inAppPurchase",
+            "gameCenter",
+            "passbook",
+            "homeKit",
+        ] {
+            features.insert(key.into(), Value::Boolean(false));
+        }
+        features.insert("dataProtection".into(), Value::String(String::new()));
+        features.insert("cloudKitVersion".into(), Value::Integer(2.into()));
+
+        let mut app_id = Dictionary::new();
+        for (key, value) in [
+            ("appIdId", "VGCBDPKG3N"),
+            ("name", "LiveContainer"),
+            ("appIdPlatform", "ios"),
+            ("prefix", "3A87L6ZM3L"),
+            ("identifier", "com.kdt.livecontainer.3A87L6ZM3L"),
+        ] {
+            app_id.insert(key.into(), Value::String(value.into()));
+        }
+        for key in [
+            "isWildCard",
+            "isDuplicate",
+            "isDevPushEnabled",
+            "isProdPushEnabled",
+        ] {
+            app_id.insert(key.into(), Value::Boolean(false));
+        }
+        app_id.insert("features".into(), Value::Dictionary(features));
+        app_id.insert(
+            "associatedApplicationGroupsCount".into(),
+            Value::Integer(3.into()),
+        );
+
+        let mut response = Dictionary::new();
+        response.insert(
+            "appIds".into(),
+            Value::Array(vec![Value::Dictionary(app_id)]),
+        );
+        if quantities {
+            response.insert("maxQuantity".into(), Value::Integer(10.into()));
+            response.insert("availableQuantity".into(), Value::Integer(7.into()));
+        }
+        for (key, value) in [
+            ("creationTimestamp", "2026-11-09T15:37:17Z"),
+            ("userLocale", "en_US"),
+            ("protocolVersion", "QH65B2"),
+            ("responseId", "53ecb8cc"),
+        ] {
+            response.insert(key.into(), Value::String(value.into()));
+        }
+        response.insert("resultCode".into(), Value::Integer(0.into()));
+        response.insert("pageNumber".into(), Value::Integer(0.into()));
+        Value::Dictionary(response)
+    }
+
+    #[test]
+    fn reads_app_id_quantities_when_apple_reports_them() {
+        let parsed: AppIDsResponse = plist::from_value(&response(true)).unwrap();
+        assert_eq!(parsed.app_ids.len(), 1);
+        assert_eq!(parsed.max_quantity, Some(10.into()));
+        assert_eq!(parsed.available_quantity, Some(7.into()));
+        assert_eq!(parsed.meta.page_number, Some(0.into()));
+    }
+
+    #[test]
+    fn app_id_quantities_are_optional() {
+        let parsed: AppIDsResponse = plist::from_value(&response(false)).unwrap();
+        assert_eq!(parsed.max_quantity, None);
+        assert_eq!(parsed.available_quantity, None);
+    }
 }

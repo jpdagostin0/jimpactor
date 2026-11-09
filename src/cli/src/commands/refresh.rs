@@ -59,7 +59,7 @@ pub async fn execute(args: RefreshArgs) -> Result<()> {
                 .iter()
                 .find(|app| app.bundle_id.as_deref() == Some(bundle_id.as_str()))
                 .ok_or_else(|| anyhow!("{bundle_id} is not set to refresh"))?;
-            let device = select_device(Some(udid.clone())).await?;
+            let device = select_device(Some(udid.clone()), None).await?;
             plume_utils::refresh::refresh_app(
                 &store,
                 refresh_device,

@@ -8,6 +8,7 @@ mod device;
 mod device_discovery;
 pub(crate) mod device_tools;
 mod device_worker;
+mod imported_pairings;
 pub mod inspect;
 pub mod install;
 mod jit;
@@ -42,8 +43,12 @@ pub use device::{
 }; // Device helper
 pub use device_discovery::{DeviceEvent, watch_devices};
 pub use device_tools::{DeviceDetails, InstalledProfile, ProfileSort, sort_profiles};
+pub use imported_pairings::{
+    ImportResult, ImportedPairing, import_pairing_file, imported_pairings_dir,
+    list_imported_pairings, remove_imported_pairing,
+};
 pub use network_connection::NetworkConnection;
-pub use network_discovery::watch_network_devices;
+pub use network_discovery::{connect_wifi_address, watch_network_devices};
 pub use options::{
     SignerApp, // Supported app types
     SignerAppReal,

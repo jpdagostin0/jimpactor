@@ -254,12 +254,12 @@ pub async fn execute(args: SignArgs) -> Result<()> {
                     is_mac: true,
                 })
             } else {
-                Some(select_device(args.udid).await?)
+                Some(select_device(args.udid, None).await?)
             }
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            Some(select_device(args.udid).await?)
+            Some(select_device(args.udid, None).await?)
         }
     } else {
         None
