@@ -349,15 +349,22 @@ pub(crate) fn relaunch_subscription() -> Subscription<Message> {
                 use iced::futures::{SinkExt, StreamExt};
                 let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
 
-                if let Err(err) = crate::relaunch::start_listener({
-                    let tx = tx.clone();
-                    move |action| {
-                        let _ = tx.unbounded_send(match action {
-                            crate::relaunch::RelaunchAction::Show => Message::RelaunchRequested,
-                            crate::relaunch::RelaunchAction::Restart => Message::RestartRequested,
-                        });
-                    }
-                }) {
+                if let Err(err) = crate::relaunch::start_listener(
+                    {
+                        let tx = tx.clone();
+                        move |action| {
+                            let _ = tx.unbounded_send(match action {
+                                crate::relaunch::RelaunchAction::Show => {
+                                    Message::RelaunchRequested
+                                }
+                                crate::relaunch::RelaunchAction::Restart => {
+                                    Message::RestartRequested
+                                }
+                            });
+                        }
+                    },
+                    crate::ipc::handler(),
+                ) {
                     log::warn!("Failed to start relaunch listener: {err}");
                 }
 

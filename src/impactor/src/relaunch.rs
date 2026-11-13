@@ -1,13 +1,14 @@
 #![cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 
+use plume_utils::ipc::{self, Event, Request};
 use serde::{Deserialize, Serialize};
 use single_instance::SingleInstance;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const RELAUNCH_PORT_FILE: &str = "relaunch.port";
 #[cfg(target_os = "macos")]
 const SINGLE_INSTANCE_FILE: &str = "single-instance.lock";
 
@@ -17,6 +18,10 @@ pub(crate) enum RelaunchAction {
     Restart,
 }
 
+/// Answers a JSON IPC request, calling `emit` for every event it sends back. Runs on the
+/// connection's own thread and may block until the request is finished.
+pub(crate) type RequestHandler = Arc<dyn Fn(Request, &mut dyn FnMut(Event)) + Send + Sync>;
+
 #[derive(Debug, Serialize, Deserialize)]
 struct InstanceInfo {
     version: String,
@@ -24,7 +29,7 @@ struct InstanceInfo {
 }
 
 fn relaunch_port_path() -> PathBuf {
-    crate::defaults::get_data_path().join(RELAUNCH_PORT_FILE)
+    crate::defaults::get_data_path().join(ipc::PORT_FILE)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -131,7 +136,9 @@ pub(crate) fn acquire_or_notify() -> Result<Option<SingleInstance>, String> {
 fn handle_connection(
     mut stream: TcpStream,
     info: &InstanceInfo,
+    token: &str,
     action: impl Fn(RelaunchAction),
+    on_request: &RequestHandler,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -139,11 +146,7 @@ fn handle_connection(
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;
-    let mut command = Vec::new();
-    (&mut stream)
-        .take(65)
-        .read_to_end(&mut command)
-        .map_err(|e| e.to_string())?;
+    let command = ipc::read_request(&mut stream).map_err(|e| e.to_string())?;
     match command.as_slice() {
         b"info" => stream
             .write_all(&serde_json::to_vec(info).map_err(|e| e.to_string())?)
@@ -157,30 +160,64 @@ fn handle_connection(
             });
             Ok(())
         }
+        json if json.trim_ascii_start().starts_with(b"{") => {
+            let request = match ipc::parse_request(json, token) {
+                Ok(request) => request,
+                Err(error) => {
+                    let _ = ipc::write_event(&mut stream, &Event::error(error.clone()));
+                    return Err(error);
+                }
+            };
+            // Keep running the request after the client goes away; its events are dropped.
+            let mut connected = true;
+            on_request(request, &mut |event| {
+                if connected && ipc::write_event(&mut stream, &event).is_err() {
+                    log::info!("IPC client disconnected; continuing without it");
+                    connected = false;
+                }
+            });
+            Ok(())
+        }
         _ => Err("Unsupported relaunch command".into()),
     }
 }
 
-pub(crate) fn start_listener<F>(on_action: F) -> Result<(), String>
+pub(crate) fn start_listener<F>(on_action: F, on_request: RequestHandler) -> Result<(), String>
 where
     F: Fn(RelaunchAction) + Send + Sync + 'static,
 {
     let listener =
         TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| format!("bind listener: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let info = InstanceInfo {
+    let info = Arc::new(InstanceInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         executable: std::env::current_exe().map_err(|e| e.to_string())?,
-    };
+    });
+    // The token goes first so clients never pair a new port with a stale token.
+    let token: Arc<str> = ipc::write_token(&crate::defaults::get_data_path())
+        .map_err(|e| format!("write IPC token: {e}"))?
+        .into();
     std::fs::write(relaunch_port_path(), port.to_string())
         .map_err(|e| format!("write port: {e}"))?;
+    let on_action = Arc::new(on_action);
     std::thread::spawn(move || {
         for incoming in listener.incoming() {
             match incoming {
                 Ok(stream) => {
-                    if let Err(error) = handle_connection(stream, &info, &on_action) {
-                        log::warn!("Failed to handle relaunch request: {error}");
-                    }
+                    // Installs take minutes, so each connection gets its own thread.
+                    let (info, token, on_action, on_request) = (
+                        info.clone(),
+                        token.clone(),
+                        on_action.clone(),
+                        on_request.clone(),
+                    );
+                    std::thread::spawn(move || {
+                        if let Err(error) =
+                            handle_connection(stream, &info, &token, &*on_action, &on_request)
+                        {
+                            log::warn!("Failed to handle IPC request: {error}");
+                        }
+                    });
                 }
                 Err(error) => {
                     log::warn!("Relaunch listener stopped: {error}");
@@ -195,6 +232,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_requests() -> RequestHandler {
+        Arc::new(|_, emit| emit(Event::error("unexpected")))
+    }
+
     #[test]
     fn version_query_and_relaunch_actions_are_distinct() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -206,9 +248,13 @@ mod tests {
                 executable: "older-jimpactor".into(),
             };
             for _ in 0..3 {
-                handle_connection(listener.accept().unwrap().0, &info, |action| {
-                    tx.send(action).unwrap()
-                })
+                handle_connection(
+                    listener.accept().unwrap().0,
+                    &info,
+                    "token",
+                    |action| tx.send(action).unwrap(),
+                    &no_requests(),
+                )
                 .unwrap();
             }
         });
@@ -225,6 +271,58 @@ mod tests {
             rx.try_iter().collect::<Vec<_>>(),
             vec![RelaunchAction::Show, RelaunchAction::Restart]
         );
+    }
+    #[test]
+    fn json_requests_are_authenticated_and_streamed() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handler: RequestHandler = Arc::new(|request, emit| {
+            assert_eq!(request, Request::ListDevices);
+            emit(Event::Progress {
+                message: "looking".into(),
+                percent: 50,
+            });
+            emit(Event::Devices { devices: vec![] });
+        });
+        let server = std::thread::spawn(move || {
+            let info = InstanceInfo {
+                version: "0".into(),
+                executable: "x".into(),
+            };
+            let mut results = Vec::new();
+            for _ in 0..2 {
+                results.push(handle_connection(
+                    listener.accept().unwrap().0,
+                    &info,
+                    "secret",
+                    |_| panic!("not a relaunch"),
+                    &handler,
+                ));
+            }
+            results
+        });
+        let request = |token: &str| {
+            serde_json::to_vec(&ipc::RequestEnvelope {
+                version: ipc::PROTOCOL_VERSION,
+                token: token.into(),
+                request: Request::ListDevices,
+            })
+            .unwrap()
+        };
+        let reply = String::from_utf8(send_command(port, &request("secret")).unwrap()).unwrap();
+        let events: Vec<Event> = reply
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[1], Event::Devices { .. }));
+        let reply = send_command(port, &request("wrong")).unwrap();
+        assert!(matches!(
+            serde_json::from_slice(reply.trim_ascii()).unwrap(),
+            Event::Error { .. }
+        ));
+        let results = server.join().unwrap();
+        assert!(results[0].is_ok() && results[1].is_err());
     }
     #[test]
     fn older_show_only_builds_are_recognized_without_sending_restart() {

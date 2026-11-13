@@ -8,6 +8,8 @@ pub(crate) use plume_utils::{jit_server, sources};
 mod appearance;
 mod certificate_reset;
 mod defaults;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+mod ipc;
 mod logging;
 mod macos_app;
 mod refresh;

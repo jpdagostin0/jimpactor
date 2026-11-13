@@ -36,6 +36,11 @@ pub fn set_refresh_daemon_devices(devices: crate::refresh::ConnectedDevices) {
     let _ = REFRESH_DAEMON_DEVICES.set(devices);
 }
 
+/// Every connected device, kept up to date by the device listener.
+pub(crate) fn refresh_daemon_devices() -> Option<crate::refresh::ConnectedDevices> {
+    REFRESH_DAEMON_DEVICES.get().cloned()
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum Message {
@@ -633,6 +638,8 @@ impl Impactor {
             }
             Message::RestartRequested => {
                 let installing = matches!(&self.current_screen, ImpactorScreen::Progress(screen) if screen.is_installing);
+                #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+                let installing = installing || crate::ipc::has_active_installs();
                 if installing || crate::refresh::has_active_refreshes() {
                     log::warn!("Finish the current installation or refresh before restarting");
                     Task::done(Message::RelaunchRequested)

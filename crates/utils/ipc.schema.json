@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jpdagostin0/jimpactor/ipc.schema.json",
+  "title": "Jimpactor IPC protocol, version 1",
+  "description": "Connect to 127.0.0.1 on the port in <data dir>/relaunch.port, write one `request` object as UTF-8 JSON (at most 64 KiB), and shut down the write half of the socket. Jimpactor answers with `event` objects, one JSON object per line, ending with a terminal event (every event except `progress`) and then closes the connection. The data dir is %APPDATA%\\Jimpactor on Windows and $XDG_CONFIG_HOME/Jimpactor (default ~/.config/Jimpactor) elsewhere. `token` is the contents of <data dir>/ipc.token, regenerated each time Jimpactor starts.",
+  "$defs": {
+    "request": {
+      "description": "Written by the client.",
+      "oneOf": [
+        { "$ref": "#/$defs/info_request" },
+        { "$ref": "#/$defs/list_devices_request" },
+        { "$ref": "#/$defs/install_request" }
+      ]
+    },
+    "envelope": {
+      "type": "object",
+      "required": ["version", "token", "command"],
+      "properties": {
+        "version": { "const": 1, "description": "Protocol version." },
+        "token": { "type": "string", "description": "Contents of <data dir>/ipc.token." },
+        "command": { "type": "string" }
+      }
+    },
+    "info_request": {
+      "description": "Answered with an `info` event.",
+      "allOf": [{ "$ref": "#/$defs/envelope" }],
+      "properties": { "command": { "const": "info" } }
+    },
+    "list_devices_request": {
+      "description": "Answered with a `devices` event.",
+      "allOf": [{ "$ref": "#/$defs/envelope" }],
+      "properties": { "command": { "const": "list_devices" } }
+    },
+    "install_request": {
+      "description": "Signs the IPA with the account selected in Jimpactor (or its App Store Connect key) using the app's saved install options, and installs it. Answered with `progress` events, then `done` or `error`. Installation continues if the client disconnects. Only one install runs per device at a time.",
+      "allOf": [{ "$ref": "#/$defs/envelope" }],
+      "required": ["path"],
+      "properties": {
+        "command": { "const": "install" },
+        "path": { "type": "string", "description": "Absolute path to the .ipa, readable by the user running Jimpactor." },
+        "udid": { "type": "string", "description": "Target device. When omitted, the locked device (if device locking is on) or the only connected device is used." }
+      }
+    },
+
+    "event": {
+      "description": "Written by Jimpactor, one per line.",
+      "oneOf": [
+        { "$ref": "#/$defs/info_event" },
+        { "$ref": "#/$defs/devices_event" },
+        { "$ref": "#/$defs/progress_event" },
+        { "$ref": "#/$defs/done_event" },
+        { "$ref": "#/$defs/error_event" }
+      ]
+    },
+    "info_event": {
+      "type": "object",
+      "required": ["event", "app_version", "protocol_version"],
+      "properties": {
+        "event": { "const": "info" },
+        "app_version": { "type": "string" },
+        "protocol_version": { "type": "integer" }
+      }
+    },
+    "devices_event": {
+      "type": "object",
+      "required": ["event", "devices"],
+      "properties": {
+        "event": { "const": "devices" },
+        "devices": { "type": "array", "items": { "$ref": "#/$defs/device" } }
+      }
+    },
+    "device": {
+      "type": "object",
+      "required": ["udid", "name", "connection", "available"],
+      "properties": {
+        "udid": { "type": "string" },
+        "name": { "type": "string" },
+        "connection": { "enum": ["usb", "wifi", "tailscale", "local", "unknown"] },
+        "available": { "type": "boolean", "description": "Whether the device can be reached right now." }
+      }
+    },
+    "progress_event": {
+      "description": "Not terminal; more events follow.",
+      "type": "object",
+      "required": ["event", "message", "percent"],
+      "properties": {
+        "event": { "const": "progress" },
+        "message": { "type": "string" },
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "done_event": {
+      "type": "object",
+      "required": ["event", "message"],
+      "properties": {
+        "event": { "const": "done" },
+        "message": { "type": "string" }
+      }
+    },
+    "error_event": {
+      "description": "The request failed. Sent for bad requests and tokens as well as failed installs.",
+      "type": "object",
+      "required": ["event", "message"],
+      "properties": {
+        "event": { "const": "error" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

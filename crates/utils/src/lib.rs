@@ -11,6 +11,7 @@ mod device_worker;
 mod imported_pairings;
 pub mod inspect;
 pub mod install;
+pub mod ipc;
 mod jit;
 pub mod jit_server;
 mod network_connection;

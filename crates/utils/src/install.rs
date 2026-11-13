@@ -542,6 +542,20 @@ pub async fn run_source_install(
     let _ = tokio::fs::remove_file(&ipa_path).await;
     let package = package.map_err(|e| format!("Downloaded file is not a valid IPA: {e}"))?;
 
+    install_with_saved_options(package, device, account, store, data_path, host).await
+}
+
+/// Installs `package` with the options saved for its bundle ID (or the defaults for its app
+/// type), signing with `account`, or the App Store Connect key when there is no account.
+/// Removes the package's staging directory afterwards.
+pub async fn install_with_saved_options(
+    package: Package,
+    device: Option<&Device>,
+    account: Option<&GsaAccount>,
+    store: Option<&mut AccountStore>,
+    data_path: &Path,
+    host: &Arc<dyn InstallHost>,
+) -> Result<(), String> {
     let mut options = SignerOptions::default();
     package.load_into_signer_options(&mut options);
     // Updates keep whatever was saved for the app, such as its name and tweaks.

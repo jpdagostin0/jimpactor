@@ -13,6 +13,7 @@ pub mod macho;
 pub mod refresh;
 pub mod sign;
 pub mod sources;
+pub mod tray;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -54,6 +55,8 @@ pub enum Commands {
     AppProfile(app_profile::AppProfileArgs),
     /// Show what an IPA contains
     Ipa(ipa::IpaArgs),
+    /// Send requests to the running Jimpactor app (tray)
+    Tray(tray::TrayArgs),
     /// Check GitHub for a newer Jimpactor release
     CheckUpdate,
 }
