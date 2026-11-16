@@ -379,8 +379,13 @@ impl Device {
                 }
             }
 
+            // idevice requires AFC handles to be closed explicitly; dropping one
+            // panics the device worker in debug builds and leaks the fd otherwise.
             let mut f = ac.open(&path, AfcFopenMode::Wr).await?;
-            f.write_entire(&data).await?;
+            let written = f.write_entire(&data).await;
+            let closed = f.close().await;
+            written?;
+            closed?;
 
             Ok(())
         })
@@ -421,7 +426,11 @@ impl Device {
         self.with_provider(HOUSE_ARREST_LABEL, move |provider| async move {
             let mut ac = open_app_container(provider.as_ref(), &identifier).await?;
             let mut f = ac.open(&path, AfcFopenMode::RdOnly).await?;
-            Ok(f.read_entire().await?)
+            let data = f.read_entire().await;
+            let closed = f.close().await;
+            let data = data?;
+            closed?;
+            Ok(data)
         })
         .await
     }

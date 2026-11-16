@@ -100,20 +100,27 @@ async fn copy_to_zip(
     options: SimpleFileOptions,
 ) -> Result<u64, IdeviceError> {
     let mut file = afc.open(format!("/{path}"), AfcFopenMode::RdOnly).await?;
-    zip.start_file(path, options).map_err(io_error)?;
+    // Every exit must close `file`: idevice panics (debug) on an unclosed AFC handle.
+    if let Err(error) = zip.start_file(path, options) {
+        let _ = file.close().await;
+        return Err(io_error(error));
+    }
     let mut total = 0;
     let copied = loop {
         // `read_n` keeps AFC errors typed, unlike the `AsyncRead` implementation.
         match file.read_n(CHUNK).await {
             Ok(chunk) if chunk.is_empty() => break Ok(()),
             Ok(chunk) => {
-                zip.write_all(&chunk).map_err(IdeviceError::Socket)?;
+                if let Err(error) = zip.write_all(&chunk) {
+                    break Err(IdeviceError::Socket(error));
+                }
                 total += chunk.len() as u64;
             }
             Err(error) => break Err(error),
         }
     };
     if let Err(error) = copied {
+        let _ = file.close().await;
         zip.abort_file().map_err(io_error)?;
         return Err(error);
     }
@@ -276,8 +283,10 @@ impl Device {
                         }
                     }
                     let mut file = afc.open(&path, AfcFopenMode::Wr).await?;
-                    file.write_entire(&data).await?;
-                    file.close().await
+                    let written = file.write_entire(&data).await;
+                    let closed = file.close().await;
+                    written?;
+                    closed
                 }
                 .await;
                 match written {

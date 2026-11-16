@@ -373,16 +373,25 @@ impl IPAUploader {
         let mut buffer = vec![0; 1 << 20];
         let mut written = 0u64;
         progress(0.0);
-        loop {
-            let count = source.read(&mut buffer).await?;
-            if count == 0 {
-                break;
+        // Close `target` on every exit: idevice panics (debug) on an unclosed AFC handle.
+        let copied: std::result::Result<(), std::io::Error> = async {
+            loop {
+                let count = source.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                target.write_all(&buffer[..count]).await?;
+                written += count as u64;
+                if size != 0 {
+                    progress((written as f64 / size as f64).min(1.0));
+                }
             }
-            target.write_all(&buffer[..count]).await?;
-            written += count as u64;
-            if size != 0 {
-                progress((written as f64 / size as f64).min(1.0));
-            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = copied {
+            let _ = target.close().await;
+            return Err(error.into());
         }
         target.close().await?;
         progress(1.0);
