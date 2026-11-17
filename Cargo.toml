@@ -3,12 +3,10 @@ resolver = "3"
 members = [
     "src/impactor",
     "src/cli",
-    "crates/omnisette",
     "crates/core",
     "crates/gestalt",
     "crates/store",
     "crates/utils",
-    "crates/xkit",
     "tools/genicons",
     "tools/xtask",
 ]
@@ -81,5 +79,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 
-[patch.crates-io]
-apple-codesign = { path = "crates/apple-codesign" }
+# Split-out libraries, published under github.com/jbisfun.
+apple-codesign = { git = "https://github.com/jbisfun/apple-codesign", default-features = false }
+omnisette = { git = "https://github.com/jbisfun/omnisette" }
+xkit = { git = "https://github.com/jbisfun/xkit" }

@@ -29,9 +29,9 @@ The local Mac identity and provisioning approach follows [sacca97/os-findmy-e's 
 
 | Path                    | Upstream                                                                                                     | License    | Notes                                                                                                                                                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `crates/apple-codesign` | [apple-platform-rs](https://github.com/indygreg/apple-platform-rs) by Gregory Szorc (`apple-codesign` 0.29.0) | MPL-2.0    | Changed in place: it sets 0o755 permissions on signed Mach-O files, skips the required bundle-identifier check, exports everything from `macho_universal`, and adds `MachFile::iter_macho_mut` and `nth_macho_mut`. |
-| `crates/omnisette`      | [SideStore/apple-private-apis](https://github.com/SideStore/apple-private-apis) (originally by Dadoum)        | MPL-2.0    | Generates anisette data. Changed to support remote anisette v1 and v3 providers.                                                                                                                                           |
-| `crates/xkit` | [XTool / XKit](https://github.com/xtool-org/xtool) by Kabir Oberai | MIT (XTool project) | Rust port of XKit's authentication, developer services, provisioning, signing, and installation APIs. XKit: Copyright © 2019 Kabir Oberai. All rights reserved. The original Swift sources are not included. |
+| [`jbisfun/apple-codesign`](https://github.com/jbisfun/apple-codesign) | [apple-platform-rs](https://github.com/indygreg/apple-platform-rs) by Gregory Szorc (`apple-codesign` 0.29.0) | MPL-2.0    | Changed in place: it sets 0o755 permissions on signed Mach-O files, skips the required bundle-identifier check, exports everything from `macho_universal`, and adds `MachFile::iter_macho_mut` and `nth_macho_mut`. |
+| [`jbisfun/omnisette`](https://github.com/jbisfun/omnisette) | [SideStore/apple-private-apis](https://github.com/SideStore/apple-private-apis) (originally by Dadoum)        | MPL-2.0    | Generates anisette data. Changed to support remote anisette v1 and v3 providers.                                                                                                                                           |
+| [`jbisfun/xkit`](https://github.com/jbisfun/xkit) | [XTool / XKit](https://github.com/xtool-org/xtool) by Kabir Oberai | MIT (XTool project) | Rust port of XKit's authentication, developer services, provisioning, signing, and installation APIs. XKit: Copyright © 2019 Kabir Oberai. All rights reserved. The original Swift sources are not included. |
 
 Each vendored crate keeps its upstream `LICENSE` file in its own directory.
 
@@ -40,7 +40,7 @@ Individual source files also carry copyright notices dated 2020 and 2021.
 XKit is part of [XTool](https://github.com/xtool-org/xtool), which is distributed
 under the MIT license. XTool's MIT license notice
 (Copyright (c) 2024 Kabir Oberai) is preserved in
-[`crates/xkit/LICENSE`](crates/xkit/LICENSE) and reproduced below.
+[`xkit`'s LICENSE](https://github.com/jbisfun/xkit/blob/main/LICENSE) and reproduced below.
 
 ## References and inspiration
 

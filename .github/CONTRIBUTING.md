@@ -12,8 +12,7 @@ Jimpactor is an independent fork of PlumeImpactor / Impactor. It is not affiliat
 | `crates/gestalt` | Apple Silicon device identification |
 | `crates/store` | Accounts, credentials, anisette settings, and refresh state |
 | `crates/utils` | Signing, app modification, and device helpers |
-| `crates/omnisette` | Vendored local and remote anisette support |
-| `crates/apple-codesign` | Vendored signing library with local changes |
+| `xkit`, `omnisette`, `apple-codesign` | Git dependencies from [github.com/jbisfun](https://github.com/jbisfun) |
 | `tools/genicons` | Platform icons generated from `package/icon.svg` |
 | `tools/xtask` | Release builds and packaging |
 

@@ -18,7 +18,7 @@ fn app(path: &Path) -> Bundle {
     plist::to_file_xml(path.join("Info.plist"), &info).unwrap();
     fs::write(
         path.join("Executable"),
-        include_bytes!("../../xkit/tests/fixtures/minimal-arm64.macho"),
+        include_bytes!("fixtures/minimal-arm64.macho"),
     )
     .unwrap();
     Bundle::new(path.to_owned()).unwrap()
@@ -115,7 +115,7 @@ async fn custom_tweak_paths_copy_and_inject_without_bundling_a_loader() {
         let dir = tempfile::tempdir().unwrap();
         let bundle = app(&dir.path().join("Test.app"));
         let source = dir.path().join("Custom.dylib");
-        let data = include_bytes!("../../xkit/tests/fixtures/minimal-arm64.macho");
+        let data = include_bytes!("fixtures/minimal-arm64.macho");
         fs::write(&source, data).unwrap();
         let options = TweakInjection {
             loader: TweakLoader::None,
