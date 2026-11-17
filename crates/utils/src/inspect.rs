@@ -341,7 +341,7 @@ mod tests {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
-    const MACHO: &[u8] = include_bytes!("../../xkit/tests/fixtures/minimal-arm64.macho");
+    const MACHO: &[u8] = include_bytes!("../tests/fixtures/minimal-arm64.macho");
 
     fn info_plist() -> Vec<u8> {
         let dict = plist::Dictionary::from_iter([

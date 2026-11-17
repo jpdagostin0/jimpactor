@@ -52,7 +52,13 @@ pub struct HTTPClient(pub Client);
 
 impl HTTPClient {
     pub fn new() -> Result<Self> {
-        Ok(Self(plume_core::client()?))
+        const APPLE_ROOT: &[u8] = include_bytes!("apple_root.der");
+        Ok(Self(
+            Client::builder()
+                .add_root_certificate(reqwest::Certificate::from_der(APPLE_ROOT)?)
+                .http1_title_case_headers()
+                .build()?,
+        ))
     }
 }
 

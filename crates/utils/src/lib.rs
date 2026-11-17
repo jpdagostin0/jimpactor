@@ -25,6 +25,7 @@ pub mod sources;
 mod tailnet;
 mod tweak;
 pub mod updates;
+pub mod xkit_auth;
 mod xkit_bridge;
 
 use std::path::Path;
@@ -64,15 +65,15 @@ pub use options::{
 };
 pub use package::Package; // Package helper
 pub use signer::Signer; // Signer
+#[cfg(tailnet)]
+pub use tailnet::tailnet_listen;
 pub use tailnet::{
     TailnetConfig, TailnetStatus, set_tailnet_devices, start_tailnet, stop_tailnet,
     subscribe_tailnet_status, tailnet_status, tailnet_supported, watch_tailnet_devices,
 };
-#[cfg(tailnet)]
-pub use tailnet::tailnet_listen;
 pub use tweak::Tweak; // Tweak helper
-pub use xkit_bridge::{ConfirmRevocation, DeveloperItem, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
 pub use xkit::{parse_usbmuxd_address, set_usbmuxd_address, usbmuxd_address};
+pub use xkit_bridge::{ConfirmRevocation, DeveloperItem, RegisteredDevice, XkitSigner}; // xkit provisioning and signing
 
 use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]

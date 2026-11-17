@@ -11056,7 +11056,6 @@ dependencies = [
  "p256",
  "pem",
  "plist",
- "plume_core",
  "rand 0.8.6",
  "rcgen",
  "reqwest 0.13.3",

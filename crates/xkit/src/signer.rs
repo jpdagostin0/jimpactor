@@ -9,7 +9,8 @@ use crate::{
     utilities::SigningInfoManager,
 };
 use apple_codesign::{
-    SettingsScope, SigningSettings, UnifiedSigner, cryptography::InMemoryPrivateKey,
+    MachFile, SettingsScope, SigningSettings, UnifiedSigner,
+    cryptography::{InMemoryPrivateKey, PrivateKey},
 };
 use std::{
     collections::BTreeMap,
@@ -72,6 +73,26 @@ pub(crate) fn bundle_metadata(app: &Path) -> Result<(String, String)> {
     Ok((string("CFBundleIdentifier")?, executable))
 }
 
+/// Rejects an expired certificate or one that doesn't match the private key
+/// before signing, so the device doesn't fail the install later (0xe8008018).
+fn validate_signing_identity(
+    cert: &x509_certificate::CapturedX509Certificate,
+    key: &dyn PrivateKey,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    if now < cert.validity_not_before() || now >= cert.validity_not_after() {
+        return Err(invalid(
+            "Signing certificate is expired or not yet valid. Choose a valid certificate and re-sign (0xe8008018).",
+        ));
+    }
+    if key.public_key_data().as_ref() != cert.public_key_data().as_ref() {
+        return Err(invalid(
+            "Signing certificate does not match the private key. Import the matching key and re-sign (0xe8008018).",
+        ));
+    }
+    Ok(())
+}
+
 pub enum SigningIdentity<'a> {
     Real(&'a SigningInfo),
     Adhoc,
@@ -82,12 +103,16 @@ impl Signer {
         "apple-codesign"
     }
     pub fn analyze(executable: &Path) -> Result<Entitlements> {
-        Ok(Entitlements(
-            plume_core::MachO::new(executable)?
-                .entitlements()
-                .clone()
-                .unwrap_or_default(),
-        ))
+        let data = fs::read(executable)?;
+        let file = MachFile::parse(&data)?;
+        if let Some(signature) = file.nth_macho(0)?.code_signature()?
+            && let Ok(Some(slot)) = signature.entitlements()
+            && let plist::Value::Dictionary(dict) =
+                plist::Value::from_reader_xml(slot.to_string().as_bytes())?
+        {
+            return Ok(Entitlements(dict));
+        }
+        Ok(Entitlements(Default::default()))
     }
     pub fn sign(
         app: &Path,
@@ -106,10 +131,7 @@ impl Signer {
                 "RSA PRIVATE KEY" => InMemoryPrivateKey::from_pkcs1_der(pem.contents())?,
                 _ => return Err(invalid("Expected a PEM private key")),
             };
-            plume_core::CertificateIdentity::validate_signing_identity(
-                info.certificate.raw(),
-                &key,
-            )?;
+            validate_signing_identity(info.certificate.raw(), &key)?;
             settings.set_signing_key(&key, info.certificate.raw().clone());
             settings.chain_apple_certificates();
             settings.set_team_id_from_signing_certificate();

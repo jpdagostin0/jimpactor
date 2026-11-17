@@ -1,4 +1,4 @@
-//! Rust implementation of XKit, sharing GrandSlam and anisette with `plume_core`.
+//! Rust implementation of XKit.
 //!
 //! XKit: Copyright © 2019 Kabir Oberai. All rights reserved.
 //! XKit is part of [XTool](https://github.com/xtool-org/xtool), which is
@@ -18,8 +18,8 @@ pub mod installation;
 pub mod integration;
 pub mod model;
 pub mod signer;
-pub mod utilities;
 mod usbmuxd_address;
+pub mod utilities;
 
 pub use usbmuxd_address::{parse_usbmuxd_address, set_usbmuxd_address, usbmuxd_address};
 
@@ -59,8 +59,9 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Reqwest(#[from] reqwest::Error),
+    /// Errors from caller-supplied providers (anisette, storage, ...).
     #[error(transparent)]
-    Core(#[from] plume_core::Error),
+    External(#[from] Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     Device(#[from] idevice::IdeviceError),
     #[error(transparent)]

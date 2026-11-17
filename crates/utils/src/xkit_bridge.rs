@@ -11,11 +11,10 @@ use xkit::{
     ASCKey, AutoSigner, DeveloperAPIAuthData, DeveloperAPIClient, DeveloperServicesLoginToken,
     IdentifierPolicy, SigningContext, TargetDevice, XcodeAuthData,
     developer_services::{ASCJWTGenerator, DeveloperServicesCertificate, Resource},
-    grand_slam::SharedAnisetteProvider,
     utilities::{DirectoryStorage, KeyValueSigningInfoManager, SigningInfoManager},
 };
 
-use crate::{Bundle, Error, SignerApp, SignerOptions};
+use crate::{Bundle, Error, SignerApp, SignerOptions, xkit_auth::SharedAnisetteProvider};
 use plume_store::AscKey;
 
 /// Asks whether the listed development certificates may be revoked.

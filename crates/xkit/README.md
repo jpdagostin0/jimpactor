@@ -1,6 +1,6 @@
 # XKit for Rust
 
-`xkit` is a workspace library for Apple developer authentication, provisioning,
+`xkit` is a library for Apple developer authentication, provisioning,
 code signing, and installation. It uses native Rust libraries for Windows, macOS,
 and Linux. This is a Rust port of XKit from
 [xtool-org/xtool](https://github.com/xtool-org/xtool), originally authored by
@@ -9,7 +9,7 @@ CLI can adopt this crate separately.
 
 | Swift area | Rust API |
 | --- | --- |
-| GrandSlam / Anisette | `grand_slam::DeveloperServicesLoginManager`, `Account`, `AnisetteDataProvider`; shared `plume_core` SRP, SMS/trusted-device 2FA, app-token crypto, and `omnisette` providers |
+| GrandSlam / Anisette | `grand_slam::AnisetteDataProvider` and the Xcode GrandSlam constants; login and anisette generation are supplied by the caller |
 | HTTPClientProtocol | `http::HTTPClientProtocol`, `HTTPClient`, injectable requests/responses; anisette websocket provisioning stays in `omnisette` |
 | DeveloperServices / OpenAPI | `DeveloperServicesClient` for legacy plists; `DeveloperAPIClient` for JSON:API, Xcode authentication or ASC ES256 JWTs, pagination and structured errors |
 | Provisioning operations | `register_device`, `fetch_certificate`, `upsert_app`, `assign_app_groups`, `fetch_profile`, `DeveloperServicesProvisioningOperation` |
@@ -50,11 +50,11 @@ async fn sign(app: &Path, key: ASCKey) -> xkit::Result<String> {
 }
 ```
 
-For Xcode login, `DeveloperServicesLoginManager::log_in` accepts an anisette
-configuration and a 2FA callback, returning a login token and anisette provider.
-Use them with `DeveloperAPIAuthData::Xcode(XcodeAuthData { login_token, team_id })`
-and `DeveloperAPIClient::new(auth, Some(provider))`. Existing logged-in
-`plume_core::auth::Account` values can be adapted with `from_account`.
+For Xcode authentication, pass a `DeveloperServicesLoginToken` (ADSID, Xcode
+GrandSlam token, expiry) and an `AnisetteDataProvider` that yields fresh anisette
+headers: `DeveloperAPIClient::new(DeveloperAPIAuthData::Xcode(XcodeAuthData {
+login_token, team_id }), Some(provider))`. xkit does not perform the GrandSlam
+login itself; Jimpactor's `plume_utils::xkit_auth` is one implementation.
 
 `SigningContext::target_device` optionally registers a device before provisioning.
 `IntegratedInstaller` supplies it automatically when installing an IPA or app.
@@ -101,5 +101,4 @@ under the **MIT license**. XTool's MIT license notice is
 Copyright (c) 2024 Kabir Oberai.
 
 The original Swift files have been removed.
-XTool's MIT notice is preserved in [LICENSE](LICENSE) and in the repository's
-[Attributions.md](../../Attributions.md).
+XTool's MIT notice is preserved in [LICENSE](LICENSE).

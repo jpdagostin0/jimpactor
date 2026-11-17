@@ -581,7 +581,7 @@ mod layout_tests {
         let path = temp.path().join("TestBinary");
         std::fs::write(
             &path,
-            include_bytes!("../../xkit/tests/fixtures/minimal-arm64.macho"),
+            include_bytes!("../tests/fixtures/minimal-arm64.macho"),
         )
         .unwrap();
         UnifiedSigner::new(SigningSettings::default())
