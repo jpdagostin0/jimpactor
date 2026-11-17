@@ -214,6 +214,10 @@ async fn discover_network_devices(wait: std::time::Duration) -> Vec<Device> {
         }
     })
     .await;
+    // Discovery (and the runtime that owns each Wi-Fi device's worker) stops
+    // once this channel closes, which would cancel every later operation on the
+    // returned devices. Keep draining it for the life of the command.
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
     found
 }
 
